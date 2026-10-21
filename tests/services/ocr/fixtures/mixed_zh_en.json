@@ -1,0 +1,20 @@
+{
+  "name": "mixed_zh_en",
+  "description": "中英混排：交界处有一侧是汉字时行间不加空格，两侧都是西文时加空格。",
+  "source": "synthetic",
+  "image": [800, 220],
+  "baseline": 1.0,
+  "check_order": true,
+  "lines": [
+    {"bbox": [39, 20, 415, 43], "text": "本文使用 PyTorch 2.5 框架训练一个基于", "score": 0.957},
+    {"bbox": [39, 53, 399, 75], "text": "Transformer 的翻译模型，并在 WMT", "score": 0.989},
+    {"bbox": [39, 83, 266, 107], "text": "数据集上评估 BLEU 分数。", "score": 0.94},
+    {"bbox": [40, 141, 514, 162], "text": "The model reaches 31.2 BLEU on the test set, which", "score": 0.948},
+    {"bbox": [40, 169, 486, 191], "text": "is comparable to 中文 baselines reported earlier.", "score": 0.975}
+  ],
+  "paragraphs": [[0, 1, 2], [3, 4]],
+  "texts": [
+    "本文使用 PyTorch 2.5 框架训练一个基于Transformer 的翻译模型，并在 WMT数据集上评估 BLEU 分数。",
+    "The model reaches 31.2 BLEU on the test set, which is comparable to 中文 baselines reported earlier."
+  ]
+}

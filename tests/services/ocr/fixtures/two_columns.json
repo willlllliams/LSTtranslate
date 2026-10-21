@@ -1,0 +1,21 @@
+{
+  "name": "two_columns",
+  "description": "两栏英文：左栏 x 30 起，右栏 x 420 起，栏间空白约 2 倍行高；两栏的行几乎对齐，OCR 输出按行交错。阅读顺序先左栏后右栏。",
+  "source": "synthetic",
+  "image": [800, 200],
+  "baseline": 1.0,
+  "check_order": true,
+  "lines": [
+    {"bbox": [31, 20, 392, 40], "text": "The left column starts with a paragraph of", "score": 0.921},
+    {"bbox": [419, 25, 706, 43], "text": "The right column begins at the same", "score": 0.921},
+    {"bbox": [31, 47, 383, 67], "text": "three lines that wraps at the column edge", "score": 0.997},
+    {"bbox": [421, 49, 756, 70], "text": "height but its lines are offset a little.", "score": 0.986},
+    {"bbox": [29, 72, 192, 93], "text": "before ending here.", "score": 0.929},
+    {"bbox": [419, 96, 730, 115], "text": "A second paragraph in the right column", "score": 0.995},
+    {"bbox": [29, 117, 235, 138], "text": "Its second paragraph has", "score": 0.953},
+    {"bbox": [419, 123, 724, 142], "text": "spans three lines and is separated by", "score": 0.967},
+    {"bbox": [30, 143, 159, 165], "text": "only two lines.", "score": 0.92},
+    {"bbox": [419, 147, 525, 167], "text": "a larger gap.", "score": 0.993}
+  ],
+  "paragraphs": [[0, 2, 4], [6, 8], [1, 3], [5, 7, 9]]
+}

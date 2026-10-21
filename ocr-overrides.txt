@@ -1,0 +1,8 @@
+# OCR 环境的依赖覆盖，与 ocr-requirements.txt 一起使用：
+#   uv pip install --python .venv-ocr\Scripts\python.exe -r ocr-requirements.txt --override ocr-overrides.txt
+#
+# paddlex[ocr] 锁定 opencv-contrib-python==4.10.0.84，rapidocr 依赖 opencv-python-headless。
+# 两个发行包都把文件装进同一个 cv2 目录，后装的覆盖先装的一部分文件，cv2 的 Python 部分与二进制部分版本不一致，
+# 导入时报循环导入。contrib 版包含 headless 版的全部模块，满足 rapidocr 的需要，
+# 所以用一个永远不成立的环境标记把 headless 版从依赖里去掉（uv 文档“overrides”一节的做法）。
+opencv-python-headless ; sys_platform == "never"

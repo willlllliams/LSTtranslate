@@ -1,0 +1,21 @@
+{
+  "name": "title_over_two_columns",
+  "description": "通栏标题、两栏正文、通栏页脚：两栏的段间空白恰好对齐。阅读顺序为标题、左栏两段、右栏两段、页脚。",
+  "source": "synthetic",
+  "image": [800, 260],
+  "baseline": 1.0,
+  "check_order": true,
+  "lines": [
+    {"bbox": [30, 17, 550, 52], "text": "Racing translation across engines", "score": 0.967},
+    {"bbox": [29, 69, 350, 89], "text": "Each segment is sent to every eligible", "score": 0.972},
+    {"bbox": [419, 71, 730, 91], "text": "Engines are ranked by a priority that", "score": 0.942},
+    {"bbox": [420, 95, 671, 115], "text": "the user sets in the settings.", "score": 0.909},
+    {"bbox": [30, 97, 231, 117], "text": "engine at the same time.", "score": 0.926},
+    {"bbox": [29, 140, 316, 161], "text": "The first result is shown at once.", "score": 0.921},
+    {"bbox": [419, 139, 704, 161], "text": "When the best engine finishes, the", "score": 0.928},
+    {"bbox": [31, 165, 299, 186], "text": "Better results replace it later.", "score": 0.98},
+    {"bbox": [421, 165, 647, 186], "text": "race for that segment ends.", "score": 0.92},
+    {"bbox": [31, 229, 590, 247], "text": "Page 3 of 12. Racing translation design notes, revision 2.", "score": 0.988}
+  ],
+  "paragraphs": [[0], [1, 4], [5, 7], [2, 3], [6, 8], [9]]
+}

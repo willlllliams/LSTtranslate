@@ -1,0 +1,16 @@
+# OCR 进程的独立环境 .venv-ocr 的依赖（架构文档 2.4 节）。
+# 这个环境只装 OCR 推理依赖，不装 PyTorch；lst 包不安装，OCR 进程以仓库根目录为工作目录启动时可以直接导入。
+#
+# 创建方法：
+#   uv venv .venv-ocr --python 3.13
+#   uv pip install --python .venv-ocr\Scripts\python.exe -r ocr-requirements.txt --override ocr-overrides.txt
+#
+# ocr-overrides.txt 去掉 rapidocr 依赖的 opencv-python-headless，环境里只留 PaddleX 锁定的 opencv-contrib-python。
+#
+# PaddlePaddle 先用 PyPI 上的 CPU 版。需要 GPU 时改装 paddlepaddle-gpu，
+# 从 https://www.paddlepaddle.org.cn/packages/stable/cu126/ 或 cu129/ 安装（PyPI 上的 GPU 版停在 2.6.2）。
+paddlepaddle==3.3.*
+paddleocr==3.7.*
+paddlex[ocr]==3.7.*
+rapidocr==3.10.*
+onnxruntime

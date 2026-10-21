@@ -1,0 +1,20 @@
+{
+  "name": "en_single_paragraph",
+  "description": "单段多行英文：6 行，行框高 20，行间距 6，右侧参差；第 5、6 行之间是断词。",
+  "source": "synthetic",
+  "image": [700, 200],
+  "baseline": 1.0,
+  "check_order": true,
+  "lines": [
+    {"bbox": [35, 17, 591, 38], "text": "Optical character recognition systems usually return their", "score": 0.95},
+    {"bbox": [35, 45, 613, 64], "text": "output as individual text lines, which breaks sentences that", "score": 0.989},
+    {"bbox": [36, 71, 601, 91], "text": "span several lines. A translation engine that receives each", "score": 0.986},
+    {"bbox": [35, 97, 603, 115], "text": "line separately loses context, so line-level output must be", "score": 0.936},
+    {"bbox": [36, 123, 381, 143], "text": "merged into paragraphs before recog-", "score": 0.992},
+    {"bbox": [37, 148, 325, 168], "text": "nition results are translated.", "score": 0.99}
+  ],
+  "paragraphs": [[0, 1, 2, 3, 4, 5]],
+  "texts": [
+    "Optical character recognition systems usually return their output as individual text lines, which breaks sentences that span several lines. A translation engine that receives each line separately loses context, so line-level output must be merged into paragraphs before recog-nition results are translated."
+  ]
+}

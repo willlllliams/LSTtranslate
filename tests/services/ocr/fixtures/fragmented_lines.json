@@ -1,0 +1,26 @@
+{
+  "name": "fragmented_lines",
+  "description": "同一行被 OCR 拆成多个碎片：碎片间距 0.2 到 0.6 倍字高，应先拼成行再成段；同一基线上约 300 像素外的页码单独成段。",
+  "source": "synthetic",
+  "image": [800, 220],
+  "baseline": 1.0,
+  "check_order": true,
+  "lines": [
+    {"bbox": [41, 19, 187, 40], "text": "Fragments of one", "score": 0.982},
+    {"bbox": [192, 19, 332, 41], "text": "visual line are", "score": 0.99},
+    {"bbox": [341, 20, 459, 39], "text": "merged first,", "score": 0.948},
+    {"bbox": [760, 20, 784, 40], "text": "12", "score": 0.982},
+    {"bbox": [40, 45, 234, 66], "text": "then the merged lines", "score": 0.919},
+    {"bbox": [244, 47, 389, 65], "text": "are grouped into", "score": 0.957},
+    {"bbox": [41, 73, 151, 92], "text": "a paragraph.", "score": 0.996},
+    {"bbox": [264, 127, 392, 153], "text": "例如逗号之后，", "score": 0.988},
+    {"bbox": [40, 128, 256, 152], "text": "中文碎片常在标点处断开，", "score": 0.95},
+    {"bbox": [40, 159, 255, 185], "text": "这一段也要合成一个段落。", "score": 0.991}
+  ],
+  "paragraphs": [[0, 1, 2, 4, 5, 6], [8, 7, 9], [3]],
+  "texts": [
+    "Fragments of one visual line are merged first, then the merged lines are grouped into a paragraph.",
+    "中文碎片常在标点处断开，例如逗号之后，这一段也要合成一个段落。",
+    "12"
+  ]
+}
