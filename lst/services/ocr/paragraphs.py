@@ -146,6 +146,22 @@ def _center_y(box: BBox) -> float:
     return (box.y0 + box.y1) / 2
 
 
+def _accessory(text: str) -> bool:
+    stripped = text.strip().rstrip(".)、")
+    return not any(c.isalnum() for c in text) or (
+        stripped.isdecimal() and len(stripped) <= 3 and text.strip().endswith((".", ")", "、"))
+    )
+
+
+def _different_scale(a: BBox, b: BBox, first: Appearance | None, second: Appearance | None) -> bool:
+    if first is None or second is None:
+        return False
+    ratio = max(a.height, b.height) / min(a.height, b.height)
+    stroke = min(first.stroke, second.stroke)
+    # 单词的字形高度随上下伸部分变化；框高与笔画宽度共同变化才支持字号不同。
+    return ratio > 1.3 and (max(first.stroke, second.stroke) > 1.5 * stroke if stroke > 0 else ratio > 1.8)
+
+
 @dataclass(frozen=True, slots=True)
 class _Row:
     """拼好的一行：成员下标按从左到右排列，bbox 是成员的并集，height 是成员字高的中位数。
@@ -191,9 +207,13 @@ class GeometricMerger:
         params: MergeParams | None = None,
         *,
         appearance: Callable[[TextLine], Appearance | None] | None = None,
+        connects: Callable[[TextLine, TextLine], bool] | None = None,
+        gutter: Callable[[TextLine, TextLine, float], bool] | None = None,
     ) -> None:
         self._params = params if params is not None else MergeParams()
         self._appearance = appearance
+        self._connects = connects
+        self._gutter = gutter
 
     @property
     def params(self) -> MergeParams:
@@ -294,30 +314,37 @@ class GeometricMerger:
                 gap = max(boxes[a].x0, boxes[b].x0) - min(boxes[a].x1, boxes[b].x1)
                 h = min(boxes[a].height, boxes[b].height)
 
-                def prefix(text: str) -> bool:
-                    stripped = text.strip().rstrip(".)、")
-                    return not any(c.isalnum() for c in text) or (
-                        stripped.isdecimal()
-                        and len(stripped) <= 3
-                        and text.strip().endswith((".", ")", "、"))
-                    )
-
-                accessory = prefix(lines[a].text) or prefix(lines[b].text)
+                accessory = _accessory(lines[a].text) or _accessory(lines[b].text)
+                left, right = (a, b) if boxes[a].x0 <= boxes[b].x0 else (b, a)
+                bridge = (
+                    styled
+                    and not accessory
+                    and self._connects is not None
+                    and abs(_center_y(boxes[a]) - _center_y(boxes[b])) <= tolerance * h
+                    and 0.65 * h
+                    < gap
+                    <= 6 * self._params.fragment_gap * max(boxes[a].height, boxes[b].height)
+                    and not self._fragment_between(left, right, boxes, by_center, centers)
+                    and self._connects(lines[a], lines[b])
+                )
                 if styled and (
                     (not same_color(aa, ab) and not accessory)
-                    or gap > (1.1 if accessory else 0.55) * h
-                    or (
-                        aa is not None
-                        and ab is not None
-                        and abs(aa.ink_height - ab.ink_height)
-                        > self._params.height_tolerance * min(aa.ink_height, ab.ink_height)
-                        and not accessory
-                    )
+                    or (gap > (1.1 if accessory else 0.65) * h and not bridge)
+                    or (_different_scale(boxes[a], boxes[b], aa, ab) and not accessory)
                 ):
                     continue
                 overlap = min(boxes[a].y1, boxes[b].y1) - max(boxes[a].y0, boxes[b].y0)
-                joined = self._same_row(boxes[a], boxes[b]) or (styled and accessory and overlap > 0.5 * h)
-                if joined and (accessory or not self._in_gutter(a, b, boxes, by_center, centers)):
+                joined = (
+                    bridge
+                    or self._same_row(boxes[a], boxes[b])
+                    or (styled and accessory and overlap > 0.5 * h)
+                )
+                if not joined:
+                    continue
+                gutter = not (accessory or bridge) and self._in_gutter(a, b, boxes, by_center, centers)
+                if gutter and self._gutter is not None:
+                    gutter = self._gutter(lines[a], lines[b], self._params.gutter_window)
+                if not gutter:
                     groups.union(position[a], position[b])
         members: dict[int, list[int]] = {}
         for k, index in enumerate(by_center):
@@ -334,6 +361,22 @@ class GeometricMerger:
                 )
             )
         return rows
+
+    def _fragment_between(
+        self, left: int, right: int, boxes: Sequence[BBox], by_center: Sequence[int], centers: Sequence[float]
+    ) -> bool:
+        """只查中线邻域，桥接判断不必为每个候选扫描整页文字。"""
+        first, second = _center_y(boxes[left]), _center_y(boxes[right])
+        radius = self._params.same_line_tolerance * min(boxes[left].height, boxes[right].height)
+        radius += abs(first - second) / 2
+        center = (first + second) / 2
+        lo, hi = bisect.bisect_left(centers, center - radius), bisect.bisect_right(centers, center + radius)
+        return any(
+            other not in (left, right)
+            and boxes[left].x1 < boxes[other].x1
+            and boxes[other].x0 < boxes[right].x0
+            for other in by_center[lo:hi]
+        )
 
     # ---- 第 3 步：成段 ----
 

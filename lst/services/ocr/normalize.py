@@ -419,7 +419,12 @@ class AggregateStep:
                 else block
                 for block in blocks
             )
-            merger = GeometricMerger(merger.params, appearance=appearance.of)
+            merger = GeometricMerger(
+                merger.params,
+                appearance=appearance.of,
+                connects=appearance.connects,
+                gutter=appearance.gutter,
+            )
         if context.text_mode:
             return self._paragraph_blocks(blocks, merger) if self.paragraphs else tuple(blocks)
         if self.appearance and context.image is not None:

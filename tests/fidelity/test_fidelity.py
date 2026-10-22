@@ -68,3 +68,14 @@ def test_server_scaled_blog_preserves_text_and_control_boundaries() -> None:
     metrics = evaluate(load_raw(engine, "blog", FIXTURES / "server"), expected("blog"))
     assert metrics.content_accuracy == metrics.unit_recall == metrics.separate_units == 1.0
     assert metrics.merged_segments == metrics.split_units == 0
+
+
+@pytest.mark.parametrize(
+    "preset,body_loss",
+    [("paddle-det-server", 19), ("paddle-server", 18), ("paddle-server-max1280", 0)],
+)
+def test_server_word_boxes_preserve_body_reading_order(preset: str, body_loss: int) -> None:
+    engine = replace(ENGINES["paddle-text"], name=preset)
+    metrics = evaluate(load_raw(engine, "blog", FIXTURES / "server"), expected("blog"))
+    # 18/19 是原始检测、识别输出的漏字；正文顺序不能再增加损失。
+    assert metrics.errors["body"] == body_loss

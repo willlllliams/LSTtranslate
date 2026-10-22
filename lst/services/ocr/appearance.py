@@ -17,6 +17,7 @@ class Appearance:
     color: Color
     ink_height: int
     stroke: float = 0.0
+    background: Color | None = None
 
 
 def same_color(a: Appearance | None, b: Appearance | None) -> bool:
@@ -47,6 +48,52 @@ class ImageAppearance:
     def split(self, line: TextLine) -> tuple[TextLine, ...]:
         """用字间投影定位 OCR 已给出的词，拆开一行里的不同颜色或宽间距控件。"""
         return tuple(self._refine_horizontal(part) for part in self._split(line))
+
+    def connects(self, a: TextLine, b: TextLine) -> bool:
+        """两个行片段之间还有同色的横向文字笔画时，为跨漏检词的拼行提供像素证据。"""
+        left, right = (a, b) if a.bbox.x0 <= b.bbox.x0 else (b, a)
+        first, second = self.of(left), self.of(right)
+        if first is None or second is None or not same_color(first, second):
+            return False
+        height, width = self._pixels.shape[:2]
+        x0, x1 = max(0, left.bbox.x1), min(width, right.bbox.x0)
+        y0, y1 = max(0, min(left.bbox.y0, right.bbox.y0)), min(height, max(left.bbox.y1, right.bbox.y1))
+        if x1 <= x0 or y1 <= y0:
+            return False
+        pixels = self._pixels[y0:y1, x0:x1].astype(np.int32)
+        background = np.median(pixels.reshape(-1, 3), axis=0)
+        if any(
+            np.max(np.abs(background - np.array(reference))) > 24
+            for reference in (first.background, second.background)
+            if reference is not None
+        ):
+            return False
+        color = (np.array(first.color) + np.array(second.color)) / 2
+        ink = np.all(np.abs(pixels - color) <= 40, axis=2)
+        columns = np.flatnonzero(ink.any(axis=0))
+        ys = np.nonzero(ink)[0]
+        if len(columns) < 0.35 * (x1 - x0) or not len(ys):
+            return False
+        ink_height = int(ys.max() - ys.min() + 1)
+        span = int(columns[-1] - columns[0] + 1)
+        return ink_height >= 0.45 * min(left.bbox.height, right.bbox.height) and span > 1.25 * ink_height
+
+    def gutter(self, a: TextLine, b: TextLine, window: float) -> bool:
+        """确认几何候选栏缝在原图中也持续留白，排除词级检测框造成的假栏缝。"""
+        left, right = (a, b) if a.bbox.x0 <= b.bbox.x0 else (b, a)
+        style = self.of(left)
+        if style is None:
+            return True
+        h = max(left.bbox.height, right.bbox.height)
+        center = (left.bbox.y0 + left.bbox.y1 + right.bbox.y0 + right.bbox.y1) / 4
+        height, width = self._pixels.shape[:2]
+        x0, x1 = max(0, left.bbox.x1), min(width, right.bbox.x0)
+        y0, y1 = max(0, int(center - window * h)), min(height, int(center + window * h))
+        if x1 <= x0 or y1 <= y0:
+            return True
+        pixels = self._pixels[y0:y1, x0:x1].astype(np.int32)
+        ink = np.all(np.abs(pixels - np.array(style.color)) <= 40, axis=2)
+        return bool(np.count_nonzero(ink.any(axis=0)) < max(2, 0.5 * (x1 - x0)))
 
     def _split(self, line: TextLine) -> tuple[TextLine, ...]:
         words = re.sub(r"(?<=\w)([»》])", r" \1", line.text).split()
@@ -195,4 +242,9 @@ class ImageAppearance:
         binary = mask.reshape(pixels.shape[:2]).astype(np.int32)
         perimeter = float(np.abs(np.diff(binary, axis=0)).sum() + np.abs(np.diff(binary, axis=1)).sum())
         stroke = 2 * float(binary.sum()) / max(1, perimeter) if sample_step == 1 else 0.0
-        return Appearance((int(color[0]), int(color[1]), int(color[2])), int(ys.max() - ys.min() + 1), stroke)
+        return Appearance(
+            (int(color[0]), int(color[1]), int(color[2])),
+            int(ys.max() - ys.min() + 1),
+            stroke,
+            (int(background[0]), int(background[1]), int(background[2])),
+        )
