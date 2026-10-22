@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from lst.contracts.nmt_runtime import (
 from lst.kernel import EventBus, ModuleContext
 from lst.services._shared.gpu import NVIDIA_VENDOR_ID, GpuAdapter
 from lst.services.nmt_runtime import NmtRuntimeModule, WheelSpec, installed_bin_dir
+from lst.services.nmt_runtime import package as runtime_package
 from lst.services.nmt_runtime.package import MARKER, PART_SUFFIX, TMP_SUFFIX, scan_installed
 
 VERSION = "12.9.2.10"
@@ -223,6 +225,52 @@ async def test_installed_runtime_is_found_after_restart(start: Start) -> None:
     again.bus.send(InstallNmtRuntime())  # 已装同一版本：不再下载
     await again.settle()
     assert again.server.requests == []
+
+
+@pytest.mark.parametrize("winerror", [5, 32, 33])
+async def test_install_recovers_from_transient_rename_denial(
+    start: Start, monkeypatch: pytest.MonkeyPatch, winerror: int
+) -> None:
+    rig = await start()
+    replace = os.replace
+    attempts: list[int] = []
+    delays: list[float] = []
+
+    def temporarily_locked(source: Path, target: Path) -> None:
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise PermissionError(13, "temporary rename denial", str(source), winerror)
+        replace(source, target)
+
+    monkeypatch.setattr(runtime_package.os, "replace", temporarily_locked)
+    monkeypatch.setattr(runtime_package.time, "sleep", delays.append)
+    rig.bus.send(InstallNmtRuntime())
+    await rig.settle()
+    assert rig.info.state is NmtRuntimeState.INSTALLED
+    assert len(attempts) == 3 and delays == [0.025, 0.05]
+    assert installed_bin_dir(rig.root) == rig.root / VERSION / "bin"
+
+
+@pytest.mark.parametrize("winerror,attempts", [(5, 7), (87, 1)])
+async def test_install_reports_persistent_or_unrelated_rename_errors(
+    start: Start, monkeypatch: pytest.MonkeyPatch, winerror: int, attempts: int
+) -> None:
+    rig = await start()
+    calls: list[int] = []
+
+    def denied(source: Path, _target: Path) -> None:
+        calls.append(1)
+        raise PermissionError(13, "rename denied", str(source), winerror)
+
+    monkeypatch.setattr(runtime_package.os, "replace", denied)
+    monkeypatch.setattr(runtime_package.time, "sleep", lambda _delay: None)
+    rig.bus.send(InstallNmtRuntime())
+    await rig.settle()
+    assert len(calls) == attempts
+    assert rig.info.state is NmtRuntimeState.ERROR
+    assert rig.info.error_code is NmtRuntimeErrorCode.DISK
+    assert installed_bin_dir(rig.root) is None
+    assert list(rig.root.iterdir()) == []
 
 
 async def test_wrong_hash_fails_without_leaving_files(start: Start) -> None:

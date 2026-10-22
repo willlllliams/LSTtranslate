@@ -7,14 +7,20 @@
 2. 类别由 labels.category_for 映射。置信度取与块交并比最大（不小于 0.5）的版面检测框的 score；
    PaddleX 在解析阶段可能改写标签（footnote → text 等），所以匹配只看位置。
    找不到时取块内文本行置信度的平均值。
-3. 文本行：整页 OCR 的每一行归给与它重叠面积最大的版面块，重叠面积不到行面积一半的不归给任何块。
-   文本类块（正文、标题、页眉页脚，以及公式、图表）带上这些行，块内按阅读顺序排列（先按行从上到下，
+3. 文本行：整页 OCR 的每一行归给落在其中的面积占行面积比例最大的版面块，这个比例不到一半时，
+   改归给被这一行盖住一半以上面积的版面块（取盖住比例最大的一个），两条都不满足的行不归给任何块。
+   第二条针对界面截图里的按钮：PP-DocLayout 给出的块只包住按钮上的字，文本检测的行框连按钮的边框一起
+   包进去，行面积落在块内的只有四成左右；PaddleX 自己用这一行拼出了块的 content，这里按第一条把它判成
+   不属于任何块，同一个词就会在块和第 7 步的单行块里各出现一次。
+   除有单元格网格的表格外，各类块都带上这些行，块内按阅读顺序排列（先按行从上到下，
    同一行的碎片从左到右）；text 是这些行的文字用换行连接，段落拼接由主进程按语言规则完成。
-   块内没有文本行时 text 取 PaddleX 给出的 content。表格（有单元格网格时）、图片块内的行不输出。
+   块内没有文本行时 text 取 PaddleX 给出的 content。
+   图片块也带上块内的行：PP-DocLayout 会把一整片界面控件（一排按钮连同下面的表格）判成 image，
+   这些行是 OCR 认出的文字，主进程把它们逐行切成段，覆盖窗口在原图上逐行画译文。
 4. 表格：content 即 pred_html，与 table_res_list 中 pred_html 相同的那一项配对，拿到单元格框；
    网格解析与对齐见 table_html。text 是各行单元格文字，行内以空格、行间以换行连接。
    没开表格识别时表格块的 content 只是块内文字，这时不输出 cells，按文本类块输出 text 和 lines，
-   主进程把整块当作一个段。
+   主进程把每个文本行当作一个段。
 5. 公式：与公式块交并比最大（不小于 0.5）的公式识别结果给出 latex；没有时 latex 为 null。
 6. 图表：开了图表识别时 content 是 PP-Chart2Table 输出的数据表文本，解析成 chart_table；否则为 null。
 7. 不属于任何版面块的文本行，每行单独成为一个正文块，排在全部版面块之后（按从上到下、从左到右）。
@@ -44,6 +50,8 @@ log = logging.getLogger(__name__)
 
 # 文本行归属版面块的门槛：行面积中落在块内的比例。
 LINE_IN_BLOCK = 0.5
+# 第二条归属规则的门槛：块面积中被这一行盖住的比例。
+BLOCK_IN_LINE = 0.5
 # 版面块与检测框、公式结果配对的交并比门槛。
 MATCH_IOU = 0.5
 
@@ -91,18 +99,26 @@ def reading_order(lines: Sequence[RawLine]) -> list[RawLine]:
 def _assign_lines(
     lines: Sequence[RawLine], blocks: Sequence[RawBlock]
 ) -> tuple[list[list[RawLine]], list[RawLine]]:
-    """把文本行分给版面块；返回（每个块的行，不属于任何块的行）。"""
+    """把文本行分给版面块，规则见模块说明第 3 条；返回（每个块的行，不属于任何块的行）。"""
     owned: list[list[RawLine]] = [[] for _ in blocks]
     orphans: list[RawLine] = []
     for line in lines:
         area = box_area(line.box)
         best, best_ratio = -1, 0.0
+        cover, cover_ratio = -1, 0.0
         for index, block in enumerate(blocks):
-            ratio = intersection_area(line.box, block.box) / area if area > 0 else 0.0
+            overlap = intersection_area(line.box, block.box)
+            ratio = overlap / area if area > 0 else 0.0
             if ratio > best_ratio:
                 best, best_ratio = index, ratio
+            block_area = box_area(block.box)
+            covered = overlap / block_area if block_area > 0 else 0.0
+            if covered > cover_ratio:
+                cover, cover_ratio = index, covered
         if best >= 0 and best_ratio >= LINE_IN_BLOCK:
             owned[best].append(line)
+        elif cover >= 0 and cover_ratio >= BLOCK_IN_LINE:
+            owned[cover].append(line)
         else:
             orphans.append(line)
     return owned, orphans
@@ -198,10 +214,7 @@ def convert_structure(page: RawPage, cmap: CoordinateMap) -> list[OutBlock]:
                 cells, text = _table_cells(builder, block, table)
                 builder.add(category, block.box, score, text=text, cells=cells)
                 continue
-            # 没开表格识别：content 是块内文字，没有单元格网格，整块按文字输出。
-        elif category is BlockCategory.IMAGE:
-            builder.add(category, block.box, score)
-            continue
+            # 没开表格识别：content 是块内文字，没有单元格网格，按文字和文本行输出，主进程逐行出段。
         lines = builder.out_lines(ordered)
         text = "\n".join(line.text for line in lines) if lines else block.content.strip()
         if category is BlockCategory.FORMULA:

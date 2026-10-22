@@ -154,7 +154,7 @@ def assert_in_order(source: str, *calls: str) -> None:
 
 
 MAIN_TEXT = ["decode", "clean", "split", "aggregate", "segments"]
-MAIN_STRUCTURE = ["decode", "clean", "merge_blocks", "segments"]
+MAIN_STRUCTURE = ["decode", "clean", "aggregate", "merge_blocks", "segments"]
 
 
 def test_paddle_structure_order() -> None:

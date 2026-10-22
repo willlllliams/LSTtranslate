@@ -10,7 +10,7 @@ from typing import cast
 from pydantic import BaseModel, ValidationError
 from tomlkit.exceptions import TOMLKitError
 
-from lst.contracts.config import AppConfig, ConfigRejected, UpdateConfig, UpdateSecret
+from lst.contracts.config import AppConfig, ConfigRejected, ConfigUpdateCompleted, UpdateConfig, UpdateSecret
 from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus, ModuleContext
 from lst.services.config import document
@@ -208,7 +208,17 @@ class ConfigService:
     async def _on_update_config(self, command: UpdateConfig) -> None:
         async with self._lock:
             if self._running:
-                await self._apply_patch(command.patch)
+                revision = self._revision
+                rejected = await self._apply_patch(command.patch)
+                if command.request_id is not None:
+                    bus = self._require_bus()
+                    config = bus.latest(AppConfig)
+                    assert config is not None
+                    bus.publish(
+                        ConfigUpdateCompleted(
+                            command.request_id, config, self._revision != revision, rejected
+                        )
+                    )
 
     async def update(self, patch: Mapping[str, JsonValue]) -> tuple[ConfigRejected, ...]:
         """直接应用一次修改，等它写进配置文件后返回被拒绝的位置（空元组表示全部生效）。

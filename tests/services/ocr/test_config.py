@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from lst.contracts.ocr_engines import OcrEngineKind, OcrStage
+from lst.services.config.validation import validate_section
 from lst.services.ocr import (
     CONFIG_SECTIONS,
     PIPELINE_SECTIONS,
@@ -25,6 +26,7 @@ from lst.services.ocr import (
     request_options,
     worker_settings,
 )
+from lst.services.ocr.config import MAX_DET_BOX_THRESH
 
 
 def test_paddle_defaults_match_the_pre_rewrite_tuning() -> None:
@@ -355,6 +357,21 @@ def test_defaults_validate_and_round_trip() -> None:
         PaddleOcrConfig(text_det_limit_type="both")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValidationError):
         RapidOcrConfig.model_validate({"unknown": 1})
+
+
+def test_paddle_box_threshold_is_capped_at_the_clean_text_score() -> None:
+    """检测框阈值最高 0.7：截屏测试页上清晰文字行的检测得分最低 0.70，阈值取 1 时一行也检不出来，
+    PP-StructureV3 把整个正文块当作一行识别，两行的段落识别成空串，正文因此丢失（MAX_DET_BOX_THRESH）。"""
+    assert PaddleOcrConfig(text_det_box_thresh=MAX_DET_BOX_THRESH).text_det_box_thresh == 0.7
+    for value in (0.71, 1.0):
+        with pytest.raises(ValidationError):
+            PaddleOcrConfig(text_det_box_thresh=value)
+    # 配置文件里已经写着 1.0 的，启动时这一项回退到默认值 0.6，其余字段保留。
+    data, issues = validate_section(
+        PaddleOcrConfig, {"text_det_box_thresh": 1.0, "detection_model": "PP-OCRv5_server_det"}
+    )
+    assert data["text_det_box_thresh"] == 0.6 and data["detection_model"] == "PP-OCRv5_server_det"
+    assert [location for location, _ in issues] == [("text_det_box_thresh",)]
 
 
 def test_request_options_carry_only_request_level_pipeline_fields() -> None:

@@ -1,0 +1,273 @@
+{
+ "width": 1908,
+ "height": 1150,
+ "seconds": 0.9125756999710575,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    1908,
+    1150
+   ],
+   "order": 0,
+   "score": 0.995012,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      0,
+      31,
+      83,
+      62
+     ],
+     "text": "Product",
+     "score": 0.99889
+    },
+    {
+     "bbox": [
+      105,
+      34,
+      255,
+      61
+     ],
+     "text": "Development",
+     "score": 0.99996
+    },
+    {
+     "bbox": [
+      276,
+      33,
+      357,
+      61
+     ],
+     "text": "Mobile",
+     "score": 0.99998
+    },
+    {
+     "bbox": [
+      379,
+      33,
+      508,
+      62
+     ],
+     "text": "Community",
+     "score": 0.99997
+    },
+    {
+     "bbox": [
+      535,
+      33,
+      690,
+      63
+     ],
+     "text": "Tips & Guides",
+     "score": 0.9986
+    },
+    {
+     "bbox": [
+      1806,
+      31,
+      1907,
+      62
+     ],
+     "text": "GET THU",
+     "score": 0.98362
+    },
+    {
+     "bbox": [
+      157,
+      148,
+      309,
+      178
+     ],
+     "text": "LATEST POST",
+     "score": 0.99278
+    },
+    {
+     "bbox": [
+      157,
+      199,
+      1368,
+      274
+     ],
+     "text": "Thunderbird for iOS: A First Look at the",
+     "score": 0.99777
+    },
+    {
+     "bbox": [
+      147,
+      295,
+      1428,
+      387
+     ],
+     "text": "Native iPhone Email App in Development",
+     "score": 0.99951
+    },
+    {
+     "bbox": [
+      159,
+      427,
+      369,
+      454
+     ],
+     "text": "October 1, 2026",
+     "score": 0.96611
+    },
+    {
+     "bbox": [
+      389,
+      427,
+      552,
+      454
+     ],
+     "text": "Aly Blenkin",
+     "score": 0.98371
+    },
+    {
+     "bbox": [
+      564,
+      424,
+      750,
+      456
+     ],
+     "text": "30 responses",
+     "score": 0.99622
+    },
+    {
+     "bbox": [
+      156,
+      503,
+      872,
+      536
+     ],
+     "text": "The team has been working hard behind the scenes laying a strong",
+     "score": 0.99584
+    },
+    {
+     "bbox": [
+      155,
+      538,
+      916,
+      569
+     ],
+     "text": "foundation for the Thunderbird iOS app. Rather than leveraging existing",
+     "score": 0.9957
+    },
+    {
+     "bbox": [
+      156,
+      571,
+      916,
+      601
+     ],
+     "text": "code, we are building natively from scratch. This fresh start allows us to",
+     "score": 0.99939
+    },
+    {
+     "bbox": [
+      1227,
+      573,
+      1528,
+      616
+     ],
+     "text": "Thunderbird®",
+     "score": 0.9986
+    },
+    {
+     "bbox": [
+      156,
+      605,
+      922,
+      636
+     ],
+     "text": "take everything we've learned from Thunderbird Desktop and Android to",
+     "score": 0.99656
+    },
+    {
+     "bbox": [
+      155,
+      639,
+      864,
+      671
+     ],
+     "text": "ensure a fast, reliable, and modern experience on your iPhone [.…]",
+     "score": 0.98294
+    },
+    {
+     "bbox": [
+      1223,
+      635,
+      1526,
+      658
+     ],
+     "text": "An open source, privacy focused",
+     "score": 0.99873
+    },
+    {
+     "bbox": [
+      1236,
+      657,
+      1518,
+      680
+     ],
+     "text": "and ad-free email app for iOS.",
+     "score": 0.99936
+    },
+    {
+     "bbox": [
+      184,
+      759,
+      335,
+      786
+     ],
+     "text": "READ MORE",
+     "score": 0.99989
+    },
+    {
+     "bbox": [
+      1324,
+      749,
+      1432,
+      776
+     ],
+     "text": "Get started",
+     "score": 0.9931
+    },
+    {
+     "bbox": [
+      840,
+      982,
+      1100,
+      1028
+     ],
+     "text": "Latest Posts",
+     "score": 0.99817
+    },
+    {
+     "bbox": [
+      748,
+      1103,
+      1057,
+      1135
+     ],
+     "text": "Thunderbird Dev Digest",
+     "score": 0.99996
+    },
+    {
+     "bbox": [
+      1303,
+      1107,
+      1569,
+      1143
+     ],
+     "text": "Desktop Settings",
+     "score": 0.99994
+    }
+   ]
+  }
+ ],
+ "source_sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2"
+}

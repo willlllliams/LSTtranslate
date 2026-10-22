@@ -9,6 +9,9 @@
 - 模型目录：“更改…”先选目录，再确认（“把现有模型移动到新目录”默认勾选），然后发 ChangeModelsDir。
   不在默认位置时多一个“恢复默认位置”。移动期间状态行与进度条显示进度，两张卡片的“更改…”都不可用。
 
+选好目录、确认之后的判断与提交（``plan_data_dir``、``submit_data_dir``、``plan_models_dir``、
+``submit_models_dir``）单独成方法，自动化接口的 storage.* 调用同一套（架构文档 16.4.6 节）。
+
 更改失败的原因（StorageLocations.failure）显示在对应卡片的下方。内容全部来自展示器的 ``storage``，
 控件不随状态重建，焦点与 Tab 顺序不变。
 """
@@ -246,11 +249,8 @@ class StorageSection:
         if not chosen:
             return
         target = os.path.normpath(chosen)
-        if _same(target, locations.data_dir):
-            if locations.pending_data_dir is not None:
-                self._presenter.change_data_dir(target, copy=False)  # 选回当前目录：撤销还没生效的更改
-            return
-        if locations.pending_data_dir is not None and _same(target, locations.pending_data_dir):
+        if self.plan_data_dir(target) != "change":
+            self.submit_data_dir(target, copy=False)  # 选回当前目录时撤销还没生效的更改，其余情况什么也不做
             return
         copy = self._dialogs.confirm_option(
             tr("settings.storage.data.title"),
@@ -260,8 +260,42 @@ class StorageSection:
         )
         if copy is None:
             return
-        self.data_card.set_error(None)
-        self._presenter.change_data_dir(target, copy=copy)
+        self.submit_data_dir(target, copy=copy)
+
+    def plan_data_dir(self, target: str) -> str:
+        """选好数据目录 target 之后要做的事：
+
+        - ``change``：确认之后更改；
+        - ``revert``：选回了当前目录，而之前选过另一个还没生效的目录，撤销那次更改，不需要确认；
+        - ``same``：选的就是当前目录或那个还没生效的目录，什么也不做；
+        - ``unavailable``、``fixed``、``busy``：现在不能更改（没有存储位置模块、数据目录由命令行参数或环境变量
+          指定、另一次复制或移动还没结束）。
+        """
+        locations = self.locations
+        if locations is None:
+            return "unavailable"
+        if locations.data_source.fixed:
+            return "fixed"
+        if locations.task is not None:
+            return "busy"
+        if _same(target, locations.data_dir):
+            return "revert" if locations.pending_data_dir is not None else "same"
+        if locations.pending_data_dir is not None and _same(target, locations.pending_data_dir):
+            return "same"
+        return "change"
+
+    def submit_data_dir(self, target: str, *, copy: bool) -> str:
+        """按 plan_data_dir 的结果提交（已经确认过）：``change`` 与 ``revert`` 发出 ChangeDataDir。
+
+        设置页在对话框确认之后调用，自动化接口在请求带 confirm 时直接调用，两者走同一套判断。返回 plan。
+        """
+        plan = self.plan_data_dir(target)
+        if plan == "revert":
+            self._presenter.change_data_dir(target, copy=False)
+        elif plan == "change":
+            self.data_card.set_error(None)
+            self._presenter.change_data_dir(target, copy=copy)
+        return plan
 
     def change_models_dir(self) -> None:
         locations = self.locations
@@ -271,15 +305,34 @@ class StorageSection:
         if not chosen:
             return
         target = os.path.normpath(chosen)
-        if _same(target, locations.models_dir):
-            return
-        self._confirm_models(target, target)
+        if self.plan_models_dir(target) == "change":
+            self._confirm_models(target, target)
 
     def reset_models_dir(self) -> None:
         locations = self.locations
-        if locations is None or locations.task is not None or locations.models_default:
+        if locations is None or self.plan_models_dir("") != "change":
             return
         self._confirm_models("", os.path.join(locations.data_dir, "models"))
+
+    def plan_models_dir(self, target: str) -> str:
+        """改到模型目录 target（空串为默认位置）要做的事：``change`` 确认后更改，``same`` 已经是这个目录，
+        ``unavailable``、``busy`` 现在不能更改。"""
+        locations = self.locations
+        if locations is None:
+            return "unavailable"
+        if locations.task is not None:
+            return "busy"
+        if not target:
+            return "same" if locations.models_default else "change"
+        return "same" if _same(target, locations.models_dir) else "change"
+
+    def submit_models_dir(self, target: str, *, move: bool) -> str:
+        """按 plan_models_dir 的结果提交（已经确认过）：``change`` 时发出 ChangeModelsDir。返回 plan。"""
+        plan = self.plan_models_dir(target)
+        if plan == "change":
+            self.models_card.set_error(None)
+            self._presenter.change_models_dir(target, move=move)
+        return plan
 
     def _confirm_models(self, target: str, shown: str) -> None:
         move = self._dialogs.confirm_option(
@@ -290,8 +343,7 @@ class StorageSection:
         )
         if move is None:
             return
-        self.models_card.set_error(None)
-        self._presenter.change_models_dir(target, move=move)
+        self.submit_models_dir(target, move=move)
 
 
 __all__ = ["StorageCard", "StorageSection", "progress_text"]

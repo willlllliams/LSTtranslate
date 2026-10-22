@@ -39,6 +39,8 @@ class UpdateConfig(Command):
     """
 
     patch: Mapping[str, JsonValue]
+    request_id: str | None = None
+    """需要精确回执时填写；配置服务处理完后发布同号的 ConfigUpdateCompleted。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,3 +64,13 @@ class ConfigRejected(Event):
 
     location: tuple[str | int, ...]
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigUpdateCompleted(Event):
+    """一次配置修改的回执，包含这次修改完成时的快照；无变化与全部拒绝也有回执。"""
+
+    request_id: str
+    config: AppConfig
+    changed: bool
+    rejected: tuple[ConfigRejected, ...] = ()

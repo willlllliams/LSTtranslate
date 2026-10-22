@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ TMP_SUFFIX: Final = ".tmp"
 MARKER: Final = "installed.json"
 DLL_NAMES: Final = ("cublasLt64_12.dll", "cublas64_12.dll")
 _COPY_CHUNK: Final = 1 << 20
+_RENAME_DELAYS: Final = (0.025, 0.05, 0.1, 0.2, 0.4, 0.8)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +196,18 @@ def _extract_member(wheel: zipfile.ZipFile, member: str, target: Path, expected:
     return written
 
 
+def _publish_directory(staging: Path, final: Path) -> None:
+    """原子发布已校验目录；Windows 短暂拒绝改名时最多等待 1.575 秒，持续失败原样上抛。"""
+    for attempt in range(len(_RENAME_DELAYS) + 1):
+        try:
+            os.replace(staging, final)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == len(_RENAME_DELAYS):
+                raise
+            time.sleep(_RENAME_DELAYS[attempt])
+
+
 def install_wheel(part: Path, root: Path, spec: WheelSpec) -> InstalledRuntime:
     """从校验过的 wheel 取出 DLL 与许可证，装到 root/<版本>，删除 wheel，返回装好的运行库。
 
@@ -216,7 +230,7 @@ def install_wheel(part: Path, root: Path, spec: WheelSpec) -> InstalledRuntime:
         (staging / MARKER).write_text(json.dumps(marker, indent=2), encoding="utf-8")
         if final.exists():
             shutil.rmtree(final)
-        os.replace(staging, final)
+        _publish_directory(staging, final)
     except zipfile.BadZipFile as exc:
         raise InvalidRuntime("下载内容不是有效的 wheel（zip）文件") from exc
     finally:

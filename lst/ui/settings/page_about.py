@@ -1,4 +1,7 @@
-"""关于与诊断页：版本号、应用更新、各推理进程的状态、导出诊断信息（需求 UI-05、UPD-01 至 UPD-06）。
+"""关于与诊断页：版本号、应用更新、各推理进程的状态、导出诊断信息、自动化接口
+（需求 UI-05、UPD-01 至 UPD-06、DEV-01 至 DEV-03）。
+
+版本号后面注明构建类型：开发版写“（开发版）”，普通版不写。
 
 “更新”卡片组：一张更新卡片（``UpdateCard``）显示当前版本、更新状态与操作按钮，下面是 [updates] 节的
 三个设置项（自动检查、检查间隔、接收预发布版本）。按钮的显示规则：
@@ -14,6 +17,11 @@
 “导出诊断信息”的命令（架构文档 5.3 节的 ExportDiagnostics）还没有定义，随 services.diagnostics 落地，
 所以按钮暂时不可用，旁边说明原因。进程状态用托盘里的五种状态显示，出错时给出原因和处理建议，
 不显示技术细节；出错的进程旁边有“重新启动”按钮，发送 ``RestartWorker``，由组合根清零崩溃计数后重新启动。
+
+“自动化接口”卡片（``AutomationCard``）：开关、说明与风险、默认值随构建类型的提示，下方一行写当前状态
+（正在监听的管道名、未开启、无法开启的原因）。开关显示的是 AutomationStatus 里算好的结果，点击后发
+``UpdateConfig {"automation": {"enabled": ...}}``，从此以配置为准。放在本页而不放在常规页：它是给测试脚本与
+AI agent 用的诊断功能，与版本号、构建类型放在一起，用户一眼能看出“开发版默认开启”。
 """
 
 from dataclasses import dataclass
@@ -22,13 +30,15 @@ from typing import Final
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
+from lst.contracts.automation import AutomationStatus, BuildFlavor
 from lst.contracts.events import EngineHealth, WorkerStatus
 from lst.contracts.ports import WorkerState
 from lst.contracts.updates import UpdateErrorCode, UpdateState, UpdateStatus
 from lst.ui.common.text import PROGRESS_STEPS, clamp_fraction, format_size, progress_steps
 from lst.ui.i18n import error_text, tr
+from lst.ui.settings import strings_automation  # noqa: F401  # pyright: ignore[reportUnusedImport]  登记文案
 from lst.ui.settings.cards import Binding, CardBuilder, FieldDef
-from lst.ui.settings.controls import SettingCard, ThemedLabel
+from lst.ui.settings.controls import SettingCard, ThemedLabel, ToggleSwitch
 from lst.ui.settings.dialogs import Dialogs
 from lst.ui.settings.pages import SettingsPage
 from lst.ui.settings.presenter import CheckFeedback, SettingsPresenter, Topic
@@ -300,6 +310,70 @@ class UpdateCard(SettingCard):
             self._dialogs.open_url(self.view.notes_url)
 
 
+# ---------------------------------------------------------------- 自动化接口
+
+
+def version_text(version: str, flavor: BuildFlavor) -> str:
+    """关于页的版本行：开发版在版本号后注明“开发版”。版本号为空时返回空串。"""
+    if not version:
+        return ""
+    if flavor is BuildFlavor.DEV:
+        return tr("settings.about.version.flavor", version=version, flavor=tr("settings.flavor.dev"))
+    return tr("settings.about.version", version=version)
+
+
+def automation_status_text(status: AutomationStatus | None) -> tuple[str, bool]:
+    """自动化接口卡片下方的状态行与它是否是错误。"""
+    if status is None:
+        return tr("settings.automation.missing"), False
+    if status.enabled and not status.listening:
+        return tr("settings.automation.error", reason=status.error or "—"), True
+    if status.listening:
+        return tr("settings.automation.listening", pipe=status.pipe), False
+    return tr("settings.automation.off"), False
+
+
+class AutomationCard(SettingCard):
+    """自动化接口的开关。说明里写清风险，后面注明这个构建类型的默认值；下方一行是当前状态。"""
+
+    def __init__(self, presenter: SettingsPresenter) -> None:
+        self.switch = ToggleSwitch()
+        super().__init__(self.switch, icon=Glyph.LINK)
+        self._presenter = presenter
+        self.status_label = ThemedLabel("secondary", TOKENS.caption_px)
+        self.status_label.setWordWrap(True)
+        self.status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details = QWidget()
+        column = QVBoxLayout(details)
+        column.setContentsMargins(self.icon_label.width() + TOKENS.spacing_l, 0, 0, 0)
+        column.addWidget(self.status_label)
+        root = self.layout()
+        if isinstance(root, QVBoxLayout):
+            root.insertWidget(1, details)
+        self.switch.clicked.connect(self._toggled)
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        flavor = self._presenter.flavor
+        default = tr(f"settings.automation.default.{flavor.value}")
+        desc = tr("settings.automation.desc")
+        description = tr("settings.automation.desc.full", desc=desc, default=default)
+        self.set_texts(tr("settings.automation.title"), description)
+        self.switch.setAccessibleName(tr("settings.automation.title"))
+        self.refresh()
+
+    def refresh(self) -> None:
+        status = self._presenter.automation
+        self.switch.setEnabled(status is not None)
+        self.switch.setChecked(status is not None and status.enabled)
+        text, error = automation_status_text(status)
+        self.status_label.setText(text)
+        self.status_label.set_role("critical" if error else "secondary")
+
+    def _toggled(self) -> None:
+        self._presenter.set_automation_enabled(self.switch.isChecked())
+
+
 # ---------------------------------------------------------------- 页面
 
 
@@ -363,11 +437,15 @@ class AboutPage(SettingsPage):
         self.export_card.hide_header()
         self.add_card(self.export_card)
 
+        self.add_title("settings.section.automation")
+        self.automation_card = AutomationCard(presenter)
+        self.add_card(self.automation_card)
+
     def retranslate(self) -> None:
         super().retranslate()
         self.name_label.setText(tr("settings.about.name"))
         version = self.presenter.app_version
-        self.version_label.setText(tr("settings.about.version", version=version) if version else "")
+        self.version_label.setText(version_text(version, self.presenter.flavor))
         self.version_label.setVisible(bool(version))
         self.tagline_label.setText(tr("settings.about.tagline"))
         self.export_button.setText(tr("settings.about.export"))
@@ -375,6 +453,7 @@ class AboutPage(SettingsPage):
         self.export_button.setToolTip(tr("settings.about.export.tip"))
         self.workers_empty.setText(tr("settings.about.workers.none"))
         self.update_card.retranslate()
+        self.automation_card.retranslate()
         self._sync_workers()
 
     def refresh_all(self) -> None:
@@ -386,6 +465,8 @@ class AboutPage(SettingsPage):
         super().refresh(topic)
         if topic is Topic.WORKERS:
             self._sync_workers()
+        elif topic is Topic.AUTOMATION:
+            self.automation_card.refresh()
         elif topic in (Topic.UPDATES, Topic.CONFIG):
             self._sync_updates()
 
@@ -447,10 +528,13 @@ class AboutPage(SettingsPage):
 __all__ = [
     "RESTARTABLE_STATES",
     "AboutPage",
+    "AutomationCard",
     "UpdateCard",
     "UpdateView",
+    "automation_status_text",
     "build_update_view",
     "update_status_text",
+    "version_text",
     "worker_name",
     "worker_state_text",
 ]

@@ -109,6 +109,26 @@ def test_clean_drops_empty_text_blocks_and_duplicate_blocks_in_structure_mode() 
     assert [b.id for b in out] == ["0", "2", "4"]
 
 
+def test_clean_keeps_every_block_with_recognized_text_in_structure_mode() -> None:
+    # 截屏测试页的版面：正文块只有 text 没有 lines（PaddleX 给的 content），按钮与表格是一个 image 块，
+    # 文字在它的 lines 里。默认清洗只去掉空白行，有文字的块与图片块里的文字行都留下。
+    words = [
+        line(49, 374, 144, 414, "Public"),
+        line(202, 374, 274, 415, "Star"),
+        line(33, 519, 143, 558, " "),
+    ]
+    image = LayoutBlock("3", BlockCategory.IMAGE, BBox(19, 361, 897, 688), 3, 0.61, lines=tuple(words))
+    blocks = (
+        block("0", (15, 12, 588, 49), 0, text="Screenshot translation test", category=BlockCategory.TITLE),
+        block("1", (13, 102, 876, 187), 1, text="The file could not be found."),
+        block("2", (13, 235, 851, 320), 2, text="Your changes have been saved."),
+        image,
+    )
+    out = CleanStep().apply(blocks, STRUCTURE)
+    assert [b.id for b in out] == ["0", "1", "2", "3"]
+    assert [entry.text for entry in out[3].lines] == ["Public", "Star"]
+
+
 def test_clean_with_defaults_keeps_everything_meaningful() -> None:
     lines = stack(10, 10, [300, 280, 120], texts=["a", "b", "c"])
     (out,) = CleanStep().apply((container(lines),), TEXT)

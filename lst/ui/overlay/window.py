@@ -1219,7 +1219,13 @@ class OverlayWindow(QWidget):
         for item in self.visible_items():
             outer = bbox_to_view(item.bbox, k)
             outer_rect = QRectF(outer.x, outer.y, outer.width, outer.height)
-            if item.chart is None:
+            preserve = item.view is not None and item.view.skip_reason is SkipReason.NO_TEXT
+            if preserve:
+                source = item.bbox
+                painter.drawImage(
+                    outer_rect, self._image, QRectF(source.x0, source.y0, source.width, source.height)
+                )
+            elif item.chart is None:
                 painter.fillRect(outer_rect, self._panel)
             inner = self._inner_device(item)
             box = self._text_box(item)
@@ -1232,14 +1238,15 @@ class OverlayWindow(QWidget):
                     painter.fillRect(rect.translated(origin), selection)
             painter.setPen(self._text_color)
             fading = item.fade_from is not None and item.segment_id in self._fading
-            if fading and item.fade_from is not None:
+            if not preserve and fading and item.fade_from is not None:
                 progress = self.fade_progress(item.segment_id)
                 painter.setOpacity(1.0 - progress)
                 old_px = item.fade_px if item.fade_px is not None else self.font_px(item)
                 old = self._fade_box(item, item.fade_from, old_px)
                 old.layout.draw(painter, QPointF(inner.x, inner.y + old.top))
                 painter.setOpacity(progress)
-            box.layout.draw(painter, origin)
+            if not preserve:
+                box.layout.draw(painter, origin)
             painter.restore()
             if self._markers and item.view is not None and item.view.shown_engine is not None:
                 color = self._colors.get(item.view.shown_engine) or engine_color(item.view.shown_engine)

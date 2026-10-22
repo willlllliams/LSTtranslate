@@ -32,8 +32,9 @@ def sha256_line(data: bytes, name: str, *, star: bool = False) -> str:
     return f"{hashlib.sha256(data).hexdigest()} {'*' if star else ' '}{name}\n"
 
 
-def setup_name(version: str) -> str:
-    return f"LSTtranslate-{version}-setup.exe"
+def setup_name(version: str, flavor: str = "normal") -> str:
+    suffix = "-dev" if flavor == "dev" else ""
+    return f"LSTtranslate-{version}{suffix}-setup.exe"
 
 
 def asset(name: str, tag: str, size: int) -> dict[str, object]:
@@ -52,15 +53,20 @@ def release(
     with_installer: bool = True,
     with_checksum: bool = True,
     size: int = 5000,
+    flavors: Sequence[str] = ("normal",),
 ) -> dict[str, object]:
-    """版本列表里的一项，字段与 GitHub REST API 的 release 对象相同（只取用到的字段）。"""
+    """版本列表里的一项，字段与 GitHub REST API 的 release 对象相同（只取用到的字段）。
+
+    flavors 是附带安装包的构建类型：同一个版本可以同时放普通版与开发版（-dev-setup.exe）两个安装包。
+    """
     version = tag.removeprefix("v")
-    name = setup_name(version)
     assets: list[dict[str, object]] = []
-    if with_installer:
-        assets.append(asset(name, tag, size))
-    if with_checksum:
-        assets.append(asset(name + ".sha256", tag, 90))
+    for flavor in flavors:
+        name = setup_name(version, flavor)
+        if with_installer:
+            assets.append(asset(name, tag, size))
+        if with_checksum:
+            assets.append(asset(name + ".sha256", tag, 90))
     return {
         "tag_name": tag,
         "name": f"LSTtranslate {version}",

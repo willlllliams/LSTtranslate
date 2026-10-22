@@ -1,5 +1,11 @@
 ; LSTtranslate 安装脚本（需求 INS-01 至 INS-07，架构文档第 15 章）。
-; 由 scripts\build_installer.py 调用 ISCC 编译，命令行传入 AppVersion、StageDir、OutputDir。
+; 由 scripts\build_installer.py 调用 ISCC 编译，命令行传入 AppVersion、StageDir、OutputDir、Flavor、MarkerDir。
+;
+; 构建类型（需求 DEV-02、DEV-08，架构文档 16.6 节）：Flavor 是 normal（普通版）或 dev（开发版）。两种安装包的
+; 程序文件相同，AppId 也相同，互相覆盖安装，安装后的启动方式相同；区别只有 {app}\app\installed.json：
+; 暂存目录里那份是构建脚本自检用的，这里排除它，改装 MarkerDir 下按 Flavor 写好的 installed.json
+; （flavor 字段决定自动化接口的默认开关与应用内更新下载哪一种安装包）。开发版的安装包名多一段 -dev：
+; LSTtranslate-<版本>-dev-setup.exe。
 ;
 ; 当前用户安装，不需要管理员权限：{autopf} 在 PrivilegesRequired=lowest 时是 %LOCALAPPDATA%\Programs。
 ; 程序运行时持有命名互斥体 LSTtranslate.Running，安装、升级、卸载时据此提示用户关闭程序。
@@ -34,6 +40,19 @@
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
+#ifndef Flavor
+  #define Flavor "normal"
+#endif
+#ifndef MarkerDir
+  #define MarkerDir "..\build\flavors\" + Flavor
+#endif
+#if Flavor == "dev"
+  #define FlavorSuffix "-dev"
+#elif Flavor == "normal"
+  #define FlavorSuffix ""
+#else
+  #error Flavor must be normal or dev
+#endif
 
 [Setup]
 ; AppId 用来识别同一个软件，升级时据此覆盖安装，发布后不能再改。
@@ -54,7 +73,7 @@ AppMutex=LSTtranslate.Running
 CloseApplications=yes
 RestartApplications=no
 OutputDir={#OutputDir}
-OutputBaseFilename=LSTtranslate-{#AppVersion}-setup
+OutputBaseFilename=LSTtranslate-{#AppVersion}{#FlavorSuffix}-setup
 SetupIconFile=..\assets\icons\lsttranslate.ico
 UninstallDisplayIcon={app}\app\assets\icons\lsttranslate.ico
 UninstallDisplayName={#AppName}
@@ -87,7 +106,9 @@ Type: filesandordirs; Name: "{app}\launcher"
 Type: filesandordirs; Name: "{app}\tools"
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "\app\installed.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 安装版标记按构建类型取，见文件头的说明。
+Source: "{#MarkerDir}\installed.json"; DestDir: "{app}\app"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "-I -X utf8 ""{app}\launcher\lst_main.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\assets\icons\lsttranslate.ico"

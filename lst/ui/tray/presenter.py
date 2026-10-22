@@ -7,6 +7,8 @@
 
 菜单模型 ``TrayMenu`` 是纯数据，``build_menu`` 按当前界面语言生成它，所以菜单的条目、顺序、热键和状态文本
 都可以在没有 Qt 对象的情况下检查。
+
+自动化接口开启期间（AutomationStatus.listening），悬停提示多一行“自动化接口已开启”（需求 DEV-03）。
 """
 
 import logging
@@ -16,6 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol
 
+from lst.contracts.automation import AutomationStatus
 from lst.contracts.config import AppConfig, ConfigRejected
 from lst.contracts.events import (
     EngineHealth,
@@ -420,10 +423,15 @@ def build_menu(
     engines: EngineStatuses | None,
     hotkeys: Hotkeys,
     update: UpdateStatus | None = None,
+    *,
+    automation: bool = False,
 ) -> TrayMenu:
-    """按当前界面语言生成完整的菜单模型（需求 TR-02、TR-03）。update 决定“检查更新”菜单项的文字。"""
+    """按当前界面语言生成完整的菜单模型（需求 TR-02、TR-03）。update 决定“检查更新”菜单项的文字；
+    automation 为真时悬停提示多一行“自动化接口已开启”。"""
     lines = [*worker_lines(workers), *engine_lines(engines)]
     tooltip = tr("tray.tooltip", app=app_name, status=overall_status([line.health for line in lines]))
+    if automation:
+        tooltip = tr("tray.tooltip.automation", tooltip=tooltip, notice=tr("tray.automation_on"))
     if not lines:
         lines = [StatusLine("none", tr("tray.status.none"), EngineHealth.DISABLED)]
     shortcuts = {TrayAction.CAPTURE: hotkeys.capture, TrayAction.BILINGUAL: hotkeys.bilingual}
@@ -498,6 +506,7 @@ class TrayPresenter:
         self._engines: EngineStatuses | None = None
         self._hotkeys = Hotkeys()
         self._update: UpdateStatus | None = None
+        self._automation = False
         # 用户从菜单发起、还没有结果的更新操作；armed 表示已经看到更新服务接受了这次操作。
         self._update_operation: UpdateOperation | None = None
         self._update_armed = False
@@ -529,6 +538,7 @@ class TrayPresenter:
             subscribe(HotkeyRegistrationFailed, self._on_hotkey_failed),
             subscribe(ConfigRejected, self._on_config_rejected),
             subscribe(UpdateStatus, self._on_update_status),
+            subscribe(AutomationStatus, self._on_automation),
         ]
 
     def close(self) -> None:
@@ -551,7 +561,14 @@ class TrayPresenter:
         """按当前状态和界面语言重新生成菜单；与上次相同时不打扰视图。"""
         if self._closed:
             return
-        menu = build_menu(self._app_name, self._workers, self._engines, self._hotkeys, self._update)
+        menu = build_menu(
+            self._app_name,
+            self._workers,
+            self._engines,
+            self._hotkeys,
+            self._update,
+            automation=self._automation,
+        )
         if menu != self._last_menu:
             self._last_menu = menu
             self._view.render(menu)
@@ -601,6 +618,10 @@ class TrayPresenter:
 
     def _on_engine_statuses(self, message: EngineStatuses) -> None:
         self._engines = message
+        self.refresh()
+
+    def _on_automation(self, message: AutomationStatus) -> None:
+        self._automation = message.listening
         self.refresh()
 
     def _on_app_config(self, message: AppConfig) -> None:

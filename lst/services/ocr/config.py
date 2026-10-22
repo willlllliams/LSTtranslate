@@ -74,6 +74,23 @@ AUTO_LANGUAGE: Final = "auto"
 MIN_RESIZE_SIDE: Final = 256
 """resize_max_side 非零时的下限。再小的图像里文字只剩几个像素，识别没有意义。"""
 
+MAX_DET_BOX_THRESH: Final = 0.7
+"""PaddleOCR 检测框阈值（[ocr_paddle].text_det_box_thresh）的上限。
+
+DB 检测的框得分是框内各像素文字概率的平均值，PaddleX 丢弃得分低于阈值的框（paddlex 3.7
+text_detection/processors.py 的 ``if box_thresh > score: continue``）。平均概率达不到 1，阈值取 1 时
+一个框也留不下。截屏测试页（tests/workers/ocr/fixtures/screenshot_test_page.jpg）上 18 个文字行的
+得分如下，原图与放大 1.5 倍各测一次：
+
+- PP-OCRv5_server_det：0.84 至 0.98；
+- PP-OCRv5_mobile_det：0.75 至 0.95；
+- PP-OCRv3_mobile_det：0.70 至 0.93。
+
+检测一行也没有时，PP-StructureV3 把每个没有文字的版面块整块裁下来当作一行识别（paddlex 3.7
+layout_parsing/pipeline_v2.py 的 standardized_data），两行以上的段落识别成空串或一两个字母，正文就丢了。
+0.7 是 PaddleX 文本检测模块自己的默认值，也是上面三个模型里清晰文字行得分的下沿。
+"""
+
 STAGE_KEY: Final = "ocr_stage"
 ADVANCED_KEY: Final = "advanced"
 RELOAD_KEY: Final = "reload"
@@ -426,7 +443,14 @@ class PaddleOcrConfig(PipelineConfig):
     text_det_thresh: float = param(
         0.3, "检测像素阈值", "文字概率图二值化的阈值，越低越容易检出浅色、细小的文字。", ge=0.0, le=1.0
     )
-    text_det_box_thresh: float = param(0.6, "检测框阈值", "文本框平均得分低于该值时丢弃。", ge=0.0, le=1.0)
+    text_det_box_thresh: float = param(
+        0.6,
+        "检测框阈值",
+        "文本框平均得分低于该值时丢弃。上限 0.7：截图里清晰的文字行得分在 0.7 至 0.98 之间，"
+        "阈值再高会丢掉正常的文字行。",
+        ge=0.0,
+        le=MAX_DET_BOX_THRESH,
+    )
     text_det_unclip_ratio: float = param(
         1.5, "文本框外扩系数", "检测框向外扩张的比例。", ge=1.0, le=4.0, advanced=True
     )

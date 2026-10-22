@@ -524,6 +524,8 @@ lst/
     settings/       设置窗口
     onboarding/     首次运行引导
   app/              组合根：启动流程、进程监管、端口实现、模块装配
+    automation/     自动化接口的服务端：命名管道、方法表、会话记录（第 16 章）
+  automation/       自动化接口的客户端与线路协议，只依赖标准库（第 16 章）
 ```
 
 ### 4.2 依赖规则
@@ -536,6 +538,7 @@ lst/
 | `ui.*` | `kernel`、`contracts`、`ui.theme`、`ui.i18n`、Qt；同层其他模块之间互不依赖 |
 | `workers.*` | `contracts`、推理库 |
 | `app` | 全部 |
+| `automation` | 标准库 |
 
 规则写在 `pyproject.toml` 的 import-linter 契约里，`tests/architecture` 中的测试在每次运行 pytest 时检查（`MNT-01`）。这张表落实了三条需求：
 
@@ -562,7 +565,9 @@ class Module(Protocol):
 
 1. `services.config`；
 2. 业务模块：`stats`、`cache`、`models`、`engines`、`race`、`ocr_engines`、`ocr`、`updates`；
-3. 界面模块：`capture`、`overlay`、`tray`、`hotkeys`、`bilingual`、`settings`，最后是 `onboarding`。
+3. 界面模块：`capture`、`overlay`、`tray`、`hotkeys`、`bilingual`、`settings`；
+4. 自动化接口 `app.automation`（第 16 章），它直接操作截屏、覆盖窗口与设置窗口，所以排在它们之后，退出时先于它们关掉管道；
+5. 最后是 `onboarding`。
 
 截屏与覆盖窗口排在全部业务模块之后：`CaptureCompleted` 的订阅顺序因此是 OCR、竞速在前，覆盖窗口在后，识别请求先提交，再创建窗口。托盘先于热键启动，热键注册失败的通知要有托盘接收。首次运行引导最后启动，它可能在 `start` 里立即弹出窗口，这时其他模块都已就绪。退出时按相反顺序停止。
 
@@ -1406,7 +1411,7 @@ class NormalizeStep(Protocol):
     def apply(self, blocks: Sequence[LayoutBlock], context: NormalizeContext) -> tuple[LayoutBlock, ...]: ...
 ```
 
-输入输出都是按阅读顺序排列的版面块，步骤之间只通过版面块传递信息，版面块本身不可变，步骤不修改输入。`NormalizeContext` 携带截图的物理像素宽高与是否文本模式。`NormalizePipeline` 依次执行各步骤，`build_pipeline` 按 `[ocr_normalize]` 节组装；全部步骤关闭时管线为空，版面块原样通过。这一节只在主进程里生效，没有需要重载 OCR 进程的字段。
+输入输出都是按阅读顺序排列的版面块，步骤之间只通过版面块传递信息，版面块本身不可变，步骤不修改输入。`NormalizeContext` 携带截图的物理像素宽高、是否文本模式与可选的原始像素帧。`NormalizePipeline` 依次执行各步骤，`build_pipeline` 按 `[ocr_normalize]` 节组装；全部步骤关闭时管线为空，版面块原样通过。这一节只在主进程里生效，没有需要重载 OCR 进程的字段。
 
 #### 8.7.1 步骤的顺序
 
@@ -1439,7 +1444,9 @@ class NormalizeStep(Protocol):
 聚合（`AggregateStep`）按模式分两种：
 
 - 文本模式：全部正文块的文本行一起交给段落合并器（默认 `GeometricMerger`，阈值来自配置），每个段落成为一个新的正文块，id 为 `p<序号>`，lines 是成员行，text 是成员行拼成的段落文本。段落块排在原来第一个正文块的位置；
-- 版面模式：PP-StructureV3 的块已经是段落级，可选把阅读顺序上相邻、上下间距不超过 `merge_block_gap` 倍行高、水平重叠不少于较窄一块宽度一半的两个正文块合并成一块。
+- 版面模式：先结合截图颜色、笔画粗细与间距拆开模型粘连的菜单和控件，连续正文保留为段落；再可选把阅读顺序上相邻、上下间距不超过 `merge_block_gap` 倍行高、水平重叠不少于较窄一块宽度一半的两个正文块合并成一块。
+
+有截图像素时，`ImageAppearance` 提取前景色与字形高度，并估计完整像素采样中的笔画粗细。颜色按亮度对比度加权，抑制 ClearType 彩色边缘。短行里的不同颜色或明显不同间距的控件可以按文字投影拆开。编号、评分符号等附属片段与同一行的文字一起处理。没有像素证据时使用原有几何规则；截图样本与指标见 `docs/ocr-quality.md`。
 
 #### 8.7.3 默认值
 
@@ -1447,14 +1454,14 @@ class NormalizeStep(Protocol):
 |---|---|---|
 | 清洗 | 开 | 最低置信度 0（不按置信度丢弃），最小面积 1 平方像素，重复框 IoU 0.9 |
 | 拆分 | 关 | 栏间空白至少 1.5 倍行高，上下各看 3 倍行高 |
-| 聚合：段落合并 | 开 | 与 `MergeParams` 的默认值相同 |
+| 聚合：文字单元整理 | 开 | `MergeParams` 几何参数，加上截图颜色、笔画与间距判断 |
 | 聚合：相邻正文块合并 | 关 | 间距上限 0.8 倍行高 |
 
-默认值让行为与没有中间层时相同：清洗只去掉空文字、零面积与 IoU 不小于 0.9 的重复框；拆分关闭；段落合并的阈值不变。回归样本（`tests/services/ocr/fixtures`）在默认配置下的段落完全匹配率与直接调用 `GeometricMerger` 相同。
+清洗默认去掉空文字、零面积与 IoU 不小于 0.9 的重复框，跨栏拆分默认关闭。没有截图像素的既有段落回归样本继续使用原有几何规则，匹配率与直接调用 `GeometricMerger` 相同；实际截图另外使用带人工标注的保真度回归。
 
 #### 8.7.4 与分段的衔接
 
-文本模式下，聚合步骤已经把文本行合并成段落块，`blocks_to_segments` 以 premerged 方式一块一段，段号仍是 `p<序号>`，与没有中间层时完全相同。聚合关闭时文本行保持原样，`OcrModule` 用 `LineMerger` 一行一段。版面模式下块本身就是段落级，照常一块一段。
+文本模式下，聚合步骤已经把文本行合并成段落块，`blocks_to_segments` 以 premerged 方式一块一段，段号是 `p<序号>`。聚合关闭时文本行保持原样，`OcrModule` 用 `LineMerger` 一行一段。版面模式下，整理后的文本类块一块一段。
 
 `OcrCompleted.blocks` 是归一化之后的版面块。文本模式下，这些块是段落块，不再是 OCR 进程返回的那个覆盖整张截图的容器块。覆盖窗口按段的范围渲染，不受影响。
 
@@ -1814,7 +1821,7 @@ $$
 1. 底图与半透明层；
 2. 公式、图片、图表块：画原图（`OV-03`）；
 3. 表格块：画单元格的网格线；
-4. 各段：先在段的包围盒内铺一层与底图同色调、不透明度较高的底（alpha 约 210），再画选中文字的底色，最后画译文或原文。图表数据表的段只在点开图表后显示，数据表的单元格按行列数均分图表块的范围；
+4. 各段：先在段的包围盒内铺一层与底图同色调、不透明度较高的底（alpha 约 210），再画选中文字的底色，最后画译文或原文。图表数据表的段只在点开图表后显示，数据表的单元格按行列数均分图表块的范围。图片块、没有数据表的图表块和没有单元格网格的表格块里，每个文本行是一个段，画在第 2 步的原图之上（段的规则见 `lst/services/ocr/segments.py` 的模块说明）；
 5. 来源标记（段左侧的色条）、右下角的进度（`OV-07`）、固定状态的边框，以及“识别中”“识别失败”等状态文字。
 
 段的文字用 `QTextLayout` 排版后由 `QTextLayout.draw` 画出，排版规则与选中底色的画法见 11.5.6 节。
@@ -2426,6 +2433,8 @@ capture_cancel = ["Esc", "RightClick", "MiddleClick"]
 
 键位变化时正在进行的拖动按按下时的键位做完：`MouseGestures` 在按下时就记下了拖动操作，换键位表只影响之后的按下。
 
+## 12 测试策略
+
 | 层次 | 对象 | 工具 | 运行时机 |
 |---|---|---|---|
 | 单元测试 | contracts、kernel、services 各模块 | pytest、pytest-asyncio | 每次运行 pytest |
@@ -2437,6 +2446,7 @@ capture_cancel = ["Esc", "RightClick", "MiddleClick"]
 | 回归测试 | 段落合并、版面结果转换、版面标签映射 | 录制的真实 OCR 输出加人工标注的段落，指标是段落完全匹配率，低于基线即失败 | 每次运行 pytest |
 | 界面测试 | 展示器、截屏坐标换算、字号适配、焦点顺序 | pytest-qt，使用 offscreen 平台 | 每次运行 pytest |
 | 架构测试 | 模块依赖规则 | import-linter，由 `tests/architecture` 中的测试调用 | 每次运行 pytest |
+| 自动化接口测试 | 管道的权限与协议、各个方法、开关与构建类型 | `tests/automation` 建真实的命名管道；`tests/integration/screenshot` 经接口驱动真实的组合根，其中一个用真实的 Windows OCR 与 NMT 进程 | 每次运行 pytest |
 | 性能测试 | 需求 6.1 节的全部指标 | `scripts/bench_*.py`，在真实硬件上手动运行，结果记入文档 | 每个里程碑 |
 | 静态检查 | 全部代码 | basedpyright strict、ruff | 每次运行 `scripts/check.bat` |
 
@@ -2471,6 +2481,7 @@ capture_cancel = ["Esc", "RightClick", "MiddleClick"]
 | `MNT-01` 至 `MNT-05` | 第 4 章、第 12 章 |
 | `INS-01` 至 `INS-09` | 第 15 章 |
 | `UPD-01` 至 `UPD-06` | 15.9 节 |
+| `DEV-01` 至 `DEV-08` | 第 16 章、15.6 节（构建类型）、15.9 节（按构建类型选安装包） |
 
 ## 14 实施顺序
 
@@ -2557,7 +2568,7 @@ unins000.exe    卸载程序（Inno Setup 生成）
 
 ### 15.6 构建
 
-在仓库根目录运行 `uv run python scripts/build_installer.py`，步骤：
+在仓库根目录运行 `uv run python scripts/build_installer.py`。`--flavor normal|dev` 选构建类型，缺省 `normal`；`--all` 用同一份暂存目录依次编译两种（16.6 节）。步骤：
 
 1. 复制 uv 管理的独立版 CPython 3.13 到暂存目录，去掉用不到的部分；
 2. `uv export` 按 `uv.lock` 导出主进程依赖，`uv pip install --target` 安装到 `site\main`；
@@ -2569,9 +2580,9 @@ unins000.exe    卸载程序（Inno Setup 生成）
 4. 复制本机 `uv.exe` 与许可证到 `tools\`；
 5. 复制程序代码、图标、启动器、`THIRD-PARTY-NOTICES` 与 `licenses\`，预编译 `.pyc`，写入 `installed.json`；
 6. 用安装布局实际导入主进程的关键模块，并运行 `tools\uv.exe --version`，失败则中止构建；
-7. 调用 Inno Setup 编译，输出 `dist\LSTtranslate-<版本>-setup.exe`，并在旁边生成 `.sha256` 校验文件（sha256sum 格式），供应用内更新校验。
+7. 每种构建类型写一份 `build\flavors\<类型>\installed.json`，调用 Inno Setup 编译，输出 `dist\LSTtranslate-<版本>-setup.exe`（普通版）或 `dist\LSTtranslate-<版本>-dev-setup.exe`（开发版），并在每个安装包旁边生成 `.sha256` 校验文件（sha256sum 格式），供应用内更新校验。
 
-构建开头用更新服务的 `parse_version` 校验版本号，不是规范的语义化版本就中止。PEP 440 的写法（`0.2.0b1`）更新服务解析不了，用了会让更新功能整体失效，所以预发布版本要写成 `0.2.0-beta.1`；运行时读到包元数据里归一化后的 PEP 440 写法，由 `semver_text` 换算回来。生成哈希清单的 `uv pip compile` 带 `--no-config --only-binary :all:`，只发布源码包的依赖在构建阶段就会失败。
+构建开头用更新服务的 `parse_version` 校验版本号，不是规范的语义化版本就中止；版本号以 `-dev` 结尾时也中止，它的普通版安装包会与上一个版本号的开发版安装包同名。PEP 440 的写法（`0.2.0b1`）更新服务解析不了，用了会让更新功能整体失效，所以预发布版本要写成 `0.2.0-beta.1`；运行时读到包元数据里归一化后的 PEP 440 写法，由 `semver_text` 换算回来。生成哈希清单的 `uv pip compile` 带 `--no-config --only-binary :all:`，只发布源码包的依赖在构建阶段就会失败。
 
 第 6 步的自检还检查：主环境能导入 Windows OCR 后端与 pywinrt；keyring 的后端是 Windows 凭据管理器；通过真实的 `launcher\worker.py` 分别启动 NMT 与 OCR 进程入口（不带地址参数，期望以配置错误退出，证明按安装布局导入成功，全程不联网）；每份版本清单的格式，以及是否带哈希与构建参数一致。
 
@@ -2627,10 +2638,238 @@ GPU 加速列入后续版本，做法与模型相同：把 `nvidia-cublas-cu12` 
 
 `services.updates` 发布 `UpdateStatus`（契约见 `lst/contracts/updates.py`），处理 `CheckForUpdates`、`DownloadUpdate`、`InstallUpdate`（`UPD-01` 至 `UPD-06`）：
 
-- 版本来源：`GET https://api.github.com/repos/willlllliams/LSTtranslate/releases`（`/releases/latest` 不返回预发布版本）。只考虑同时带安装包与 `.sha256` 附件的版本，按语义化版本比较（含预发布后缀），`[updates].include_prerelease` 为假时跳过预发布。不需要任何认证，日志里的地址去掉查询参数。
+- 版本来源：`GET https://api.github.com/repos/willlllliams/LSTtranslate/releases`（`/releases/latest` 不返回预发布版本）。只考虑同时带本构建类型的安装包与它的 `.sha256` 附件的版本：普通版找 `LSTtranslate-<版本>-setup.exe`，开发版找 `LSTtranslate-<版本>-dev-setup.exe`，按文件名完全相等匹配（16.6 节），按语义化版本比较（含预发布后缀），`[updates].include_prerelease` 为假时跳过预发布。不需要任何认证，日志里的地址去掉查询参数。
 - 自动检查：启动 30 秒后检查一次，之后按 `[updates].check_interval_hours`（默认 24）检查；最近一次检查与已通知的版本写在数据目录的 `updates.json`，重启后不重复检查，同一版本只通知一次。自动检查失败只记日志；手动检查失败进入 ERROR，托盘给出原因。
 - 下载：先取 `.sha256` 文件，要求文件名与安装包一致；安装包流式写入 `tmp\updates\` 的 `.part`，在线程里边写边算 SHA-256，一致才改名并进入 READY。启动时清理 `.part` 与不高于当前版本的旧安装包。
 - 安装：以分离进程运行安装包（`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，不继承句柄），参数见 15.4 节，成功后发布 `QuitRequested`。源码运行时只检查，下载与安装命令进入 `update.not_installed`。
 - 托盘菜单有“检查更新”；发现新版本后变为“安装更新 x.y.z”，先下载、再安装，下载中显示进度。
 - 命令只生效一次：下载命令在第一次等待之前就进入 DOWNLOADING，安装命令同样先置标志，双击按钮或托盘与设置窗口同时发命令时不会并发下载、不会启动两个安装程序。DOWNLOADING、READY、INSTALLING 状态下的检查命令被忽略，但会重新发布一次当前状态，界面不会停在“正在检查”。
 - 下载目录只保留当前可用版本的安装包：启动时删除不高于当前版本的，每次检查成功后删除已被更新版本取代的。
+
+## 16 自动化接口
+
+本章落实需求 5.13 节（`DEV-01` 至 `DEV-08`）。自动化接口让同一台电脑上以当前用户身份运行的程序，例如测试脚本和 AI agent，通过程序自己的命名管道驱动并检查真实的交互：截屏翻译、覆盖窗口上的操作、键位、设置、存储位置迁移和立即重启。驱动走程序内部的同一条链路，不模拟操作系统的键盘鼠标，所以不需要窗口在前台，也不会和用户自己的操作抢输入。给 agent 的使用说明在 `docs/automation.md`。
+
+代码分两处。客户端与线路协议在 `lst/automation/`，只依赖标准库，安装版的启动器可以直接运行它；服务端在组合根旁边的 `lst/app/automation/`，因为它要同时调用截屏、覆盖窗口和设置窗口三个界面模块，而界面模块之间互不依赖（4.2 节），只有 `app` 层能同时看到它们。
+
+### 16.1 构建类型与开关
+
+构建类型（`BuildFlavor`，`lst/contracts/automation.py`）有普通版（`normal`）和开发版（`dev`）两种。两种构建的程序文件完全相同，区别只在开关的默认值：开发版开启，普通版关闭。构建类型按下面的顺序确定（`lst/app/flavor.py`）：
+
+- 安装版读 `app\installed.json` 的 `flavor` 字段，由构建脚本写入。字段缺失（旧版本的安装包）或取值不认识时按普通版处理。安装版不接受命令行参数和环境变量的覆盖，因为构建类型还决定应用内更新下载哪一种安装包（16.6 节），一个环境变量不应把普通版升级成开发版；
+- 源码版先看命令行参数 `--flavor normal|dev`，再看环境变量 `LST_FLAVOR`，都没有时是普通版。
+
+开关是配置的 `[automation].enabled`，类型为 `bool | None`，默认 `None`。生效的开关按下式计算：
+
+$$
+\text{enabled} =
+\begin{cases}
+\text{配置里的 enabled}, & \text{配置文件写了 enabled},\\
+\text{flavor} = \text{dev}, & \text{配置文件没有写}.
+\end{cases}
+$$
+
+默认值取 `None` 而不取某个布尔值，原因在配置服务生成默认配置文件的方式：`render_default` 把每一节的默认值写进文件，值为 `None` 的字段跳过（TOML 没有空值）。如果默认值是 `False`，普通版第一次运行就会在文件里写下 `enabled = false`，用户之后换装开发版，这个并非用户写下的值会让开关继续关闭。用 `None` 时，没有动过开关的用户换装另一种构建，开关跟着新构建的默认值走；用户在设置里打开或关闭过一次之后，文件里有了明确的 `true` 或 `false`，以后无论装哪种构建都以它为准。下面三种情形对应上式的两个分支：
+
+| 配置文件 | 普通版 | 开发版 |
+|---|---|---|
+| 没有 `enabled` | 关闭 | 开启 |
+| `enabled = true` | 开启 | 开启 |
+| `enabled = false` | 关闭 | 关闭 |
+
+自动化接口模块（`AutomationModule`）订阅 `AppConfig`，每次配置变化都按上式重新计算。开关打开时建立管道，关闭时撤掉管道，不需要重启。模块发布 `AutomationStatus`（构建类型、开关、开关是否写在配置里、管道是否已经建好、管道名、建不起来时的原因），三处界面读它：
+
+- 托盘在管道建好期间，悬停提示多一行“自动化接口已开启”；
+- 设置的“关于与诊断”页有一张开关卡片，说明里写清风险和这种构建的默认值，下方一行显示正在监听的管道名或建不起来的原因。点开关发 `UpdateConfig {"automation": {"enabled": ...}}`；
+- 关于页的版本号后面，开发版注明“开发版”。
+
+本次运行里管道第一次建好时，托盘弹一条通知，提醒用户本机的程序现在可以控制 LSTtranslate。同一次运行里再次开关不重复通知。
+
+开关卡片放在“关于与诊断”页而不放在“常规”页：自动化接口是给测试脚本与 agent 用的诊断功能，与版本号、构建类型放在同一页，用户一眼能看到“开发版默认开启”这条说明和它的由来。
+
+### 16.2 管道与安全描述符
+
+管道名由当前用户的安全标识符（Security Identifier，SID）算出：固定前缀 `\\.\pipe\lsttranslate-automation-`，后接 SID 字符串的 SHA-256 摘要的前 12 位十六进制，例如 `\\.\pipe\lsttranslate-automation-3bafc7af28dd`。同一个用户在不同登录会话里得到同一个名字，不同用户的名字不同。环境变量 `LST_AUTOMATION_PIPE` 可以覆盖它，写完整的 `\\.\pipe\…` 或只写最后一段都可以；测试用它让每个测试有自己的管道，不会碰到用户正在运行的程序。
+
+管道用显式的安全描述符创建，写成安全描述符定义语言（Security Descriptor Definition Language，SDDL）是：
+
+```text
+O:<SID>D:P(A;;GA;;;<SID>)
+```
+
+各部分的含义：
+
+- `O:<SID>`：所有者是当前用户；
+- `D:P`：自主访问控制列表（Discretionary Access Control List，DACL）带保护标志，不从上级继承任何条目；
+- `(A;;GA;;;<SID>)`：唯一的一条允许条目，把全部权限给当前用户。
+
+SYSTEM、Administrators 组与其他用户都不在列表里。Windows 创建管道时把通用权限 GA 映射成文件对象的 FA（FILE_ALL_ACCESS），读回来的描述符是 `O:<SID>D:P(A;;FA;;;<SID>)`，测试按这个字符串逐项断言。管理员仍然可以凭“取得所有权”特权改写描述符，这是 Windows 给管理员的能力，任何对象都一样。描述符里没有写强制完整性标签，内核对象缺省按 Medium 完整性的“不可向上写”规则处理，Low 完整性的进程（浏览器沙箱、某些代码执行沙箱）打不开管道写入。
+
+创建管道还带三个标志：
+
+- `FILE_FLAG_FIRST_PIPE_INSTANCE`：第一个实例带上它。同名管道已经存在时创建失败，程序不会接到别人抢先建好的管道上；
+- `PIPE_REJECT_REMOTE_CLIENTS`：拒绝经网络连进来的客户端，只接受本机；
+- 字节流模式（`PIPE_TYPE_BYTE`）：消息边界由换行符决定，与读写的块大小无关。
+
+客户端也做两件事。打开管道时带 `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`，服务端最多只能识别客户端的身份，不能冒用它的权限；连上之后读管道的所有者，不是当前用户就断开，不把请求发给别人建的同名管道。
+
+### 16.3 服务端
+
+服务端运行在主进程的事件循环里。qasync 在 Windows 上的循环继承自 asyncio 的 `ProactorEventLoop`，用 I/O 完成端口收发，命名管道的连接、读、写都能直接交给它，实测在 qasync 与 asyncio 的缺省循环下都能工作。asyncio 自带的 `start_serving_pipe` 创建管道时不带安全描述符，用的是系统缺省的 DACL，里面有 SYSTEM、Administrators 和“所有人读”，所以服务端自己创建管道实例，再用循环的 proactor 完成 `ConnectNamedPipe`、`ReadFile`、`WriteFile`。proactor 是循环的内部属性 `_proactor`，CPython 3.8 至 3.13 的 `ProactorEventLoop` 与 qasync 都有它；循环没有它时开启失败，`AutomationStatus.error` 给出原因，程序其他部分照常运行。
+
+接受连接的方式与 `start_serving_pipe` 相同：始终保留一个空闲实例等下一个客户端，客户端连上后立即再建一个新实例，然后在这个连接上循环“读一行、处理、写回复”。多个客户端可以同时连接，各自的请求按顺序处理。请求在主线程上执行，方法可以直接读写模块和窗口。
+
+关闭分两步。先关掉空闲实例、停止接受，空闲的连接立即断开；正在处理请求的连接写完这次回复再断开。经接口关掉开关时，“关掉开关”的这一次 `settings.set` 因此照样收到回复。程序退出时组合根等这些连接结束，超过 2 秒仍在处理的请求被取消。
+
+线路协议是一行一个 JSON，UTF-8 编码：
+
+```text
+→ {"id": 1, "method": "capture", "params": {"rect": [0, 0, 800, 300]}}
+← {"id": 1, "result": {"session_id": "9f…", "mode": "direct", "rect": [0, 0, 800, 300]}}
+← {"id": 2, "error": {"code": "timeout", "message": "…", "data": {…}}}
+```
+
+`params` 可以省略。一行最长 1 MiB，超过时回复 `invalid_request` 并断开。错误码如下：
+
+| 错误码 | 含义 |
+|---|---|
+| `parse_error` | 请求不是合法的 UTF-8 JSON |
+| `invalid_request` | 不是 `{"id", "method", "params"}` 的形式，或一行太长 |
+| `unknown_method` | 没有这个方法，`data.methods` 列出全部方法 |
+| `invalid_params` | 参数缺失或类型、范围不对 |
+| `unavailable` | 要操作的对象现在不存在，例如没有打开的覆盖窗口 |
+| `timeout` | 等待超时，`data` 是超时那一刻的状态 |
+| `rejected` | 配置服务或存储位置模块拒绝了修改，`data` 是原因 |
+| `not_confirmed` | 会移动文件或重启程序的操作，参数里没有 `confirm: true` |
+| `internal` | 方法里出现未预期的异常，详情在日志里 |
+
+日志只记方法名、结果与耗时，例如 `自动化接口：capture → ok，12 毫秒`，不记参数和结果里的文字（`PRV-02`）。
+
+### 16.4 方法
+
+| 方法 | 作用 |
+|---|---|
+| `status` | 版本、构建类型、进程号、各推理进程的状态与 versions、OCR 引擎目录摘要、启用的翻译服务、数据目录与模型目录、真实屏幕的原生矩形、方法列表 |
+| `capture` | 按原生坐标的矩形截屏；`mode` 为 `direct` 时不显示蒙版，为 `mask` 时打开真实蒙版并按当前键位模拟拖动；返回会话号 |
+| `capture.release`、`capture.cancel`、`capture.state`、`capture.key`、`capture.mouse` | `mask` 模式带 `hold: true` 时松开或取消按着的框选、查询蒙版，以及在蒙版上执行按键或鼠标键位 |
+| `wait_result` | 等识别完成、翻译全部定下来，返回块、段、各尝试与覆盖窗口的状态 |
+| `overlay.state`、`overlay.select`、`overlay.select_at`、`overlay.copy` | 覆盖窗口的状态，按字符位置或按窗口坐标拖动选字，取出选中的文字 |
+| `overlay.toggle_source`、`overlay.zoom_in`、`overlay.zoom_out`、`overlay.zoom_reset`、`overlay.pin`、`overlay.close` | 覆盖窗口上的操作，调用窗口自己的方法 |
+| `overlay.key`、`overlay.mouse` | 在覆盖窗口上执行键位：直接给键位文字，或给操作 id 取它当前的键位 |
+| `grab` | 把覆盖窗口、蒙版或设置窗口当前的画面存成 PNG，文件在数据目录的 `tmp/automation` 下 |
+| `settings.open`、`settings.get`、`settings.set`、`settings.pages` | 打开设置窗口的某一页、读一节配置、改一节配置并等结果、导航树 |
+| `bindings.get`、`bindings.set`、`bindings.reset` | 键位表、改一个操作的键位、把一个窗口（或全部）的键位恢复默认 |
+| `storage.status`、`storage.change_data_dir`、`storage.change_models_dir`、`storage.restart` | 存储位置、更改数据目录或模型目录并等到完成、立即重启 |
+| `logs.tail` | 主日志的最后 n 行 |
+| `quit` | 退出程序 |
+
+各方法的参数与返回示例见 `docs/automation.md`。下面几节说明它们与程序内部的衔接。
+
+#### 16.4.1 截屏
+
+`capture` 的矩形 `[x, y, 宽, 高]` 用原生坐标，也就是全局物理像素，与 11.4.3 节的约定一致：屏幕在原生坐标里的左上角与它的逻辑左上角相同，宽高是冻结画面的像素数 $(W, H)$，所以屏幕 $s$ 占的原生矩形是
+
+$$
+N_s = [o_x,\ o_x + W) \times [o_y,\ o_y + H).
+$$
+
+`status.screens` 按这个规则列出每块真实屏幕的原生矩形，agent 据此选截屏范围。
+
+`direct` 模式调用截屏控制器的 `capture_rect`：冻结全部屏幕，把矩形 $R$ 与每块屏幕的 $N_s$ 求交，每个非空交集 $R \cap N_s$ 从屏幕 $s$ 的冻结画面里裁出，放到截图里的位置 $(R \cap N_s) - (R_x, R_y)$。缩放比例不同的屏幕在原生坐标里首尾相接、互不重叠，各部分拼起来就是矩形里有屏幕的部分，屏幕之间的空隙留黑。矩形只落在一块屏幕上时，裁切与框选完全相同（`to_raw_image`），测试逐字节比较两者。
+
+覆盖窗口按矩形面积最大的那块屏幕 $s^\ast$ 摆放，面积相同时取屏幕列表里靠前的一块。选区的逻辑矩形由 11.4.3 节的 `logical_rect` 换算：先把 $R$ 写成相对 $s^\ast$ 左上角的物理像素 $P = R - (o_x, o_y)$，再按
+
+$$
+l = o + \frac{p}{r}
+$$
+
+逐条边换算后取整，$r$ 是 $s^\ast$ 的设备像素比。例如左侧 150% 副屏原点为 $(-2560, -200)$，矩形 $R = (-2470, 10, 1260, 360)$ 时 $P = (90, 210, 1260, 360)$，四条边换算为
+
+$$
+x = -2560 + \tfrac{90}{1.5} = -2500,\quad y = -200 + \tfrac{210}{1.5} = -60,\quad
+w = \tfrac{1350}{1.5} - \tfrac{90}{1.5} = 840,\quad h = \tfrac{570}{1.5} - \tfrac{210}{1.5} = 240,
+$$
+
+与在蒙版上框出同一块得到的 `(-2500, -60, 840, 240)` 相同。
+
+`mask` 模式走真实的蒙版：发 `StartCapture` 同样的 `controller.start()`，找到矩形左上角所在屏幕的蒙版，把起点与终点从原生坐标换成蒙版窗口内的逻辑坐标（11.4.3 节第一个公式减去屏幕的逻辑左上角），再按“框选区域”当前的第一个键位合成按下、移动、松开。事件经过蒙版的 `MouseGestures` 与控制器，选区按 CAP-02 限制在按下时所在的屏幕内，结果与用户拖动相同。带 `hold: true` 时只按下并移动、不松开，蒙版带着选区停在屏幕上，`grab` 可以截下它，之后用 `capture.release` 松开或 `capture.cancel` 取消。
+
+#### 16.4.2 合成事件
+
+`lst/ui/common/inject.py` 按键位文字（11.8.1 节的写法）合成键盘、鼠标与滚轮事件，用 `QApplication.sendEvent` 交给目标窗口。事件经过窗口的 `event`、`mousePressEvent` 等处理函数，查的是窗口当前的 `Keymap`，所以改键位之后用旧键位注入不再触发操作，用新键位注入才触发，这正是“改键后是否生效”要验证的事情。各种键位合成的事件序列：
+
+- 键盘：按下、松开；
+- 单击：按下、松开；
+- 双击：按下、松开、双击、松开，与 Qt 收到真实双击时的顺序相同；
+- 拖动：在起点按下，均分 8 步移到终点，在终点松开。第一步的位移一般就超过 4 个逻辑像素，第一次移动即开始拖动；
+- 滚轮：转 `steps` 格，每格 120。
+
+拖动期间窗口本身可能移动（覆盖窗口的“拖动窗口”）。真实鼠标的全局坐标不随窗口移动，所以合成时在按下那一刻按窗口的位置一次算好全部全局坐标，之后每个事件的窗口内坐标由全局坐标减去窗口当前的位置得到。
+
+`overlay.key`、`overlay.mouse`、`capture.key`、`capture.mouse` 的 `action` 参数取操作当前的键位：按键方法取第一个键盘键位，鼠标方法取第一个鼠标或滚轮键位。
+
+#### 16.4.3 等结果
+
+自动化接口模块订阅 `CaptureCompleted`、`OcrCompleted`、`OcrFailed`、`SegmentsUpdated`、`SessionProgress`，按会话号记下识别与竞速的结果。识别结果来自总线消息，不读 OCR 模块与竞速模块的内部状态。记录只在管道建好期间进行，只保留最近 8 个会话，关掉开关时清空，不写盘。一个会话“已定”的条件是下面三条之一：
+
+1. 识别失败；
+2. 识别完成且没有段；
+3. 识别完成，并且每个段都收到过 `finished` 为真的快照，或者 `SessionProgress` 报告全部段已定。
+
+`wait_result` 等到已定为止，超时回复 `timeout`，`data` 里是那一刻的结果。返回内容包括截图尺寸与选区、各版面块、各段的原文、当前显示的文字、`shown_engine`、跳过原因、每个尝试的状态与耗时，以及覆盖窗口的状态（阶段、进度、显示原文还是译文、选中的范围与文字、各段在窗口里的矩形）。覆盖窗口与记录器处理的是同一批消息，返回前让出一轮事件循环，窗口先应用最后一次刷新再被读取。
+
+#### 16.4.4 覆盖窗口
+
+选字、切换、缩放、固定、关闭都调用覆盖窗口自己的方法，与展示器和测试调用的相同。`overlay.copy` 缺省只返回选中的文字，不碰系统剪贴板，避免覆盖用户剪贴板里的内容；带 `clipboard: true` 时另外走标准复制键的路径（`copy_selection`），由覆盖窗口模块写剪贴板。
+
+覆盖窗口在失去焦点时关闭（`OV-05`）。agent 在另一个程序里发命令时，覆盖窗口有可能被激活后又失去焦点，操作之前先 `overlay.pin` 可以避免它中途关闭。
+
+#### 16.4.5 设置与键位
+
+`settings.set` 给 `UpdateConfig` 附上唯一请求号，等待同号的 `ConfigUpdateCompleted`。配置服务在修改锁内完成校验和落盘后发送回执，回执包含该次操作完成时的配置快照、是否变化与拒绝原因。无变化和全部拒绝均有回执；超时回复 `timeout`。并发修改按各自请求号对应，其他配置的修订号变化不会提前完成这次调用。
+
+`bindings.set` 与 `bindings.reset` 都换算成 `[bindings]` 节的 `settings.set`，与设置页的键位卡片走同一条路径，冲突与格式错误由配置校验拒绝（11.8.4 节）。
+
+#### 16.4.6 存储位置与重启
+
+`storage.change_data_dir` 与 `storage.change_models_dir` 调用常规页存储位置卡片的同一套判断（`StorageSection.plan_data_dir`、`submit_data_dir` 等）：选回当前目录时撤销还没生效的更改，选的就是当前目录时什么也不做，另一次复制或移动进行中、数据目录由命令行或环境变量指定时不能更改。设置页在这里弹确认对话框，接口调用本身就是确认，但参数里必须写 `confirm: true`，否则回复 `not_confirmed`。路径必须是绝对路径；能不能写入由存储位置模块实际写一次文件来判断（2.9.5 节的写入检查），写不进去时回复 `rejected`，`data` 里是失败原因。提交之后方法跟着 `StorageLocations` 等更改结束，途中的进度记在返回的 `progress` 里。
+
+`storage.restart` 与 `quit` 的动作必须在回复写出之后执行，否则程序先退出，回复来不及写出。服务端为此支持“回复之后的动作”（`Deferred`）：方法返回结果与一个回调，服务端把回复写完再调用回调。`storage.restart` 的回调就是常规页“立即重启”按钮调用的 `restart_app`。旧进程退出、新进程以同样的命令行启动后，新进程建立同名管道；客户端的 `restart_and_reconnect` 反复连接，直到连上的服务端进程号与旧的不同。
+
+### 16.5 客户端
+
+`lst/automation/` 只依赖标准库，import-linter 的契约“自动化接口的客户端只依赖标准库”保证这一点。客户端有两种用法：
+
+- 命令行：源码版 `python -m lst.automation <方法> [JSON 参数]`，安装版 `<安装目录>\runtime\python.exe -I -X utf8 <安装目录>\launcher\worker.py automation <方法> [JSON 参数]`。启动器的 `automation` 子命令设好模块搜索路径后运行同一个模块。结果以缩进的 JSON 打印到标准输出；退出码 0 表示成功，1 表示接口回复了错误，2 表示连不上或连接中断，64 表示参数写错。`storage.restart` 默认等新进程的接口可用后再退出，打印新进程的 `status`；
+- Python：`AutomationClient.connect()` 返回一条连接，`call(method, params)` 返回 result，接口回复错误时抛 `AutomationError`（带 `code`、`message`、`data`），连接断开时抛 `ConnectionLost`。测试与示例脚本都用它。
+
+客户端的读写是阻塞的，没有单独的读超时。等待类方法的时限由服务端按参数执行，服务端进程退出时管道断开，读操作随之返回。
+
+### 16.6 构建与发布
+
+构建脚本加 `--flavor normal|dev`（缺省 `normal`）与 `--all`。两种构建共用一份暂存目录，暂存目录里的 `app\installed.json` 只给构建脚本自检用；每编译一种，脚本先写 `build\flavors\<类型>\installed.json`，再调用 ISCC 并传入 `/DFlavor` 与 `/DMarkerDir`。安装脚本的 `[Files]` 用 `Excludes: "\app\installed.json"` 排除暂存目录里的那一份，改装 `MarkerDir` 下的这一份；用一个只有一个文件的假暂存目录实际编译两种安装包，ISCC 的输出列出被压缩的文件，确认了排除与替换都生效。
+
+| | 普通版 | 开发版 |
+|---|---|---|
+| 安装包名 | `LSTtranslate-<版本>-setup.exe` | `LSTtranslate-<版本>-dev-setup.exe` |
+| 校验文件 | 安装包名加 `.sha256` | 安装包名加 `.sha256` |
+| `installed.json` 的 `flavor` | `normal` | `dev` |
+| AppId 与启动方式 | 相同 | 相同 |
+
+AppId 相同，两种安装包互相覆盖安装，卸载信息只有一份，用户数据不受影响。
+
+同一个 GitHub Release 同时放两个安装包与各自的校验文件。应用内更新只取与当前构建类型相同的那一个：安装包名由 `installer_name(版本, 构建类型)` 拼出，在附件里按文件名完全相等查找，普通版不会选中 `-dev-setup.exe`，开发版也不会选中不带 `-dev` 的安装包。只放了一种安装包的版本，另一种构建类型视为没有可用的更新。下载目录的清理用 `parse_installer_name` 把文件名拆成版本号与构建类型，两种文件名都认得。
+
+`-dev` 夹在版本号与 `-setup.exe` 之间，版本号本身以 `-dev` 结尾时会产生歧义：`0.2.0-dev` 的普通版安装包与 `0.2.0` 的开发版安装包同名。构建脚本因此拒绝以 `-dev` 结尾的版本号。
+
+### 16.7 安全与适用场景
+
+自动化接口的威胁模型是“同一台电脑上、以同一个用户身份运行的程序”。这类程序本来就能读写用户的文件、截取屏幕；开启接口后，它们还能控制 LSTtranslate：截屏、读取识别与翻译结果、修改设置、移动数据目录与模型目录、重启和退出程序。措施如下：
+
+- 普通版默认关闭，开启时托盘通知、悬停提示与设置页都写明状态；
+- 管道只允许当前用户连接，拒绝远程客户端，Low 完整性的进程打不开；
+- 没有执行任意代码、读写任意文件的方法。`grab` 只写数据目录下的 `tmp/automation`，文件名由程序拼出，`name` 参数只接受字母、数字、下划线与连字符；`logs.tail` 只读主日志；
+- 会移动文件或重启的操作要求 `confirm: true`，路径必须是绝对路径并经过写入检查；
+- 日志不记参数与结果里的文字。
+
+适用场景是开发与测试：在源码版或开发版上让测试脚本、AI agent 驱动真实界面并检查结果。平时使用的普通版不需要它，开发版装在日常使用的电脑上时，不需要时请在“关于与诊断”页关闭。

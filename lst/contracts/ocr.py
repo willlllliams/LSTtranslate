@@ -143,6 +143,13 @@ class CaptureCompleted(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class OcrStarted(Event):
+    """已接受本次识别或重试请求；同一会话的旧失败与完成状态从此作废。"""
+
+    session_id: SessionId
+
+
+@dataclass(frozen=True, slots=True)
 class OcrCompleted(Event):
     """识别与段落合并完成。blocks 按阅读顺序排列；segments 是要参加竞速的段，按阅读顺序排列。"""
 

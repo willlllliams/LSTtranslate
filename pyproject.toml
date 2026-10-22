@@ -1,6 +1,6 @@
 [project]
 name = "lsttranslate"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 description = "Windows 屏幕翻译工具，多引擎竞速翻译"
 requires-python = ">=3.13,<3.14"
 license = "GPL-3.0-only"
@@ -90,6 +90,12 @@ name = "子进程入口只依赖 contracts"
 type = "forbidden"
 source_modules = ["lst.workers"]
 forbidden_modules = ["lst.kernel", "lst.services", "lst.ui", "lst.app"]
+
+[[tool.importlinter.contracts]]
+name = "自动化接口的客户端只依赖标准库（安装版的启动器直接运行它）"
+type = "forbidden"
+source_modules = ["lst.automation"]
+forbidden_modules = ["lst.app", "lst.ui", "lst.services", "lst.kernel", "lst.workers", "lst.contracts", "PySide6", "pydantic"]
 
 [[tool.importlinter.contracts]]
 name = "业务层与内核不依赖 Qt"

@@ -1,0 +1,383 @@
+{
+ "source_sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2",
+ "width": 1908,
+ "height": 1150,
+ "seconds": 11.23231210000813,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    1908,
+    1150
+   ],
+   "order": 0,
+   "score": 0.9525451767775748,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      0,
+      36,
+      78,
+      58
+     ],
+     "text": "Product",
+     "score": 0.9943104982376099
+    },
+    {
+     "bbox": [
+      107,
+      36,
+      248,
+      58
+     ],
+     "text": "Development",
+     "score": 0.9996069073677063
+    },
+    {
+     "bbox": [
+      276,
+      32,
+      354,
+      60
+     ],
+     "text": "Mobile",
+     "score": 0.9995517134666443
+    },
+    {
+     "bbox": [
+      382,
+      34,
+      505,
+      62
+     ],
+     "text": "Community",
+     "score": 0.99955815076828
+    },
+    {
+     "bbox": [
+      539,
+      36,
+      686,
+      58
+     ],
+     "text": "Tips & Guides",
+     "score": 0.9325866103172302
+    },
+    {
+     "bbox": [
+      1570,
+      30,
+      1598,
+      60
+     ],
+     "text": "Q",
+     "score": 0.9979845285415649
+    },
+    {
+     "bbox": [
+      1671,
+      30,
+      1707,
+      64
+     ],
+     "text": "J",
+     "score": 0.9494196772575378
+    },
+    {
+     "bbox": [
+      1805,
+      32,
+      1908,
+      60
+     ],
+     "text": "GETTHU",
+     "score": 0.986627995967865
+    },
+    {
+     "bbox": [
+      159,
+      150,
+      308,
+      178
+     ],
+     "text": "LATEST POST",
+     "score": 0.9814184308052063
+    },
+    {
+     "bbox": [
+      157,
+      202,
+      1363,
+      268
+     ],
+     "text": "Thunderbird for iOS: A First Look at the",
+     "score": 0.9489456415176392
+    },
+    {
+     "bbox": [
+      159,
+      307,
+      360,
+      365
+     ],
+     "text": "Native",
+     "score": 0.9995997548103333
+    },
+    {
+     "bbox": [
+      365,
+      303,
+      595,
+      372
+     ],
+     "text": "iPhone",
+     "score": 0.9989123344421387
+    },
+    {
+     "bbox": [
+      602,
+      305,
+      811,
+      369
+     ],
+     "text": "Email",
+     "score": 0.9597848057746887
+    },
+    {
+     "bbox": [
+      787,
+      303,
+      1423,
+      379
+     ],
+     "text": "App in Development",
+     "score": 0.9631525874137878
+    },
+    {
+     "bbox": [
+      157,
+      425,
+      362,
+      453
+     ],
+     "text": "苗October1,2026",
+     "score": 0.9347443580627441
+    },
+    {
+     "bbox": [
+      394,
+      427,
+      421,
+      453
+     ],
+     "text": "0o",
+     "score": 0.449889212846756
+    },
+    {
+     "bbox": [
+      413,
+      429,
+      541,
+      451
+     ],
+     "text": "Aly Blenkin",
+     "score": 0.955951452255249
+    },
+    {
+     "bbox": [
+      576,
+      429,
+      598,
+      449
+     ],
+     "text": "只",
+     "score": 0.7043717503547668
+    },
+    {
+     "bbox": [
+      596,
+      425,
+      747,
+      453
+     ],
+     "text": "30 responses",
+     "score": 0.9959869384765625
+    },
+    {
+     "bbox": [
+      157,
+      507,
+      459,
+      533
+     ],
+     "text": "The team has been working",
+     "score": 0.9750997424125671
+    },
+    {
+     "bbox": [
+      449,
+      507,
+      871,
+      535
+     ],
+     "text": "hardbehind the scenes laying a strong",
+     "score": 0.9232614040374756
+    },
+    {
+     "bbox": [
+      157,
+      539,
+      578,
+      567
+     ],
+     "text": "foundation for the Thunderbird iOS app.",
+     "score": 0.9737600684165955
+    },
+    {
+     "bbox": [
+      578,
+      535,
+      916,
+      571
+     ],
+     "text": "Rather than leveraging existing",
+     "score": 0.9960539937019348
+    },
+    {
+     "bbox": [
+      155,
+      573,
+      477,
+      599
+     ],
+     "text": "code, we are building natively",
+     "score": 0.9549136757850647
+    },
+    {
+     "bbox": [
+      471,
+      575,
+      620,
+      597
+     ],
+     "text": "fromscratch.",
+     "score": 0.9798300862312317
+    },
+    {
+     "bbox": [
+      612,
+      573,
+      916,
+      599
+     ],
+     "text": ". This fresh start allows us to",
+     "score": 0.9462584257125854
+    },
+    {
+     "bbox": [
+      1226,
+      573,
+      1528,
+      615
+     ],
+     "text": "Thunderbird",
+     "score": 0.9997276663780212
+    },
+    {
+     "bbox": [
+      157,
+      607,
+      920,
+      633
+     ],
+     "text": "take everything we've learned from Thunderbird Desktop and Android to",
+     "score": 0.9825614094734192
+    },
+    {
+     "bbox": [
+      157,
+      641,
+      863,
+      669
+     ],
+     "text": "ensure a fast, reliable, and modern experience on your iPhone [.….]",
+     "score": 0.958809494972229
+    },
+    {
+     "bbox": [
+      1222,
+      635,
+      1524,
+      655
+     ],
+     "text": "An open source, privacy focused",
+     "score": 0.9584361910820007
+    },
+    {
+     "bbox": [
+      1234,
+      655,
+      1518,
+      681
+     ],
+     "text": "and ad-free email app for ios.",
+     "score": 0.953333854675293
+    },
+    {
+     "bbox": [
+      1326,
+      751,
+      1429,
+      773
+     ],
+     "text": "Get started",
+     "score": 0.9578176140785217
+    },
+    {
+     "bbox": [
+      185,
+      761,
+      332,
+      783
+     ],
+     "text": "READMORE",
+     "score": 0.9973468780517578
+    },
+    {
+     "bbox": [
+      841,
+      984,
+      1099,
+      1026
+     ],
+     "text": "Latest Posts",
+     "score": 0.9995771050453186
+    },
+    {
+     "bbox": [
+      751,
+      1106,
+      1053,
+      1134
+     ],
+     "text": "Thunderbird Dev Digest",
+     "score": 0.9872137308120728
+    },
+    {
+     "bbox": [
+      1300,
+      1098,
+      1570,
+      1144
+     ],
+     "text": "Desktop Settings",
+     "score": 0.9952216744422913
+    }
+   ]
+  }
+ ]
+}

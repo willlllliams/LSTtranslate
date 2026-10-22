@@ -1,0 +1,954 @@
+{
+  "width": 1827,
+  "height": 924,
+  "units": [
+    {
+      "id": "nav-0",
+      "bbox": [
+        110,
+        54,
+        216,
+        77
+      ],
+      "text": "EXPLORE",
+      "zh": "探索",
+      "role": "heading"
+    },
+    {
+      "id": "nav-1",
+      "bbox": [
+        110,
+        102,
+        197,
+        125
+      ],
+      "text": "Featured",
+      "zh": "精選",
+      "role": "label"
+    },
+    {
+      "id": "nav-2",
+      "bbox": [
+        110,
+        149,
+        237,
+        172
+      ],
+      "text": "Most Popular",
+      "zh": "最受歡迎的",
+      "role": "label"
+    },
+    {
+      "id": "nav-3",
+      "bbox": [
+        110,
+        196,
+        210,
+        219
+      ],
+      "text": "Top Rated",
+      "zh": "評價最高",
+      "role": "label"
+    },
+    {
+      "id": "nav-4",
+      "bbox": [
+        110,
+        289,
+        255,
+        312
+      ],
+      "text": "CATEGORIES",
+      "zh": "分類",
+      "role": "heading"
+    },
+    {
+      "id": "nav-5",
+      "bbox": [
+        110,
+        337,
+        375,
+        360
+      ],
+      "text": "Appearance and Customiz...",
+      "zh": "外觀與客製化",
+      "role": "label"
+    },
+    {
+      "id": "nav-6",
+      "bbox": [
+        110,
+        384,
+        342,
+        407
+      ],
+      "text": "Calendar and Date/Time",
+      "zh": "日曆與日期/時間",
+      "role": "label"
+    },
+    {
+      "id": "nav-7",
+      "bbox": [
+        110,
+        431,
+        225,
+        454
+      ],
+      "text": "Chat and IM",
+      "zh": "聊天與即時通訊",
+      "role": "label"
+    },
+    {
+      "id": "nav-8",
+      "bbox": [
+        110,
+        478,
+        195,
+        501
+      ],
+      "text": "Contacts",
+      "zh": "聯絡人",
+      "role": "label"
+    },
+    {
+      "id": "nav-9",
+      "bbox": [
+        110,
+        524,
+        286,
+        547
+      ],
+      "text": "Folders and Filters",
+      "zh": "資料夾和過濾器",
+      "role": "label"
+    },
+    {
+      "id": "nav-10",
+      "bbox": [
+        110,
+        572,
+        247,
+        595
+      ],
+      "text": "Import/Export",
+      "zh": "進口/出口",
+      "role": "label"
+    },
+    {
+      "id": "nav-11",
+      "bbox": [
+        110,
+        618,
+        286,
+        641
+      ],
+      "text": "Language Support",
+      "zh": "語言支援",
+      "role": "label"
+    },
+    {
+      "id": "nav-12",
+      "bbox": [
+        110,
+        665,
+        321,
+        688
+      ],
+      "text": "Message Composition",
+      "zh": "訊息組成",
+      "role": "label"
+    },
+    {
+      "id": "nav-13",
+      "bbox": [
+        110,
+        711,
+        375,
+        734
+      ],
+      "text": "Message and News Reading",
+      "zh": "訊息與新聞閱讀",
+      "role": "label"
+    },
+    {
+      "id": "nav-14",
+      "bbox": [
+        110,
+        757,
+        250,
+        780
+      ],
+      "text": "Miscellaneous",
+      "zh": "雜項",
+      "role": "label"
+    },
+    {
+      "id": "nav-15",
+      "bbox": [
+        110,
+        804,
+        300,
+        827
+      ],
+      "text": "Privacy and Security",
+      "zh": "隱私與安全",
+      "role": "label"
+    },
+    {
+      "id": "nav-16",
+      "bbox": [
+        110,
+        851,
+        160,
+        874
+      ],
+      "text": "Tags",
+      "zh": "標籤",
+      "role": "label"
+    },
+    {
+      "id": "featured",
+      "bbox": [
+        475,
+        51,
+        824,
+        86
+      ],
+      "text": "Featured Extensions",
+      "zh": "精選擴充功能",
+      "role": "heading"
+    },
+    {
+      "id": "featured-all",
+      "bbox": [
+        841,
+        65,
+        920,
+        86
+      ],
+      "text": "See all »",
+      "zh": "查看全部 »",
+      "role": "label"
+    },
+    {
+      "id": "upcoming",
+      "bbox": [
+        475,
+        532,
+        897,
+        569
+      ],
+      "text": "Up & Coming Extensions",
+      "zh": "進階與即將推出的擴充功能",
+      "role": "heading"
+    },
+    {
+      "id": "upcoming-all",
+      "bbox": [
+        913,
+        544,
+        993,
+        565
+      ],
+      "text": "See all »",
+      "zh": "查看全部 »",
+      "role": "label"
+    },
+    {
+      "id": "extract-top-title",
+      "bbox": [
+        590,
+        140,
+        722,
+        166
+      ],
+      "text": "Extract 'Em!",
+      "zh": "提取它們!",
+      "role": "card-title"
+    },
+    {
+      "id": "extract-top-category",
+      "bbox": [
+        590,
+        169,
+        718,
+        191
+      ],
+      "text": "Import/Export",
+      "zh": "進口/出口",
+      "role": "category"
+    },
+    {
+      "id": "extract-top-rating",
+      "bbox": [
+        590,
+        192,
+        753,
+        217
+      ],
+      "text": "(21)",
+      "zh": "(21)",
+      "role": "rating"
+    },
+    {
+      "id": "conversations-title",
+      "bbox": [
+        590,
+        250,
+        868,
+        276
+      ],
+      "text": "Thunderbird Conversati...",
+      "zh": "雷鳥對話",
+      "role": "card-title"
+    },
+    {
+      "id": "conversations-category",
+      "bbox": [
+        590,
+        279,
+        833,
+        301
+      ],
+      "text": "Message and News Reading",
+      "zh": "訊息與新聞閱讀",
+      "role": "category"
+    },
+    {
+      "id": "conversations-rating",
+      "bbox": [
+        590,
+        302,
+        753,
+        327
+      ],
+      "text": "(600)",
+      "zh": "(600)",
+      "role": "rating"
+    },
+    {
+      "id": "autoarchive-title",
+      "bbox": [
+        590,
+        360,
+        824,
+        386
+      ],
+      "text": "AutoarchiveReloaded",
+      "zh": "自動存檔重新載入",
+      "role": "card-title"
+    },
+    {
+      "id": "autoarchive-category",
+      "bbox": [
+        590,
+        389,
+        700,
+        411
+      ],
+      "text": "Chat and IM",
+      "zh": "聊天與即時通訊",
+      "role": "category"
+    },
+    {
+      "id": "autoarchive-rating",
+      "bbox": [
+        590,
+        412,
+        753,
+        437
+      ],
+      "text": "(32)",
+      "zh": "(32)",
+      "role": "rating"
+    },
+    {
+      "id": "thunderbook-title",
+      "bbox": [
+        590,
+        619,
+        739,
+        645
+      ],
+      "text": "Thunderbook",
+      "zh": "雷霆之書",
+      "role": "card-title"
+    },
+    {
+      "id": "thunderbook-category",
+      "bbox": [
+        590,
+        648,
+        718,
+        670
+      ],
+      "text": "Import/Export",
+      "zh": "進口/出口",
+      "role": "category"
+    },
+    {
+      "id": "thunderbook-rating",
+      "bbox": [
+        590,
+        671,
+        753,
+        696
+      ],
+      "text": "(3)",
+      "zh": "(3)",
+      "role": "rating"
+    },
+    {
+      "id": "extract-bottom-title",
+      "bbox": [
+        590,
+        730,
+        722,
+        756
+      ],
+      "text": "Extract 'Em!",
+      "zh": "提取它們!",
+      "role": "card-title"
+    },
+    {
+      "id": "extract-bottom-category",
+      "bbox": [
+        590,
+        759,
+        718,
+        781
+      ],
+      "text": "Import/Export",
+      "zh": "進口/出口",
+      "role": "category"
+    },
+    {
+      "id": "extract-bottom-rating",
+      "bbox": [
+        590,
+        782,
+        753,
+        807
+      ],
+      "text": "(21)",
+      "zh": "(21)",
+      "role": "rating"
+    },
+    {
+      "id": "quote-title",
+      "bbox": [
+        590,
+        839,
+        738,
+        865
+      ],
+      "text": "changeQuote",
+      "zh": "變更報價",
+      "role": "card-title"
+    },
+    {
+      "id": "quote-category",
+      "bbox": [
+        590,
+        868,
+        859,
+        890
+      ],
+      "text": "Appearance and Customization",
+      "zh": "外觀與客製化",
+      "role": "category"
+    },
+    {
+      "id": "quote-rating",
+      "bbox": [
+        590,
+        891,
+        753,
+        916
+      ],
+      "text": "(29)",
+      "zh": "(29)",
+      "role": "rating"
+    },
+    {
+      "id": "filelink-title",
+      "bbox": [
+        1017,
+        140,
+        1297,
+        166
+      ],
+      "text": "FileLink provider for We...",
+      "zh": "適用於 WebDAV 的 FileLin...",
+      "role": "card-title"
+    },
+    {
+      "id": "filelink-category",
+      "bbox": [
+        1017,
+        169,
+        1144,
+        191
+      ],
+      "text": "Miscellaneous",
+      "zh": "雜項",
+      "role": "category"
+    },
+    {
+      "id": "filelink-rating",
+      "bbox": [
+        1017,
+        192,
+        1180,
+        217
+      ],
+      "text": "(23)",
+      "zh": "(23)",
+      "role": "rating"
+    },
+    {
+      "id": "cloud-title",
+      "bbox": [
+        1017,
+        250,
+        1307,
+        276
+      ],
+      "text": "*cloud - FileLink for Next...",
+      "zh": "*雲端 - 支援 Nextcloud O...",
+      "role": "card-title"
+    },
+    {
+      "id": "cloud-category",
+      "bbox": [
+        1017,
+        279,
+        1211,
+        301
+      ],
+      "text": "Message Composition",
+      "zh": "訊息組成",
+      "role": "category"
+    },
+    {
+      "id": "cloud-rating",
+      "bbox": [
+        1017,
+        302,
+        1180,
+        327
+      ],
+      "text": "(60)",
+      "zh": "(60)",
+      "role": "rating"
+    },
+    {
+      "id": "cardbook-title",
+      "bbox": [
+        1017,
+        360,
+        1126,
+        386
+      ],
+      "text": "CardBook",
+      "zh": "紙本",
+      "role": "card-title"
+    },
+    {
+      "id": "cardbook-category",
+      "bbox": [
+        1017,
+        389,
+        1097,
+        411
+      ],
+      "text": "Contacts",
+      "zh": "聯絡人",
+      "role": "category"
+    },
+    {
+      "id": "cardbook-rating",
+      "bbox": [
+        1017,
+        412,
+        1180,
+        437
+      ],
+      "text": "(528)",
+      "zh": "(528)",
+      "role": "rating"
+    },
+    {
+      "id": "attachment-title",
+      "bbox": [
+        1017,
+        619,
+        1255,
+        645
+      ],
+      "text": "Attachment Extractor",
+      "zh": "附件提取器",
+      "role": "card-title"
+    },
+    {
+      "id": "attachment-category",
+      "bbox": [
+        1017,
+        648,
+        1145,
+        670
+      ],
+      "text": "Import/Export",
+      "zh": "進口/出口",
+      "role": "category"
+    },
+    {
+      "id": "attachment-rating",
+      "bbox": [
+        1017,
+        671,
+        1180,
+        696
+      ],
+      "text": "(100)",
+      "zh": "(100)",
+      "role": "rating"
+    },
+    {
+      "id": "bidi-title",
+      "bbox": [
+        1017,
+        729,
+        1147,
+        755
+      ],
+      "text": "BiDi Mail UI",
+      "zh": "BiDi 郵件介面",
+      "role": "card-title"
+    },
+    {
+      "id": "bidi-category",
+      "bbox": [
+        1017,
+        758,
+        1260,
+        780
+      ],
+      "text": "Message and News Reading",
+      "zh": "訊息與新聞閱讀",
+      "role": "category"
+    },
+    {
+      "id": "bidi-rating",
+      "bbox": [
+        1017,
+        781,
+        1180,
+        806
+      ],
+      "text": "(59)",
+      "zh": "(59)",
+      "role": "rating"
+    },
+    {
+      "id": "dark-title",
+      "bbox": [
+        1017,
+        839,
+        1155,
+        865
+      ],
+      "text": "Not All Dark",
+      "zh": "不是一片黑暗",
+      "role": "card-title"
+    },
+    {
+      "id": "dark-category",
+      "bbox": [
+        1017,
+        868,
+        1286,
+        890
+      ],
+      "text": "Appearance and Customization",
+      "zh": "外觀與客製化",
+      "role": "category"
+    },
+    {
+      "id": "dark-rating",
+      "bbox": [
+        1017,
+        891,
+        1135,
+        915
+      ],
+      "text": "Not yet rated",
+      "zh": "尚未評級",
+      "role": "category"
+    },
+    {
+      "id": "popular",
+      "bbox": [
+        1410,
+        54,
+        1595,
+        78
+      ],
+      "text": "MOST POPULAR",
+      "zh": "最受歡迎的",
+      "role": "heading"
+    },
+    {
+      "id": "popular-all",
+      "bbox": [
+        1610,
+        55,
+        1652,
+        78
+      ],
+      "text": "All »",
+      "zh": "全部 »",
+      "role": "label"
+    },
+    {
+      "id": "popular-1",
+      "bbox": [
+        1409,
+        99,
+        1653,
+        125
+      ],
+      "text": "1. ImportExportTools NG",
+      "zh": "1. 進口出口工具 NG",
+      "role": "label"
+    },
+    {
+      "id": "popular-1-users",
+      "bbox": [
+        1439,
+        124,
+        1565,
+        146
+      ],
+      "text": "285,442 users",
+      "zh": "285,442 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-2",
+      "bbox": [
+        1409,
+        161,
+        1695,
+        187
+      ],
+      "text": "2. Provider for Google Calen...",
+      "zh": "2. Google 日曆供應商",
+      "role": "label"
+    },
+    {
+      "id": "popular-2-users",
+      "bbox": [
+        1439,
+        186,
+        1565,
+        208
+      ],
+      "text": "143,742 users",
+      "zh": "143,742 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-3",
+      "bbox": [
+        1409,
+        223,
+        1550,
+        249
+      ],
+      "text": "3. Send Later",
+      "zh": "3. 稍後發送",
+      "role": "label"
+    },
+    {
+      "id": "popular-3-users",
+      "bbox": [
+        1439,
+        248,
+        1565,
+        270
+      ],
+      "text": "118,827 users",
+      "zh": "118,827 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-4",
+      "bbox": [
+        1409,
+        285,
+        1634,
+        311
+      ],
+      "text": "4. LookOut (fix version)",
+      "zh": "4. LookOut(修正版本)",
+      "role": "label"
+    },
+    {
+      "id": "popular-4-users",
+      "bbox": [
+        1439,
+        310,
+        1565,
+        332
+      ],
+      "text": "114,834 users",
+      "zh": "114,834 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-5",
+      "bbox": [
+        1409,
+        347,
+        1546,
+        373
+      ],
+      "text": "5. Quicktext",
+      "zh": "5. 快速文字",
+      "role": "label"
+    },
+    {
+      "id": "popular-5-users",
+      "bbox": [
+        1439,
+        372,
+        1565,
+        394
+      ],
+      "text": "97,010 users",
+      "zh": "97,010 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-6",
+      "bbox": [
+        1409,
+        409,
+        1690,
+        435
+      ],
+      "text": "6. Remove Duplicate Messa...",
+      "zh": "6. 移除重複的訊息",
+      "role": "label"
+    },
+    {
+      "id": "popular-6-users",
+      "bbox": [
+        1439,
+        434,
+        1565,
+        456
+      ],
+      "text": "89,200 users",
+      "zh": "89,200 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-7",
+      "bbox": [
+        1409,
+        471,
+        1550,
+        497
+      ],
+      "text": "7. Mail Merge",
+      "zh": "7. 郵件合併",
+      "role": "label"
+    },
+    {
+      "id": "popular-7-users",
+      "bbox": [
+        1439,
+        496,
+        1565,
+        518
+      ],
+      "text": "77,822 users",
+      "zh": "77,822 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-8",
+      "bbox": [
+        1409,
+        533,
+        1700,
+        559
+      ],
+      "text": "8. Grammar and Spell Check...",
+      "zh": "8. 文法與拼字檢查 — 語言工具",
+      "role": "label"
+    },
+    {
+      "id": "popular-8-users",
+      "bbox": [
+        1439,
+        558,
+        1565,
+        580
+      ],
+      "text": "76,406 users",
+      "zh": "76,406 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-9",
+      "bbox": [
+        1409,
+        595,
+        1546,
+        621
+      ],
+      "text": "9. CardBook",
+      "zh": "9. 紙本",
+      "role": "label"
+    },
+    {
+      "id": "popular-9-users",
+      "bbox": [
+        1439,
+        620,
+        1565,
+        642
+      ],
+      "text": "57,960 users",
+      "zh": "57,960 名用戶",
+      "role": "count"
+    },
+    {
+      "id": "popular-10",
+      "bbox": [
+        1409,
+        657,
+        1583,
+        683
+      ],
+      "text": "10. Web Translate",
+      "zh": "10. 網頁翻譯",
+      "role": "label"
+    },
+    {
+      "id": "popular-10-users",
+      "bbox": [
+        1439,
+        682,
+        1565,
+        704
+      ],
+      "text": "57,926 users",
+      "zh": "57,926 名用戶",
+      "role": "count"
+    }
+  ]
+}

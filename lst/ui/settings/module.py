@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from PySide6.QtCore import QSettings
 
+from lst.contracts.automation import AutomationStatus, BuildFlavor
 from lst.contracts.config import AppConfig, ConfigRejected
 from lst.contracts.events import (
     CacheCleared,
@@ -53,13 +54,15 @@ class SettingsModule:
         engine_kinds：引擎类别（kind）→ 该类引擎一条 ``[[engines]]`` 的 pydantic 模型；
         keyless_kinds：不需要 API key 的引擎类别，默认是 local_nmt 与 dictionary；
         app_version：关于页显示的版本号，缺省时读已安装包的版本；
+        flavor：构建类型，关于页在版本号后面注明“开发版”，自动化接口的开关说明默认值；
         text_debounce_ms：文本框停止输入后提交的等待时间，默认 500 毫秒（需求 UI-06）；
         dialogs：确认与选择目录的对话框，缺省用 Qt 的模态对话框，测试时替换。
 
     start 时创建窗口并保持隐藏；收到 OpenSettings 命令时显示窗口，窗口已经显示时只是带到前面。
-    OCR 引擎目录（OcrEngineCatalog）、显卡运行库状态（NmtRuntimeInfo）、更新状态（UpdateStatus）与存储位置
-    （StorageLocations）从总线订阅；总线上没有它们时，截屏与识别页的引擎卡片、模型页的显卡运行库卡片、
-    关于页的更新卡片与常规页的存储位置卡片说明该功能不可用，不发送命令。
+    OCR 引擎目录（OcrEngineCatalog）、显卡运行库状态（NmtRuntimeInfo）、更新状态（UpdateStatus）、存储位置
+    （StorageLocations）与自动化接口状态（AutomationStatus）从总线订阅；总线上没有它们时，截屏与识别页的
+    引擎卡片、模型页的显卡运行库卡片、关于页的更新卡片与自动化接口开关、常规页的存储位置卡片说明该功能不可用，
+    不发送命令。
     """
 
     name = "ui.settings"
@@ -72,6 +75,7 @@ class SettingsModule:
         engine_kinds: Mapping[str, type[BaseModel]],
         keyless_kinds: Collection[str] = KEYLESS_KINDS,
         app_version: str | None = None,
+        flavor: BuildFlavor = BuildFlavor.NORMAL,
         text_debounce_ms: int = DEFAULT_DEBOUNCE_MS,
         dialogs: Dialogs | None = None,
     ) -> None:
@@ -80,6 +84,7 @@ class SettingsModule:
         self._engine_kinds = dict(engine_kinds)
         self._keyless_kinds = frozenset(keyless_kinds)
         self._app_version = package_version() if app_version is None else app_version
+        self._flavor = flavor
         self._debounce_ms = text_debounce_ms
         self._dialogs = dialogs
         self._window: SettingsWindow | None = None
@@ -105,6 +110,7 @@ class SettingsModule:
             engine_kinds=self._engine_kinds,
             keyless_kinds=self._keyless_kinds,
             app_version=self._app_version,
+            flavor=self._flavor,
         )
         presenter.start()  # 窗口创建时页面要读到已有的配置，所以先初始化展示器
         window = SettingsWindow(
@@ -126,6 +132,7 @@ class SettingsModule:
         ctx.subscribe(NmtRuntimeInfo, presenter.on_nmt_runtime)
         ctx.subscribe(UpdateStatus, presenter.on_update_status)
         ctx.subscribe(StorageLocations, presenter.on_storage)
+        ctx.subscribe(AutomationStatus, presenter.on_automation)
         ctx.subscribe(OpenSettings, lambda _: presenter.on_open_settings())
 
     async def stop(self) -> None:

@@ -59,6 +59,8 @@ CATALOG: Final[Catalog] = {
     "tray.update.installing": {"zh-Hans": "正在启动安装程序…", "en": "Starting the installer…"},
     # 托盘图标的悬停提示与整体状态
     "tray.tooltip": {"zh-Hans": "{app}\n{status}", "en": "{app}\n{status}"},
+    "tray.tooltip.automation": {"zh-Hans": "{tooltip}\n{notice}", "en": "{tooltip}\n{notice}"},
+    "tray.automation_on": {"zh-Hans": "自动化接口已开启", "en": "Automation interface is on"},
     "tray.overall.ready": {"zh-Hans": "全部就绪", "en": "All ready"},
     "tray.overall.loading": {"zh-Hans": "正在加载", "en": "Loading"},
     "tray.overall.error": {"zh-Hans": "有 {count} 项出错", "en": "Errors: {count}"},

@@ -151,6 +151,53 @@ def test_orphan_line_becomes_text_block() -> None:
     assert len(cast(list[object], orphan["lines"])) == 1
 
 
+def test_image_block_keeps_the_lines_inside_it() -> None:
+    # 截屏测试页放大 1.3 倍后，PP-DocLayout 把一排按钮连同下面的表格判成一个 image 块（实测）。
+    words = [
+        ((49, 374, 144, 414), "Public"),
+        ((202, 374, 274, 415), "Star"),
+        ((51, 449, 234, 493), "Python☆4"),
+    ]
+    page = RawPage(
+        output_size=(W, H),
+        angle=None,
+        lines=tuple(line(box, text) for box, text in reversed(words)),
+        blocks=(RawBlock("image", (27, 361, 897, 688), "Public Star\nPython☆4"),),
+    )
+    (image,) = convert(page)
+    assert image["category"] == "image"
+    lines = cast(list[dict[str, object]], image["lines"])
+    assert [(entry["bbox"], entry["text"]) for entry in lines] == [(list(box), text) for box, text in words]
+    assert image["text"] == "Public\nStar\nPython☆4"
+
+
+def test_line_box_larger_than_its_block_belongs_to_the_block() -> None:
+    # 按钮：版面块只包住字，文本行连边框一起包进去，行面积只有 45% 落在块内（截屏测试页实测的框）。
+    # PaddleX 用这一行拼出了块的 content，行也要归给这个块，不能再单独成为一个正文块。
+    page = RawPage(
+        output_size=(W, H),
+        angle=None,
+        lines=(line((185, 331, 242, 367), "Star"),),
+        blocks=(RawBlock("text", (191, 340, 235, 361), "Star "),),
+    )
+    (star,) = convert(page)
+    assert star["text"] == "Star"
+    assert [entry["bbox"] for entry in cast(list[dict[str, object]], star["lines"])] == [[185, 331, 242, 367]]
+
+
+def test_line_touching_a_block_edge_stays_an_orphan() -> None:
+    # 行面积落在块内的不到一半、块面积被行盖住的也不到一半：不属于这个块。
+    page = RawPage(
+        output_size=(W, H),
+        angle=None,
+        lines=(line((100, 90, 300, 130), "below"),),
+        blocks=(RawBlock("text", (50, 20, 400, 100), "above"),),
+    )
+    above, below = convert(page)
+    assert (above["text"], above["lines"]) == ("above", [])
+    assert below["text"] == "below"
+
+
 def test_chart_without_recognition_has_no_table() -> None:
     page = dataclasses.replace(sample_page(), chart_recognized=False)
     assert convert(page)[4]["chart_table"] is None

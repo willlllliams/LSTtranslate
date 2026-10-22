@@ -18,7 +18,10 @@ r"""安装版的推理子进程与维护命令启动器（架构文档第 15 章
 - purge-secrets：卸载时删除凭据管理器中本程序保存的 API key。全部删掉（或本来就没有）时退出码为 0，
   枚举或删除失败时为 1，卸载程序把退出码记进日志；
 - purge-data：卸载时删除用户在设置里选的数据目录与模型目录中由程序创建的内容，以及记录数据目录的位置文件
-  （lst/app/uninstall.py 的 purge_user_data）。全部删掉时退出码为 0，有条目没删掉时为 1。
+  （lst/app/uninstall.py 的 purge_user_data）。全部删掉时退出码为 0，有条目没删掉时为 1；
+- automation：自动化接口的命令行客户端（``python -m lst.automation``），其余参数原样传给它，
+  例如 ``worker.py automation status``、``worker.py automation capture "{\"rect\": [0, 0, 800, 300]}"``。
+  退出码由客户端给出：成功 0，接口回复错误 1，连不上 2（架构文档 16.5 节）。
 
 启动器在设好模块搜索路径之前不能导入 lst，退出码直接写数字（值见 lst/contracts/worker_protocol.py）。
 """
@@ -30,8 +33,12 @@ from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_COMMANDS = ("nmt", "ocr", "purge-secrets", "purge-data")
-_MODULES = {"nmt": "lst.workers.nmt_worker", "ocr": "lst.workers.ocr_worker"}
+_COMMANDS = ("nmt", "ocr", "purge-secrets", "purge-data", "automation")
+_MODULES = {
+    "nmt": "lst.workers.nmt_worker",
+    "ocr": "lst.workers.ocr_worker",
+    "automation": "lst.automation",
+}
 OCR_SITE_OPTION = "--ocr-site"
 OCR_SITE_ENV = "LST_OCR_SITE"
 MAIN_SITE = "main"

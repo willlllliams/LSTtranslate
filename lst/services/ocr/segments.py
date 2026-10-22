@@ -11,14 +11,20 @@
   premerged 为真时正文块已经由结构归一化的聚合步骤合并成段落（lst/services/ocr/normalize.py），
   每个正文块一个段，段号同样是 ``p{n}``，文本是块的 text（为空白时改用 lines），范围是块的包围盒。
 - 表格：每个非空单元格一个段，段号 ``b{块 id}-r{行}c{列}``，范围是单元格的包围盒，cell=(行, 列)。
-  表格没有单元格网格时退回为整块一个段，文字不会丢失。
+  表格没有单元格网格（没开表格识别）时，每个非空文本行一个段，段号 ``b{块 id}-l{序号}``（序号是行在
+  块内 lines 中的位置，从 0 开始），范围是行的包围盒；整页 OCR 的行在表格里通常一格一行，
+  逐行出段与逐格出段的结果相同。块里连文本行也没有时退回为整块一个段，段号 ``b{块 id}``。
 - 图表：图表转换出的数据表中每个非空单元格一个段，段号写法同表格，cell 是数据表的行列号；
-  范围用图表块的包围盒，覆盖窗口点开数据表时才渲染这些段。
-- 公式、图片：不生成段，覆盖窗口显示原图（需求 OV-03）。
+  范围用图表块的包围盒，覆盖窗口点开数据表时才渲染这些段。没有数据表（没开图表识别，或输出不是
+  数据表）时按图片块的规则逐行出段。
+- 图片：每个非空文本行一个段，段号写法同没有单元格网格的表格。覆盖窗口照常显示原图（需求 OV-03），
+  在原图上逐行画译文。版面模型会把界面控件、截图里的表格判成图片，块内的文字行是 OCR 认出的文字，
+  不出段就不会被翻译。没有文本行的图片块不生成段。
+- 公式：不生成段，覆盖窗口显示原图（需求 OV-03）。
 
-段按阅读顺序排列：块按 order，表格单元格按（行，列），文本模式的段落按合并器给出的顺序。
-段号只由块 id、单元格行列号和段落序号决定，同一个识别结果每次转换得到相同的段号；
-版面块 id 不含连字符（见 blocks.BLOCK_ID_PATTERN），三种写法互不重叠，段号在一个会话内唯一。
+段按阅读顺序排列：块按 order，表格单元格按（行，列），文本行按块内 lines 的顺序，文本模式的段落按
+合并器给出的顺序。段号只由块 id、单元格行列号、行序号和段落序号决定，同一个识别结果每次转换得到相同的
+段号；版面块 id 不含连字符（见 blocks.BLOCK_ID_PATTERN），各种写法互不重叠，段号在一个会话内唯一。
 """
 
 import logging
@@ -96,6 +102,9 @@ def _block_segments(block: LayoutBlock) -> Iterator[tuple[str, str, BBox, tuple[
             yield f"b{block.id}", text, block.bbox, None
     elif block.category is BlockCategory.TABLE:
         if not block.cells:
+            if block.lines:
+                yield from _line_segments(block)
+                return
             text = block_text(block)
             if text:
                 yield f"b{block.id}", text, block.bbox, None
@@ -105,12 +114,25 @@ def _block_segments(block: LayoutBlock) -> Iterator[tuple[str, str, BBox, tuple[
             if text:
                 yield f"b{block.id}-r{cell.row}c{cell.col}", text, cell.bbox, (cell.row, cell.col)
     elif block.category is BlockCategory.CHART:
-        for r, row in enumerate(block.chart_table or ()):
+        if block.chart_table is None:
+            yield from _line_segments(block)
+            return
+        for r, row in enumerate(block.chart_table):
             for c, value in enumerate(row):
                 text = join_lines(value.splitlines())
                 if text:
                     yield f"b{block.id}-r{r}c{c}", text, block.bbox, (r, c)
-    # 公式、图片不翻译。
+    elif block.category is BlockCategory.IMAGE:
+        yield from _line_segments(block)
+    # 公式不翻译。
+
+
+def _line_segments(block: LayoutBlock) -> Iterator[tuple[str, str, BBox, tuple[int, int] | None]]:
+    """没有单元格网格的表格、没有数据表的图表与图片块：每个非空文本行一个段。"""
+    for index, line in enumerate(block.lines):
+        text = join_lines(line.text.splitlines())
+        if text:
+            yield f"b{block.id}-l{index}", text, line.bbox, None
 
 
 def _paragraphs(

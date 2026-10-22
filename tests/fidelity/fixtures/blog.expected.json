@@ -1,0 +1,234 @@
+{
+  "width": 1908,
+  "height": 1150,
+  "units": [
+    {
+      "id": "product",
+      "bbox": [
+        0,
+        34,
+        80,
+        62
+      ],
+      "text": "Product",
+      "zh": "產品",
+      "role": "label"
+    },
+    {
+      "id": "development",
+      "bbox": [
+        108,
+        34,
+        252,
+        62
+      ],
+      "text": "Development",
+      "zh": "發展",
+      "role": "label"
+    },
+    {
+      "id": "mobile",
+      "bbox": [
+        280,
+        34,
+        354,
+        62
+      ],
+      "text": "Mobile",
+      "zh": "行動裝置",
+      "role": "label"
+    },
+    {
+      "id": "community",
+      "bbox": [
+        385,
+        34,
+        506,
+        62
+      ],
+      "text": "Community",
+      "zh": "社群",
+      "role": "label"
+    },
+    {
+      "id": "guides",
+      "bbox": [
+        537,
+        34,
+        688,
+        62
+      ],
+      "text": "Tips & Guides",
+      "zh": "小技巧與指南",
+      "role": "label"
+    },
+    {
+      "id": "get-thunderbird",
+      "bbox": [
+        1808,
+        34,
+        1908,
+        62
+      ],
+      "text": "GET THU",
+      "zh": "取得 THU",
+      "role": "label"
+    },
+    {
+      "id": "post-label",
+      "bbox": [
+        164,
+        153,
+        304,
+        174
+      ],
+      "text": "LATEST POST",
+      "zh": "最新文章",
+      "role": "label"
+    },
+    {
+      "id": "title",
+      "bbox": [
+        159,
+        207,
+        1419,
+        377
+      ],
+      "text": "Thunderbird for iOS: A First Look at the Native iPhone Email App in Development",
+      "zh": "適用於 iOS 的 Thunderbird:初步了解開發中的原生 iPhone 電子郵件應用程式",
+      "role": "heading"
+    },
+    {
+      "id": "date",
+      "bbox": [
+        189,
+        429,
+        362,
+        454
+      ],
+      "text": "October 1, 2026",
+      "zh": "2026年10月1日",
+      "role": "label"
+    },
+    {
+      "id": "author",
+      "bbox": [
+        421,
+        429,
+        543,
+        454
+      ],
+      "text": "Aly Blenkin",
+      "zh": "艾莉·布倫金",
+      "role": "label"
+    },
+    {
+      "id": "responses",
+      "bbox": [
+        603,
+        429,
+        747,
+        454
+      ],
+      "text": "30 responses",
+      "zh": "30 個回應",
+      "role": "label"
+    },
+    {
+      "id": "body",
+      "bbox": [
+        158,
+        508,
+        919,
+        669
+      ],
+      "text": "The team has been working hard behind the scenes laying a strong foundation for the Thunderbird iOS app. Rather than leveraging existing code, we are building natively from scratch. This fresh start allows us to take everything we've learned from Thunderbird Desktop and Android to ensure a fast, reliable, and modern experience on your iPhone [...]",
+      "zh": "該團隊在幕後努力,為 Thunderbird iOS 應用程式奠定了堅實的基礎。我們並非利用現有的程式碼,而是從零開始進行原生建置。這個嶄新的開始讓我們能將從 Thunderbird 桌面與 Android 技術中學到的一切,確保 iPhone 上能快速、可靠且現代地體驗。",
+      "role": "paragraph"
+    },
+    {
+      "id": "read-more",
+      "bbox": [
+        188,
+        761,
+        332,
+        785
+      ],
+      "text": "READ MORE",
+      "zh": "詳情請見",
+      "role": "button"
+    },
+    {
+      "id": "brand",
+      "bbox": [
+        1230,
+        575,
+        1528,
+        617
+      ],
+      "text": "Thunderbird",
+      "zh": "Thunderbird",
+      "role": "brand"
+    },
+    {
+      "id": "tagline",
+      "bbox": [
+        1225,
+        636,
+        1526,
+        681
+      ],
+      "text": "An open source, privacy focused and ad-free email app for iOS.",
+      "zh": "一款開放原始碼、注重隱私且無廣告的 iOS 電子郵件應用程式。",
+      "role": "paragraph"
+    },
+    {
+      "id": "get-started",
+      "bbox": [
+        1329,
+        753,
+        1427,
+        774
+      ],
+      "text": "Get started",
+      "zh": "開始使用",
+      "role": "button"
+    },
+    {
+      "id": "latest-posts",
+      "bbox": [
+        843,
+        985,
+        1098,
+        1026
+      ],
+      "text": "Latest Posts",
+      "zh": "最新文章",
+      "role": "heading"
+    },
+    {
+      "id": "digest",
+      "bbox": [
+        750,
+        1107,
+        1055,
+        1135
+      ],
+      "text": "Thunderbird Dev Digest",
+      "zh": "Thunderbird 開發摘要",
+      "role": "card-title"
+    },
+    {
+      "id": "desktop",
+      "bbox": [
+        1305,
+        1108,
+        1568,
+        1140
+      ],
+      "text": "Desktop Settings",
+      "zh": "桌面設定",
+      "role": "card-title"
+    }
+  ]
+}

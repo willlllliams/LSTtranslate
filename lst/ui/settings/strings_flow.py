@@ -195,12 +195,12 @@ CATALOG: Final[Catalog] = {
     **_node(
         "aggregate",
         (
-            "合并段落",
-            "文本模式下把文本行按行距、行高与对齐合并成段落，一个段落作为一段翻译。关闭后每行单独翻译。合并的阈值在“结构归一化”页设置。",
+            "整理文字单元",
+            "结合截图颜色、行距和对齐整理文字单元。文本模式下合并连续段落，版面模式下拆开粘连的菜单和控件。关闭后文本模式每行单独翻译。",
         ),
         (
-            "Merge paragraphs",
-            "In text mode, merges text lines into paragraphs by line spacing, line height and alignment; each paragraph is translated as one segment. When off, every line is translated on its own. The thresholds are set on the Structure normalization page.",
+            "Organize text units",
+            "Uses screenshot colors, spacing and alignment to join paragraphs in text mode and separate merged controls in layout mode. When off, text mode translates each line separately.",
         ),
     ),
     **_node(

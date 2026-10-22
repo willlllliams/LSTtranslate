@@ -62,12 +62,13 @@ from __future__ import annotations
 
 import bisect
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, fields
 from typing import Protocol
 
 from lst.contracts.ocr import BBox, TextLine
 from lst.contracts.text import join_lines
+from lst.services.ocr.appearance import Appearance, compatible, same_color
 
 # ---------------------------------------------------------------- 结果与协议
 
@@ -156,6 +157,7 @@ class _Row:
     members: tuple[int, ...]
     bbox: BBox
     height: float
+    appearance: Appearance | None = None
 
 
 class _DisjointSet:
@@ -184,8 +186,14 @@ class _DisjointSet:
 class GeometricMerger:
     """按几何规则逐步合并文本行的段落合并器（默认实现，规则见模块文档）。"""
 
-    def __init__(self, params: MergeParams | None = None) -> None:
+    def __init__(
+        self,
+        params: MergeParams | None = None,
+        *,
+        appearance: Callable[[TextLine], Appearance | None] | None = None,
+    ) -> None:
         self._params = params if params is not None else MergeParams()
+        self._appearance = appearance
 
     @property
     def params(self) -> MergeParams:
@@ -200,7 +208,8 @@ class GeometricMerger:
         if not valid:
             return ()
         boxes = [line.bbox for line in lines]
-        rows = self._assemble_rows(boxes, valid)
+        appearances = [self._appearance(line) if self._appearance is not None else None for line in lines]
+        rows = self._assemble_rows(boxes, valid, appearances, lines)
         chains = self._link_rows(rows)
         paragraphs: list[Paragraph] = []
         for chain in chains:
@@ -261,7 +270,13 @@ class GeometricMerger:
                 on_right = on_right or (box.x0 < right.x1 and right.x0 < box.x1)
         return on_left and on_right
 
-    def _assemble_rows(self, boxes: Sequence[BBox], valid: Sequence[int]) -> list[_Row]:
+    def _assemble_rows(
+        self,
+        boxes: Sequence[BBox],
+        valid: Sequence[int],
+        appearances: Sequence[Appearance | None],
+        lines: Sequence[TextLine],
+    ) -> list[_Row]:
         """把同一行的碎片合并成行。按中线排序后只比较中线相近的碎片，复杂度接近线性。"""
         tolerance = self._params.same_line_tolerance
         by_center = sorted(valid, key=lambda i: _center_y(boxes[i]))
@@ -274,9 +289,35 @@ class GeometricMerger:
                 # 中线差的上限是较小字高的若干倍，不超过 a 的字高的若干倍；越过后不会再有满足条件的碎片。
                 if _center_y(boxes[b]) > reach:
                     break
-                if self._same_row(boxes[a], boxes[b]) and not self._in_gutter(
-                    a, b, boxes, by_center, centers
+                aa, ab = appearances[a], appearances[b]
+                styled = aa is not None and ab is not None
+                gap = max(boxes[a].x0, boxes[b].x0) - min(boxes[a].x1, boxes[b].x1)
+                h = min(boxes[a].height, boxes[b].height)
+
+                def prefix(text: str) -> bool:
+                    stripped = text.strip().rstrip(".)、")
+                    return not any(c.isalnum() for c in text) or (
+                        stripped.isdecimal()
+                        and len(stripped) <= 3
+                        and text.strip().endswith((".", ")", "、"))
+                    )
+
+                accessory = prefix(lines[a].text) or prefix(lines[b].text)
+                if styled and (
+                    (not same_color(aa, ab) and not accessory)
+                    or gap > (1.1 if accessory else 0.55) * h
+                    or (
+                        aa is not None
+                        and ab is not None
+                        and abs(aa.ink_height - ab.ink_height)
+                        > self._params.height_tolerance * min(aa.ink_height, ab.ink_height)
+                        and not accessory
+                    )
                 ):
+                    continue
+                overlap = min(boxes[a].y1, boxes[b].y1) - max(boxes[a].y0, boxes[b].y0)
+                joined = self._same_row(boxes[a], boxes[b]) or (styled and accessory and overlap > 0.5 * h)
+                if joined and (accessory or not self._in_gutter(a, b, boxes, by_center, centers)):
                     groups.union(position[a], position[b])
         members: dict[int, list[int]] = {}
         for k, index in enumerate(by_center):
@@ -285,7 +326,12 @@ class GeometricMerger:
         for group in members.values():
             group.sort(key=lambda i: (boxes[i].x0, boxes[i].y0))
             rows.append(
-                _Row(tuple(group), _union(boxes[i] for i in group), _median([boxes[i].height for i in group]))
+                _Row(
+                    tuple(group),
+                    _union(boxes[i] for i in group),
+                    _median([boxes[i].height for i in group]),
+                    appearances[max(group, key=lambda i: boxes[i].width)],
+                )
             )
         return rows
 
@@ -295,15 +341,23 @@ class GeometricMerger:
         p = self._params
         upper, lower = upper_row.bbox, lower_row.bbox
         h = min(upper_row.height, lower_row.height)
+        if not compatible(upper_row.appearance, lower_row.appearance):
+            return False
         if abs(upper_row.height - lower_row.height) > p.height_tolerance * h:
             return False
         gap = lower.y0 - upper.y1
-        if gap > p.line_gap * h or gap < -p.max_line_overlap * h:
+        if gap > self._line_gap(upper_row) * h or gap < -p.max_line_overlap * h:
             return False
         overlap = min(upper.x1, lower.x1) - max(upper.x0, lower.x0)
         if overlap >= p.min_horizontal_overlap * min(upper.width, lower.width):
             return True
         return abs(upper.x0 - lower.x0) <= p.left_align_tolerance * h
+
+    def _line_gap(self, row: _Row) -> float:
+        if row.appearance is None:
+            return self._params.line_gap
+        # 紧贴字形的系统 OCR 框会低估大标题行高；小字控件则按更紧的间距合并。
+        return self._params.line_gap * (1.4 if row.height >= 36 else 0.8)
 
     def _link_rows(self, rows: Sequence[_Row]) -> list[list[_Row]]:
         """把行连成段落：只接受互为唯一候选的“上行 → 下行”关系，结果是若干条从上到下的链。"""
@@ -311,7 +365,7 @@ class GeometricMerger:
         downs: list[list[int]] = [[] for _ in ordered]
         ups: list[list[int]] = [[] for _ in ordered]
         for a, upper in enumerate(ordered):
-            limit = upper.bbox.y1 + self._params.line_gap * upper.height
+            limit = upper.bbox.y1 + self._line_gap(upper) * upper.height
             for b in range(a + 1, len(ordered)):
                 lower = ordered[b]
                 # 按上边缘排序，后面的行只会更靠下；间距上限不超过上行行高的 line_gap 倍。

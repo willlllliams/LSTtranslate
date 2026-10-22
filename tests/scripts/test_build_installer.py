@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from lst.contracts.automation import BuildFlavor
 from lst.contracts.ocr_engines import OcrEngineKind, OcrRuntimeVariant
 from lst.services.ocr_engines.runtime import RESOLVE_MARKER, requires_hashes, requires_resolution
 from scripts import build_installer as build
@@ -373,3 +374,64 @@ def test_online_gpu_variant_resolves_then_hashes(tmp_path: Path, monkeypatch: py
     text = path.read_text(encoding="utf-8")
     assert build.check_requirements(text, hashed=True) == 5
     assert "sympy==1.14.0" in text and not requires_resolution(text)
+
+
+# ---------------------------------------------------------------------- 构建类型（需求 DEV-02、DEV-08）
+
+
+def test_flavor_selection() -> None:
+    assert build.selected_flavors("normal", False) == [BuildFlavor.NORMAL]
+    assert build.selected_flavors("dev", False) == [BuildFlavor.DEV]
+    assert build.selected_flavors("normal", True) == [BuildFlavor.NORMAL, BuildFlavor.DEV]
+
+
+def test_marker_records_the_flavor() -> None:
+    import json
+
+    data = json.loads(build.marker_text("0.3.0", BuildFlavor.DEV, "2026-10-22T00:00:00+00:00"))
+    assert data == {"version": "0.3.0", "flavor": "dev", "built": "2026-10-22T00:00:00+00:00"}
+
+
+def test_flavor_markers_are_written_outside_the_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    monkeypatch.setattr(build, "FLAVOR_MARKERS", tmp_path / "flavors")
+    directory = build.write_flavor_marker("0.3.0", BuildFlavor.DEV, "t")
+    assert directory == tmp_path / "flavors" / "dev"
+    assert json.loads((directory / "installed.json").read_text(encoding="utf-8"))["flavor"] == "dev"
+
+
+def test_iscc_receives_flavor_and_marker_dir(tmp_path: Path) -> None:
+    args = build.iscc_args("0.3.0", BuildFlavor.DEV, tmp_path)
+    assert "/DFlavor=dev" in args and f"/DMarkerDir={tmp_path}" in args
+    assert "/DAppVersion=0.3.0" in args and args[-1].endswith("lsttranslate.iss")
+
+
+@pytest.mark.parametrize("flavor", list(BuildFlavor))
+def test_installer_names_match_the_update_service(flavor: BuildFlavor) -> None:
+    """构建脚本按更新服务的 installer_name 找输出文件，两边的命名规则只有一份。"""
+    from lst.services.updates.releases import installer_name
+
+    assert build.installer_name is installer_name
+    suffix = "-dev" if flavor is BuildFlavor.DEV else ""
+    expected = f"LSTtranslate-0.3.0{suffix}-setup.exe"
+    assert installer_name("0.3.0", flavor) == expected
+
+
+def test_version_must_not_end_with_dev() -> None:
+    with pytest.raises(SystemExit):
+        build.checked_version("0.3.0-dev")
+    assert build.checked_version("0.3.0-devel.1") == "0.3.0-devel.1"
+
+
+def test_each_flavor_gets_its_own_checksum_file(tmp_path: Path) -> None:
+    for flavor in BuildFlavor:
+        from lst.services.updates.releases import installer_name
+
+        installer = tmp_path / installer_name("0.3.0", flavor)
+        installer.write_bytes(flavor.value.encode())
+        checksum = build.write_sha256_file(installer)
+        assert checksum.name == installer.name + ".sha256"
+        assert checksum.read_text(encoding="utf-8").endswith(f"  {installer.name}\n")

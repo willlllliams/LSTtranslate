@@ -1,0 +1,592 @@
+{
+ "width": 1908,
+ "height": 1150,
+ "seconds": 5.411064499989152,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "header_footer",
+   "bbox": [
+    0,
+    34,
+    686,
+    58
+   ],
+   "order": 0,
+   "score": 0.8354008197784424,
+   "text": "Product\nDevelopment\nMobile\nCommunity\nTips & Guides",
+   "lines": [
+    {
+     "bbox": [
+      0,
+      31,
+      80,
+      61
+     ],
+     "text": "Product",
+     "score": 0.9985999464988708
+    },
+    {
+     "bbox": [
+      106,
+      33,
+      251,
+      60
+     ],
+     "text": "Development",
+     "score": 0.9997958540916443
+    },
+    {
+     "bbox": [
+      276,
+      33,
+      356,
+      61
+     ],
+     "text": "Mobile",
+     "score": 0.9993616938591003
+    },
+    {
+     "bbox": [
+      384,
+      36,
+      505,
+      61
+     ],
+     "text": "Community",
+     "score": 0.9563361406326294
+    },
+    {
+     "bbox": [
+      535,
+      34,
+      688,
+      62
+     ],
+     "text": "Tips & Guides",
+     "score": 0.9696811437606812
+    }
+   ]
+  },
+  {
+   "id": "1",
+   "category": "header_footer",
+   "bbox": [
+    1568,
+    29,
+    1710,
+    63
+   ],
+   "order": 1,
+   "score": 0.5330923795700073,
+   "text": "Q\nD",
+   "lines": [
+    {
+     "bbox": [
+      1569,
+      30,
+      1603,
+      61
+     ],
+     "text": "Q",
+     "score": 0.8517730832099915
+    },
+    {
+     "bbox": [
+      1678,
+      38,
+      1703,
+      61
+     ],
+     "text": "D",
+     "score": 0.15331746637821198
+    }
+   ]
+  },
+  {
+   "id": "2",
+   "category": "header_footer",
+   "bbox": [
+    1809,
+    34,
+    1907,
+    56
+   ],
+   "order": 2,
+   "score": 0.5095354914665222,
+   "text": "GET THU",
+   "lines": [
+    {
+     "bbox": [
+      1809,
+      34,
+      1908,
+      59
+     ],
+     "text": "GET THU",
+     "score": 0.9438102841377258
+    }
+   ]
+  },
+  {
+   "id": "3",
+   "category": "text",
+   "bbox": [
+    164,
+    151,
+    302,
+    172
+   ],
+   "order": 3,
+   "score": 0.7675738334655762,
+   "text": "LATEST POST",
+   "lines": [
+    {
+     "bbox": [
+      159,
+      149,
+      309,
+      180
+     ],
+     "text": "LATEST POST",
+     "score": 0.9699094891548157
+    }
+   ]
+  },
+  {
+   "id": "4",
+   "category": "title",
+   "bbox": [
+    156,
+    203,
+    1418,
+    375
+   ],
+   "order": 4,
+   "score": 0.7374403476715088,
+   "text": "Thunderbird for iOS: A First Look at the\nNative iPhone Email App in Development",
+   "lines": [
+    {
+     "bbox": [
+      159,
+      200,
+      1368,
+      273
+     ],
+     "text": "Thunderbird for iOS: A First Look at the",
+     "score": 0.9758766293525696
+    },
+    {
+     "bbox": [
+      151,
+      297,
+      1425,
+      383
+     ],
+     "text": "Native iPhone Email App in Development",
+     "score": 0.973227858543396
+    }
+   ]
+  },
+  {
+   "id": "5",
+   "category": "text",
+   "bbox": [
+    157,
+    426,
+    748,
+    453
+   ],
+   "order": 5,
+   "score": 0.8479183316230774,
+   "text": "October 1, 2026\n0\nAly Blenkin\n5\n30 responses",
+   "lines": [
+    {
+     "bbox": [
+      157,
+      424,
+      363,
+      454
+     ],
+     "text": "October 1, 2026",
+     "score": 0.9785124659538269
+    },
+    {
+     "bbox": [
+      396,
+      428,
+      417,
+      451
+     ],
+     "text": "0",
+     "score": 0.8545695543289185
+    },
+    {
+     "bbox": [
+      418,
+      426,
+      543,
+      454
+     ],
+     "text": "Aly Blenkin",
+     "score": 0.9905489087104797
+    },
+    {
+     "bbox": [
+      574,
+      429,
+      602,
+      451
+     ],
+     "text": "5",
+     "score": 0.6067672371864319
+    },
+    {
+     "bbox": [
+      595,
+      427,
+      748,
+      454
+     ],
+     "text": "30 responses",
+     "score": 0.9807558059692383
+    }
+   ]
+  },
+  {
+   "id": "6",
+   "category": "text",
+   "bbox": [
+    153,
+    505,
+    920,
+    668
+   ],
+   "order": 6,
+   "score": 0.9486519694328308,
+   "text": " The team has been working hard behind the scenes laying a strong\nfoundation for the Thunderbird iOS app.\nRather than leveraging\nexisting\ncode,\n, we are building natively from scratch.\nThis fresh start allows us to\ntake everything\n we've learned from'\n1 Thunderbird Desktop and Android to\nensure a fast, reliable,\nand modern experience on your iPhone [...]",
+   "lines": [
+    {
+     "bbox": [
+      155,
+      502,
+      872,
+      537
+     ],
+     "text": " The team has been working hard behind the scenes laying a strong",
+     "score": 0.9753268361091614
+    },
+    {
+     "bbox": [
+      156,
+      538,
+      583,
+      568
+     ],
+     "text": "foundation for the Thunderbird iOS app.",
+     "score": 0.9813781380653381
+    },
+    {
+     "bbox": [
+      578,
+      537,
+      834,
+      570
+     ],
+     "text": "Rather than leveraging",
+     "score": 0.9970777630805969
+    },
+    {
+     "bbox": [
+      824,
+      539,
+      916,
+      570
+     ],
+     "text": "existing",
+     "score": 0.9973877668380737
+    },
+    {
+     "bbox": [
+      156,
+      573,
+      224,
+      600
+     ],
+     "text": "code,",
+     "score": 0.9973055124282837
+    },
+    {
+     "bbox": [
+      214,
+      574,
+      622,
+      601
+     ],
+     "text": ", we are building natively from scratch.",
+     "score": 0.9833583831787109
+    },
+    {
+     "bbox": [
+      615,
+      572,
+      915,
+      599
+     ],
+     "text": "This fresh start allows us to",
+     "score": 0.9845981001853943
+    },
+    {
+     "bbox": [
+      156,
+      606,
+      327,
+      636
+     ],
+     "text": "take everything",
+     "score": 0.9990271925926208
+    },
+    {
+     "bbox": [
+      318,
+      606,
+      538,
+      635
+     ],
+     "text": " we've learned from'",
+     "score": 0.9394475221633911
+    },
+    {
+     "bbox": [
+      523,
+      606,
+      920,
+      634
+     ],
+     "text": "1 Thunderbird Desktop and Android to",
+     "score": 0.9697182178497314
+    },
+    {
+     "bbox": [
+      155,
+      642,
+      399,
+      666
+     ],
+     "text": "ensure a fast, reliable,",
+     "score": 0.991267204284668
+    },
+    {
+     "bbox": [
+      394,
+      641,
+      865,
+      671
+     ],
+     "text": "and modern experience on your iPhone [...]",
+     "score": 0.9763547778129578
+    }
+   ]
+  },
+  {
+   "id": "7",
+   "category": "text",
+   "bbox": [
+    185,
+    758,
+    332,
+    782
+   ],
+   "order": 7,
+   "score": 0.8107325434684753,
+   "text": "READ MORE",
+   "lines": [
+    {
+     "bbox": [
+      184,
+      757,
+      333,
+      786
+     ],
+     "text": "READ MORE",
+     "score": 0.9820078611373901
+    }
+   ]
+  },
+  {
+   "id": "8",
+   "category": "image",
+   "bbox": [
+    1306,
+    436,
+    1444,
+    564
+   ],
+   "order": 8,
+   "score": 0.8240898847579956,
+   "text": "",
+   "lines": []
+  },
+  {
+   "id": "9",
+   "category": "title",
+   "bbox": [
+    1225,
+    572,
+    1530,
+    619
+   ],
+   "order": 9,
+   "score": 0.6554897427558899,
+   "text": "Thunderbird",
+   "lines": [
+    {
+     "bbox": [
+      1228,
+      573,
+      1528,
+      617
+     ],
+     "text": "Thunderbird",
+     "score": 0.9996130466461182
+    }
+   ]
+  },
+  {
+   "id": "10",
+   "category": "text",
+   "bbox": [
+    1221,
+    635,
+    1526,
+    678
+   ],
+   "order": 10,
+   "score": 0.795371949672699,
+   "text": "An open source, privacy focused\nand ad-free email app for ios.",
+   "lines": [
+    {
+     "bbox": [
+      1221,
+      631,
+      1527,
+      659
+     ],
+     "text": "An open source, privacy focused",
+     "score": 0.9615511894226074
+    },
+    {
+     "bbox": [
+      1234,
+      654,
+      1517,
+      682
+     ],
+     "text": "and ad-free email app for ios.",
+     "score": 0.9856947660446167
+    }
+   ]
+  },
+  {
+   "id": "11",
+   "category": "text",
+   "bbox": [
+    1326,
+    753,
+    1426,
+    771
+   ],
+   "order": 11,
+   "score": 0.8039876222610474,
+   "text": "Get started",
+   "lines": [
+    {
+     "bbox": [
+      1327,
+      752,
+      1429,
+      773
+     ],
+     "text": "Get started",
+     "score": 0.9987496733665466
+    }
+   ]
+  },
+  {
+   "id": "12",
+   "category": "text",
+   "bbox": [
+    840,
+    984,
+    1101,
+    1027
+   ],
+   "order": 12,
+   "score": 0.6344814896583557,
+   "text": "Latest Posts",
+   "lines": [
+    {
+     "bbox": [
+      840,
+      981,
+      1100,
+      1028
+     ],
+     "text": "Latest Posts",
+     "score": 0.9991774559020996
+    }
+   ]
+  },
+  {
+   "id": "13",
+   "category": "text",
+   "bbox": [
+    747,
+    1105,
+    1060,
+    1149
+   ],
+   "order": 13,
+   "score": 0.45348650217056274,
+   "text": "Thunderbird Dev Digest",
+   "lines": [
+    {
+     "bbox": [
+      750,
+      1104,
+      1057,
+      1136
+     ],
+     "text": "Thunderbird Dev Digest",
+     "score": 0.9990352988243103
+    }
+   ]
+  },
+  {
+   "id": "14",
+   "category": "text",
+   "bbox": [
+    1301,
+    1107,
+    1569,
+    1139
+   ],
+   "order": 14,
+   "score": 0.6485738158226013,
+   "text": "Desktop Settings",
+   "lines": [
+    {
+     "bbox": [
+      1304,
+      1106,
+      1568,
+      1142
+     ],
+     "text": "Desktop Settings",
+     "score": 0.9931093454360962
+    }
+   ]
+  }
+ ],
+ "source_sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2"
+}

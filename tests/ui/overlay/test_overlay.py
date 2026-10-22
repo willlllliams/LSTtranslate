@@ -75,6 +75,17 @@ async def test_text_color_follows_background_brightness(make_rig: MakeRig) -> No
     assert not rig.window.light_background
 
 
+async def test_symbols_and_numbers_keep_original_pixels(make_rig: MakeRig) -> None:
+    rig = await _shown(make_rig, dpr=1.0)
+    box = BBox(20, 20, 120, 60)
+    block = LayoutBlock("0", BlockCategory.TEXT, box, 0, 1.0, text="99")
+    await rig.publish(OcrCompleted(SessionId("s1"), (block,), (segment("p1", "99", box),)))
+    rig.window.apply_views([SegmentView(P1, "99", "99", None, True, (), SkipReason.NO_TEXT)])
+    rig.window.fit_all_now()
+    shot = rig.window.grab().toImage()
+    assert shot.pixelColor(25, 25).red() == 30
+
+
 async def test_loading_model_status(make_rig: MakeRig) -> None:
     rig = await make_rig()
     await rig.publish(WorkerStatuses({"ocr": WorkerStatus(WorkerState.LOADING)}))

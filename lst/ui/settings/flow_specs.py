@@ -55,11 +55,11 @@ _MAIN_TEXT: Final[tuple[FlowItem, ...]] = (
 _MAIN_STRUCTURE: Final[tuple[FlowItem, ...]] = (
     FlowStep(DECODE),
     FlowStep(CLEAN),
+    FlowStep(AGGREGATE),
     FlowStep(MERGE_BLOCKS),
     FlowStep(SEGMENTS),
 )
-"""版面模式下主进程的处理。SplitStep 在版面模式下原样返回（SplitStep.apply 开头判断 text_mode），
-AggregateStep 只做相邻正文块合并（AggregateStep.apply），所以这两步换成“合并相邻正文块”一个节点。"""
+"""版面模式下主进程的处理：先按截图整理文字单元，再按配置合并相邻正文块。"""
 
 
 def _steps(*keys: str) -> tuple[FlowItem, ...]:

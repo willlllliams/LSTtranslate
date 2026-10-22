@@ -1,7 +1,12 @@
 r"""构建安装包（需求 INS-01 至 INS-08，架构文档第 15 章）。
 
 用法（仓库根目录）：
-    uv run python scripts/build_installer.py [--allow-unhashed] [--skip-iscc]
+    uv run python scripts/build_installer.py [--flavor normal|dev | --all] [--allow-unhashed] [--skip-iscc]
+
+构建类型（需求 DEV-02、DEV-08，架构文档 16.6 节）：普通版与开发版的程序文件完全相同，只有安装版标记
+app\installed.json 的 flavor 字段不同，它决定 [automation].enabled 没有写进配置时的默认值（开发版开启）与
+应用内更新下载哪一种安装包。``--flavor`` 选一种，缺省 normal；``--all`` 用同一份暂存目录依次编译两种。
+两种安装包的 AppId 相同，互相覆盖安装。
 
 安装包不捆绑 PaddleOCR、RapidOCR 的运行环境与模型：它们由 services.ocr_engines 在用户点“安装”时下载，
 运行环境用随安装包分发的 tools\uv.exe 按 app\ocr-<引擎>-<版本>-requirements.txt 安装（需求 OCRE-07：
@@ -35,12 +40,15 @@ PaddleOCR 有 cpu、cuda 两个版本，RapidOCR 有 cpu、directml、cuda 三�
    的后端是 Windows 凭据管理器，通过真实的 launcher\worker.py 启动一次 nmt 与 ocr 进程入口（不带 --address，
    进程在解析参数时退出，不联网），检查每份版本清单的格式、带不带哈希与构建结果一致，
    并运行 ``tools\uv.exe --version``；
-7. 调用 Inno Setup 编译 installer\lsttranslate.iss，输出 dist\LSTtranslate-<版本>-setup.exe，
-   并在旁边写 sha256sum 格式的校验文件 LSTtranslate-<版本>-setup.exe.sha256（应用内更新用它校验下载）。
+7. 每种构建类型写一份标记 build\flavors\<类型>\installed.json，调用 Inno Setup 编译 installer\lsttranslate.iss
+   （传入 /DFlavor 与 /DMarkerDir，安装脚本用这份标记代替暂存目录里自检用的那份），输出
+   dist\LSTtranslate-<版本>-setup.exe（普通版）或 dist\LSTtranslate-<版本>-dev-setup.exe（开发版），
+   并在旁边写 sha256sum 格式的校验文件 <安装包名>.sha256（应用内更新用它校验下载）。
 
 构建开头用更新服务的 parse_version 校验 pyproject.toml 里的版本号：必须是 SemVer 规范写法
 （例如 0.2.0、0.2.0-beta.1），否则中止。PEP 440 写法（0.2.0b1）会让安装包名与更新服务按 tag 拼出的
-文件名对不上，应用内更新因此找不到安装包。
+文件名对不上，应用内更新因此找不到安装包。版本号也不能以 -dev 结尾：开发版安装包名是版本号加 -dev-setup.exe，
+0.2.0-dev 的普通版安装包会与 0.2.0 的开发版同名。
 
 暂存目录与输出目录都不纳入版本库。不使用 tempfile（见架构文档 2.9.5 节）。
 """
@@ -67,14 +75,17 @@ if str(ROOT) not in sys.path:
     # 在仓库之外运行（例如 python C:\repo\scripts\build_installer.py）时也能导入 lst。
     sys.path.insert(0, str(ROOT))
 
+from lst.contracts.automation import BuildFlavor  # noqa: E402
 from lst.contracts.ocr_engines import OcrEngineKind, OcrRuntimeVariant  # noqa: E402
 from lst.services._shared.download import dir_size, file_sha256  # noqa: E402
 from lst.services.ocr_engines.layout import ENGINE_VARIANTS, requirements_name  # noqa: E402
 from lst.services.ocr_engines.runtime import RESOLVE_MARKER  # noqa: E402
+from lst.services.updates.releases import DEV_SUFFIX, installer_name  # noqa: E402
 from lst.services.updates.version import parse_version  # noqa: E402
 
 BUILD = ROOT / "build"
 STAGE = BUILD / "stage"
+FLAVOR_MARKERS = BUILD / "flavors"
 DIST = ROOT / "dist"
 ISCC = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe"
 
@@ -194,6 +205,8 @@ def checked_version(text: str) -> str:
             f"pyproject.toml 的版本号 {text!r} 不是 SemVer 规范写法{hint}。"
             "预发布版本写成 0.2.0-beta.1 这样，不要写 PEP 440 的 0.2.0b1：应用内更新按 SemVer 匹配安装包"
         )
+    if text.endswith(DEV_SUFFIX):
+        sys.exit(f"版本号 {text!r} 不能以 {DEV_SUFFIX} 结尾：它会与开发版安装包的文件名混淆")
     return text
 
 
@@ -626,6 +639,23 @@ def check_single_opencv(frozen: str) -> None:
         )
 
 
+def marker_text(version: str, flavor: BuildFlavor, built: str) -> str:
+    """安装版标记 installed.json 的内容：版本号、构建类型与构建时间。"""
+    return json.dumps({"version": version, "flavor": flavor.value, "built": built}, indent=2)
+
+
+def built_time() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def write_flavor_marker(version: str, flavor: BuildFlavor, built: str) -> Path:
+    r"""写 build\flavors\<类型>\installed.json，返回它所在的目录（交给 ISCC 的 /DMarkerDir）。"""
+    directory = FLAVOR_MARKERS / flavor.value
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "installed.json").write_text(marker_text(version, flavor, built), encoding="utf-8")
+    return directory
+
+
 def stage_app(python: Path, version: str, requirements: Iterable[str]) -> None:
     app = STAGE / "app"
     shutil.copytree(ROOT / "lst", app / "lst", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -635,10 +665,10 @@ def stage_app(python: Path, version: str, requirements: Iterable[str]) -> None:
     # 词典数据的第三方声明：界面上的署名指向这两项（CC BY-SA 4.0 要求署名与许可证随数据一起分发）
     shutil.copy2(ROOT / "THIRD-PARTY-NOTICES", app / "THIRD-PARTY-NOTICES")
     shutil.copytree(ROOT / "licenses", app / "licenses")
-    (app / "installed.json").write_text(
-        json.dumps({"version": version, "built": datetime.now(UTC).isoformat(timespec="seconds")}, indent=2),
-        encoding="utf-8",
-    )
+    # 暂存目录里的这份标记只给自检用（is_installed 与启动器自检都要它）；安装包里的标记由安装脚本按构建类型
+    # 从 build\flavors 取，见 installer\lsttranslate.iss 的 [Files]。
+    marker = marker_text(version, BuildFlavor.NORMAL, built_time())
+    (app / "installed.json").write_text(marker, encoding="utf-8")
     for name in requirements:
         shutil.copy2(BUILD / name, app / name)
     shutil.copytree(
@@ -719,13 +749,35 @@ def smoke_test_uv(uv: Path) -> None:
     log(f"smoke ok: {result.stdout.strip()}")
 
 
-def build_installer(version: str) -> Path:
+def iscc_args(version: str, flavor: BuildFlavor, marker_dir: Path) -> list[str]:
+    """ISCC 的命令行：版本号、暂存目录、输出目录、构建类型与它的标记所在的目录。"""
+    return [
+        str(ISCC),
+        "/Q",
+        f"/DAppVersion={version}",
+        f"/DStageDir={STAGE}",
+        f"/DOutputDir={DIST}",
+        f"/DFlavor={flavor.value}",
+        f"/DMarkerDir={marker_dir}",
+        str(ROOT / "installer" / "lsttranslate.iss"),
+    ]
+
+
+def build_installer(version: str, flavor: BuildFlavor, built: str) -> Path:
+    """编译一种构建类型的安装包，返回安装包路径。文件名与更新服务的 installer_name 一致。"""
     if not ISCC.is_file():
         sys.exit(f"找不到 Inno Setup 编译器：{ISCC}")
     DIST.mkdir(exist_ok=True)
-    run([str(ISCC), "/Q", f"/DAppVersion={version}", f"/DStageDir={STAGE}", f"/DOutputDir={DIST}",
-         str(ROOT / "installer" / "lsttranslate.iss")])  # fmt: skip
-    return DIST / f"LSTtranslate-{version}-setup.exe"
+    run(iscc_args(version, flavor, write_flavor_marker(version, flavor, built)))
+    installer = DIST / installer_name(version, flavor)
+    if not installer.is_file():
+        sys.exit(f"Inno Setup 没有生成 {installer}")
+    return installer
+
+
+def selected_flavors(flavor: str, build_all: bool) -> list[BuildFlavor]:
+    """要编译的构建类型：--all 时普通版与开发版都编，否则只编 --flavor 指定的一种。"""
+    return [BuildFlavor.NORMAL, BuildFlavor.DEV] if build_all else [BuildFlavor(flavor)]
 
 
 def main() -> None:
@@ -740,7 +792,15 @@ def main() -> None:
         help="无法联网生成哈希时，写入不带哈希的 OCR 运行环境版本清单",
     )
     parser.add_argument("--skip-iscc", action="store_true", help="只准备暂存目录，不编译安装包")
+    parser.add_argument(
+        "--flavor",
+        choices=[flavor.value for flavor in BuildFlavor],
+        default=BuildFlavor.NORMAL.value,
+        help="构建类型：normal（普通版，自动化接口默认关闭）或 dev（开发版，默认开启）",
+    )
+    parser.add_argument("--all", action="store_true", help="用同一份暂存目录依次编译普通版与开发版")
     args = parser.parse_args()
+    flavors = selected_flavors(args.flavor, args.all)
 
     started = time.monotonic()
     version = checked_version(project_version())
@@ -765,9 +825,11 @@ def main() -> None:
     log(f"暂存目录合计：{mb(dir_size(STAGE))}")
 
     if not args.skip_iscc:
-        installer = build_installer(version)
-        log(f"安装包：{installer}（{mb(installer.stat().st_size)}）")
-        log(f"校验文件：{write_sha256_file(installer)}")
+        built = built_time()
+        for flavor in flavors:
+            installer = build_installer(version, flavor, built)
+            log(f"安装包（{flavor.value}）：{installer}（{mb(installer.stat().st_size)}）")
+            log(f"校验文件：{write_sha256_file(installer)}")
     log(f"完成，用时 {time.monotonic() - started:.0f} 秒")
 
 

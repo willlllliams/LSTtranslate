@@ -167,6 +167,57 @@ def logical_rect(screen: ScreenGeometry, pixels: Rect) -> Rect:
     return Rect(x, y, max(1, _round_half_up(right) - x), max(1, _round_half_up(bottom) - y))
 
 
+def native_rect(screen: ScreenGeometry) -> Rect:
+    """屏幕在原生坐标（全局物理像素）里的矩形：左上角与逻辑左上角相同（见模块说明），宽高是冻结画面的像素尺寸。"""
+    return Rect(screen.logical.x, screen.logical.y, screen.pixel_width, screen.pixel_height)
+
+
+def intersect(a: Rect, b: Rect) -> Rect | None:
+    """两个矩形的交集；不相交时返回 None。"""
+    left, top = max(a.x, b.x), max(a.y, b.y)
+    right, bottom = min(a.right, b.right), min(a.bottom, b.bottom)
+    if right <= left or bottom <= top:
+        return None
+    return Rect(left, top, right - left, bottom - top)
+
+
+@dataclass(frozen=True, slots=True)
+class NativePiece:
+    """原生坐标矩形落在一块屏幕上的部分。
+
+    - index：屏幕在列表里的序号；
+    - source：这一部分在该屏冻结画面里的物理像素矩形；
+    - target：这一部分在截图（以矩形左上角为原点）里的位置，宽高与 source 相同。
+    """
+
+    index: int
+    source: Rect
+    target: Rect
+
+
+def native_pieces(screens: Sequence[ScreenGeometry], rect: Rect) -> list[NativePiece]:
+    """原生坐标的矩形按屏幕切开，返回落在各屏上的部分，用于不经过蒙版、直接按矩形截取（可以跨屏）。
+
+    缩放比例不同的屏幕在原生坐标里首尾相接、互不重叠，所以各部分拼起来就是矩形里有屏幕的那部分；
+    矩形里不属于任何屏幕的地方（屏幕之间的空隙）没有对应的部分，截图里那里留黑。
+    """
+    pieces: list[NativePiece] = []
+    for index, screen in enumerate(screens):
+        bounds = native_rect(screen)
+        overlap = intersect(bounds, rect)
+        if overlap is None:
+            continue
+        source = Rect(overlap.x - bounds.x, overlap.y - bounds.y, overlap.width, overlap.height)
+        target = Rect(overlap.x - rect.x, overlap.y - rect.y, overlap.width, overlap.height)
+        pieces.append(NativePiece(index, source, target))
+    return pieces
+
+
+def anchor_piece(pieces: Sequence[NativePiece]) -> NativePiece | None:
+    """覆盖窗口按哪块屏幕摆放：矩形在它上面的面积最大的那块，面积相同时取靠前的。"""
+    return max(pieces, key=lambda p: p.source.width * p.source.height, default=None)
+
+
 def physical_size_text(selection: Selection | None) -> str:
     """蒙版上显示的选区尺寸（物理像素，也就是截图的尺寸）。"""
     if selection is None:

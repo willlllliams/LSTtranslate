@@ -12,7 +12,9 @@
 - 应用更新的 ``CheckForUpdates``、``DownloadUpdate``、``InstallUpdate``（需求 UPD-01 至 UPD-06）；
 - 出错的推理进程的 ``RestartWorker``（架构文档 8.2 节）；
 - 存储位置的 ``ChangeDataDir``、``ChangeModelsDir`` 与 ``RestartApp``（需求 CFG-06、CFG-07、MOD-04）；
-- 热键录入开始和结束时发布 ``HotkeyRecordingChanged``，热键模块在录入期间暂停全局热键。
+- 热键录入开始和结束时发布 ``HotkeyRecordingChanged``，热键模块在录入期间暂停全局热键；
+- 自动化接口的开关经由 ``UpdateConfig {"automation": {"enabled": ...}}`` 修改，当前状态来自
+  ``AutomationStatus``（需求 DEV-01、DEV-03）。
 
 视图（pages、window）只负责绘制和收集输入：它们读展示器的属性，调用展示器的方法，
 并通过 ``subscribe`` 登记回调，在 ``Topic`` 指明的数据变化时刷新自己。本模块不依赖 Qt，
@@ -32,6 +34,7 @@ from typing import Final, cast
 
 from pydantic import BaseModel
 
+from lst.contracts.automation import AutomationStatus, BuildFlavor
 from lst.contracts.config import AppConfig, ConfigRejected, UpdateConfig, UpdateSecret
 from lst.contracts.errors import ErrorCode
 from lst.contracts.events import (
@@ -133,6 +136,8 @@ class Topic(StrEnum):
     """更新状态（UpdateStatus）或手动检查的反馈有变化。"""
     STORAGE = "storage"
     """数据目录、模型目录或它们的更改进度（StorageLocations）有变化。"""
+    AUTOMATION = "automation"
+    """自动化接口的状态（AutomationStatus）有变化。"""
     OPEN = "open"
     """收到 OpenSettings：视图应当显示并激活窗口。"""
 
@@ -201,6 +206,7 @@ class SettingsPresenter:
         engine_kinds: Mapping[str, type[BaseModel]],
         keyless_kinds: frozenset[str] = KEYLESS_KINDS,
         app_version: str = "",
+        flavor: BuildFlavor = BuildFlavor.NORMAL,
     ) -> None:
         self._bus = bus
         self._logger = logger
@@ -208,6 +214,7 @@ class SettingsPresenter:
         self._engine_kinds = dict(engine_kinds)
         self._keyless_kinds = keyless_kinds
         self.app_version = app_version
+        self.flavor = flavor
         self._listeners: list[Listener] = []
         self._closed = False
         self._specs: dict[tuple[str, tuple[str, ...]], FieldSpec | None] = {}
@@ -224,6 +231,8 @@ class SettingsPresenter:
         self.update_status: UpdateStatus | None = None
         self.storage: StorageLocations | None = None
         """存储位置；组合根没有装配存储位置模块时为 None，常规页的存储位置卡片说明不可用。"""
+        self.automation: AutomationStatus | None = None
+        """自动化接口的状态；组合根没有装配自动化接口时为 None，关于页的开关不可用。"""
         self.check_feedback: CheckFeedback | None = None
         """最近一次手动检查更新的反馈；没有手动检查过、或状态已经离开检查结果时为 None。"""
         self._feedback_state: UpdateState | None = None
@@ -251,6 +260,7 @@ class SettingsPresenter:
         self.nmt_runtime = self._bus.latest(NmtRuntimeInfo)
         self.update_status = self._bus.latest(UpdateStatus)
         self.storage = self._bus.latest(StorageLocations)
+        self.automation = self._bus.latest(AutomationStatus)
         snapshot = self._bus.latest(StatsSnapshot)
         if snapshot is not None:
             self.stats = snapshot.engines
@@ -863,6 +873,21 @@ class SettingsPresenter:
         if not self._closed and self.storage is not None:
             self._logger.info("设置窗口：重新启动程序")
             self._bus.send(RestartApp())
+
+    # ------------------------------------------------------------------ 自动化接口
+
+    def on_automation(self, status: AutomationStatus) -> None:
+        if self._closed:
+            return
+        self.automation = status
+        self._notify(Topic.AUTOMATION)
+
+    def set_automation_enabled(self, enabled: bool) -> None:
+        """打开或关闭自动化接口：写进配置的 [automation].enabled，以后不再跟随构建类型的默认值。"""
+        if self._closed or self.automation is None:
+            return
+        self._logger.info("设置窗口：%s自动化接口", "开启" if enabled else "关闭")
+        self._bus.send(UpdateConfig({"automation": {"enabled": enabled}}))
 
     # ------------------------------------------------------------------ 推理进程
 

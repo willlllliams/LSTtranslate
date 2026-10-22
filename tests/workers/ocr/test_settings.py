@@ -223,6 +223,9 @@ def test_predict_params_from_settings_and_requests() -> None:
     "raw",
     [
         {"text_det_thresh": 1.2},
+        # 检测框阈值的上限 0.7 见 lst/services/ocr/config.py 的 MAX_DET_BOX_THRESH。
+        {"text_det_box_thresh": 1.0},
+        {"text_det_box_thresh": 0.71},
         {"text_det_limit_side_len": -1},
         {"text_det_limit_side_len": 99999},
         {"text_det_limit_type": "both"},

@@ -10,6 +10,9 @@
    蒙版先关闭、事件后发布：覆盖窗口在下一轮事件循环里弹出时，蒙版已经不在了。
 4. “取消截屏”（默认 Esc 与右键单击，键位见架构文档 11.8 节）关闭蒙版，不发布任何事件。
 
+自动化接口另有一条不显示蒙版的路径（``capture_rect``，架构文档 16.4 节）：冻结全部屏幕，按原生坐标的矩形
+（全局物理像素，可以跨屏）裁出截图，同样用 UUID4 生成会话号并发布 CaptureCompleted。
+
 截屏期间屏幕布局变化（插拔显示器、改分辨率或缩放比例、旋转）时，冻结画面与屏幕已经对不上，
 控制器取消这次截屏并发布 NotificationRequested 请用户重来（CAP-07）。判断有两道：
 
@@ -30,15 +33,24 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
-from PySide6.QtCore import QRect, Qt, SignalInstance
-from PySide6.QtGui import QCursor, QGuiApplication, QImage, QPixmap, QScreen
+from PySide6.QtCore import QPoint, QRect, Qt, SignalInstance
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QPainter, QPixmap, QScreen
 from PySide6.QtWidgets import QWidget
 
 from lst.contracts.events import NoticeLevel, NotificationRequested
 from lst.contracts.ids import SessionId
 from lst.contracts.ocr import CaptureCompleted, CaptureGeometry, RawImage
 from lst.kernel import EventBus
-from lst.ui.capture.geometry import Rect, ScreenGeometry, Selection, selection_from_drag
+from lst.ui.capture.geometry import (
+    Rect,
+    ScreenGeometry,
+    Selection,
+    anchor_piece,
+    logical_rect,
+    native_pieces,
+    native_rect,
+    selection_from_drag,
+)
 from lst.ui.capture.mask import MaskWindow
 from lst.ui.common.bindings import BindingsConfig
 
@@ -99,9 +111,53 @@ def to_raw_image(pixmap: QPixmap, pixels: Rect) -> RawImage:
     转换只是一次内存拷贝。QPixmap.copy 的矩形按像素计，不受设备像素比影响。
     """
     image = pixmap.copy(QRect(pixels.x, pixels.y, pixels.width, pixels.height)).toImage()
+    return _raw(image)
+
+
+def _raw(image: QImage) -> RawImage:
     image = image.convertToFormat(QImage.Format.Format_ARGB32)
     data = bytes(cast(memoryview, image.constBits()))
     return RawImage(image.width(), image.height(), image.bytesPerLine(), data)
+
+
+def compose_native(frozen: Sequence[FrozenScreen], rect: Rect) -> tuple[RawImage, CaptureGeometry] | None:
+    """按原生坐标的矩形（全局物理像素，可以跨屏）从冻结画面裁出截图，以及覆盖窗口摆放用的几何信息。
+
+    矩形只落在一块屏幕上时与框选的裁切完全相同（to_raw_image）；跨屏时把各屏的部分按原生坐标拼起来，
+    屏幕之间的空隙留黑。覆盖窗口按矩形面积最大的那块屏幕摆放，选区是矩形在那块屏幕的坐标系里换算出的逻辑矩形。
+    矩形不与任何屏幕相交时返回 None。
+    """
+    screens = [item.geometry for item in frozen]
+    pieces = native_pieces(screens, rect)
+    anchor = anchor_piece(pieces)
+    if anchor is None:
+        return None
+    if len(pieces) == 1 and (anchor.source.width, anchor.source.height) == (rect.width, rect.height):
+        image = to_raw_image(frozen[anchor.index].pixmap, anchor.source)
+    else:
+        canvas = QImage(rect.width, rect.height, QImage.Format.Format_RGB32)
+        canvas.fill(QColor(0, 0, 0))
+        painter = QPainter(canvas)
+        try:
+            for piece in pieces:
+                source = piece.source
+                part = frozen[piece.index].pixmap.copy(QRect(source.x, source.y, source.width, source.height))
+                part_image = part.toImage()
+                part_image.setDevicePixelRatio(1.0)  # 冻结画面带着屏幕的设备像素比，按 1:1 像素拼接
+                painter.drawImage(QPoint(piece.target.x, piece.target.y), part_image)
+        finally:
+            painter.end()
+        image = _raw(canvas)
+    screen = screens[anchor.index]
+    origin = native_rect(screen)
+    relative = Rect(rect.x - origin.x, rect.y - origin.y, rect.width, rect.height)
+    geometry = CaptureGeometry(
+        screen_name=screen.name,
+        screen_rect=screen.logical.as_tuple(),
+        selection=logical_rect(screen, relative).as_tuple(),
+        dpr=screen.dpr,
+    )
+    return image, geometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +206,8 @@ class CaptureController:
         self._active: _Active | None = None
         self._bindings = BindingsConfig()
         self.last_timing: CaptureTiming | None = None
+        self.last_session: SessionId | None = None
+        """最近一次发布 CaptureCompleted 的会话号。"""
 
     # ---- 查询 ----
 
@@ -217,6 +275,38 @@ class CaptureController:
             self.last_timing.show_ms,
         )
 
+    def capture_rect(self, rect: Rect) -> SessionId:
+        """不显示蒙版，直接冻结全部屏幕、按原生坐标的矩形截取，然后发布 CaptureCompleted（自动化接口用）。
+
+        截图与几何信息见 compose_native。正在框选或冻结屏幕失败时抛 RuntimeError；
+        矩形太小或不与任何屏幕相交时抛 ValueError。
+        """
+        if self._active is not None:
+            raise RuntimeError("正在框选，不能同时直接截取")
+        if rect.width < 1 or rect.height < 1:
+            raise ValueError("矩形的宽高至少为 1 物理像素")
+        try:
+            frozen = tuple(self._freezer())
+        except Exception as exc:
+            raise RuntimeError(f"冻结屏幕画面失败：{exc}") from exc
+        if not frozen:
+            raise RuntimeError("冻结屏幕画面失败：没有屏幕")
+        composed = compose_native(frozen, rect)
+        if composed is None:
+            raise ValueError("矩形不在任何屏幕上")
+        image, geometry = composed
+        session_id = self._session_ids()
+        self.last_session = session_id
+        self._logger.info(
+            "直接截取：会话 %s，屏幕 %s，%d×%d 物理像素",
+            session_id,
+            geometry.screen_name,
+            image.width,
+            image.height,
+        )
+        self._bus.publish(CaptureCompleted(session_id, image, geometry))
+        return session_id
+
     def cancel(self) -> None:
         """取消截屏：关闭蒙版，不发布事件。没有在截屏时什么也不做。"""
         if self._active is not None:
@@ -277,6 +367,7 @@ class CaptureController:
             dpr=screen.dpr,
         )
         session_id = self._session_ids()
+        self.last_session = session_id
         self._close()
         self._logger.info(
             "截屏完成：会话 %s，屏幕 %s（缩放 %g），选区 %d×%d 物理像素",
@@ -342,6 +433,7 @@ __all__ = [
     "Freezer",
     "FrozenScreen",
     "WindowHook",
+    "compose_native",
     "describe_screen",
     "freeze_screens",
     "to_raw_image",

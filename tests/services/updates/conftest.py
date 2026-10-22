@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+from lst.contracts.automation import BuildFlavor
 from lst.contracts.events import NotificationRequested, QuitRequested
 from lst.contracts.updates import UpdateState, UpdateStatus
 from lst.kernel import EventBus, ModuleContext
@@ -120,6 +121,7 @@ async def start_module(
         clock: Callable[[], float] = time.monotonic,
         progress_interval: float = 0.2,
         write_chunk_bytes: int = 1 << 20,
+        flavor: BuildFlavor = BuildFlavor.NORMAL,
     ) -> UpdatesModule:
         module = UpdatesModule(
             client,
@@ -135,6 +137,7 @@ async def start_module(
             clock=clock,
             progress_interval=progress_interval,
             write_chunk_bytes=write_chunk_bytes,
+            flavor=flavor,
         )
         ctx = ModuleContext(bus, logging.getLogger(MODULE_LOGGER))
         await module.start(ctx)

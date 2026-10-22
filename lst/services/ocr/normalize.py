@@ -29,8 +29,8 @@ blocks.py）。清洗与拆分作用于这些文本行；聚合的段落合并�
 ``blocks_to_segments`` 以 premerged=True 把每个段落块转换成一个段，段号仍是 ``p<序号>``，与没有中间层时
 完全相同。聚合关闭时文本行保持原样，OcrModule 按“一行一段”切分（paragraphs.LineMerger）。
 
-版面模式下 PP-StructureV3 的块已经是段落级。清洗作用于块（以及块里的文本行），拆分只作用于文本模式，
-聚合里的“合并相邻同类小块”是可选的一步，默认关闭。
+版面模式下，聚合先结合截图像素拆开 PP-StructureV3 粘连的菜单与控件，连续正文保持段落；
+“合并相邻同类小块”是可选的一步，默认关闭。没有像素帧时保留原有版面块。
 
 内置步骤
 ========
@@ -48,9 +48,9 @@ blocks.py）。清洗与拆分作用于这些文本行；聚合的段落合并�
   段落块；版面模式下可选把阅读顺序上相邻、上下紧挨、左右对齐的两个正文块合并成一块。
 - ``PassThrough``（原样通过）：不改变输入，作为占位与测试用。
 
-默认值让现有行为保持不变：清洗只去掉空文字、零面积与 IoU 不小于 0.9 的重复框，置信度阈值为 0；
+清洗默认去掉空文字、零面积与 IoU 不小于 0.9 的重复框，置信度阈值为 0；
 拆分关闭；聚合开启，段落合并的阈值与 MergeParams 的默认值相同，相邻块合并关闭。
-回归样本（tests/services/ocr/fixtures）在默认配置下的段落完全匹配率与直接调用 GeometricMerger 相同。
+没有像素帧的回归样本保持原有几何合并规则；实际截图另由 tests/fidelity 的人工标注约束。
 
 日志只写数量，不写识别出的文本（需求 PRV-02）。
 """
@@ -64,8 +64,9 @@ from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lst.contracts.ocr import BBox, BlockCategory, LayoutBlock, TextLine
+from lst.contracts.ocr import BBox, BlockCategory, LayoutBlock, RawImage, TextLine
 from lst.contracts.text import join_lines
+from lst.services.ocr.appearance import ImageAppearance
 from lst.services.ocr.paragraphs import GeometricMerger, MergeParams, ParagraphMerger
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class NormalizeContext:
     width: int
     height: int
     text_mode: bool
+    image: RawImage | None = None
 
 
 class NormalizeStep(Protocol):
@@ -398,21 +400,68 @@ class AggregateStep:
         merge_blocks: bool = False,
         block_gap: float = 0.8,
         block_overlap: float = 0.5,
+        appearance: bool = True,
     ) -> None:
         self.merger: ParagraphMerger = merger if merger is not None else GeometricMerger()
         self.paragraphs = paragraphs
         self.merge_blocks = merge_blocks
         self.block_gap = block_gap
         self.block_overlap = block_overlap
+        self.appearance = appearance
 
     def apply(self, blocks: Sequence[LayoutBlock], context: NormalizeContext) -> tuple[LayoutBlock, ...]:
+        merger = self.merger
+        if self.appearance and context.image is not None and isinstance(merger, GeometricMerger):
+            appearance = ImageAppearance(context.image)
+            blocks = tuple(
+                replace(block, lines=tuple(part for line in block.lines for part in appearance.split(line)))
+                if block.category in TEXT_LIKE and block.lines
+                else block
+                for block in blocks
+            )
+            merger = GeometricMerger(merger.params, appearance=appearance.of)
         if context.text_mode:
-            return self._paragraph_blocks(blocks) if self.paragraphs else tuple(blocks)
+            return self._paragraph_blocks(blocks, merger) if self.paragraphs else tuple(blocks)
+        if self.appearance and context.image is not None:
+            blocks = self._structure_paragraphs(blocks, merger)
         return self._merge_adjacent(blocks) if self.merge_blocks else tuple(blocks)
+
+    def _structure_paragraphs(
+        self, blocks: Sequence[LayoutBlock], merger: ParagraphMerger
+    ) -> tuple[LayoutBlock, ...]:
+        """按截图颜色与间距拆开版面模型粘连的控件，连续正文仍共同成段。"""
+        result: list[LayoutBlock] = []
+        used = {block.id for block in blocks}
+        for block in blocks:
+            if block.category not in TEXT_LIKE or not block.lines:
+                result.append(block)
+                continue
+            paragraphs = merger.merge(block.lines)
+            for index, paragraph in enumerate(paragraphs):
+                members = tuple(block.lines[i] for i in paragraph.lines)
+                block_id = block.id
+                if len(paragraphs) > 1:
+                    block_id = f"{block.id}_p{index}"
+                    while block_id in used:
+                        block_id += "_"
+                    used.add(block_id)
+                result.append(
+                    replace(
+                        block,
+                        id=block_id,
+                        bbox=paragraph.bbox,
+                        text=paragraph.text,
+                        lines=members,
+                        score=_mean_score(members, block.score),
+                    )
+                )
+        return tuple(replace(block, order=index) for index, block in enumerate(result))
 
     # ---- 文本模式：段落 ----
 
-    def _paragraph_blocks(self, blocks: Sequence[LayoutBlock]) -> tuple[LayoutBlock, ...]:
+    def _paragraph_blocks(
+        self, blocks: Sequence[LayoutBlock], merger: ParagraphMerger
+    ) -> tuple[LayoutBlock, ...]:
         """全部正文块的文本行一起合并成段落（与 segments 原来的做法相同），段落块排在第一个正文块的位置。"""
         ordered = sorted(blocks, key=lambda b: b.order)
         lines: list[TextLine] = []
@@ -427,7 +476,7 @@ class AggregateStep:
                     lines.append(TextLine(block.bbox, text, block.score))
         used = {b.id for b in ordered if b.category is not BlockCategory.TEXT}
         paragraphs: list[LayoutBlock] = []
-        for paragraph in self.merger.merge(lines):
+        for paragraph in merger.merge(lines):
             if not paragraph.lines or not all(0 <= i < len(lines) for i in paragraph.lines):
                 logger.warning("段落合并器返回的段落引用了不存在的文本行，已丢弃")
                 continue
@@ -570,7 +619,12 @@ class NormalizeConfig(BaseModel):
         3.0, "上下文范围", "判断栏间空白时向上、向下各看多远（× 行高）。", advanced=True, ge=0.5, le=20.0
     )
 
-    aggregate: bool = _p(True, "合并段落", "文本模式下把文本行合并成段落；关闭时每行单独翻译。")
+    aggregate: bool = _p(
+        True,
+        "整理文字单元",
+        "结合截图颜色和间距整理文字单元；文本模式合并段落，版面模式拆开粘连的控件。"
+        "关闭时文本模式每行单独翻译。",
+    )
     same_line_tolerance: float = _p(
         _MERGE.same_line_tolerance, "同行中线容差", "同一行碎片的中线高度差上限（× 较小字高）。",
         advanced=True, ge=0.0, le=2.0,
@@ -649,6 +703,7 @@ def build_pipeline(config: NormalizeConfig, merger: ParagraphMerger | None = Non
                 paragraphs=config.aggregate,
                 merge_blocks=config.merge_blocks,
                 block_gap=config.merge_block_gap,
+                appearance=config.aggregate,
             )
         )
     return NormalizePipeline(steps)

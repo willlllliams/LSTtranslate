@@ -1,7 +1,8 @@
 """组合根：创建全部模块、按固定顺序启动与停止，并把它们需要的端口注入进去（架构文档 4.3、4.4 节）。
 
 启动顺序：配置 → 统计 → 缓存 → 模型 → 引擎 → 竞速 → 显卡运行库 → OCR 引擎 → OCR → 应用更新 → 存储位置
-→ 截屏 → 覆盖窗口 → 托盘 → 热键 → 双语窗口 → 设置窗口 →（AppOptions.extra_modules）→ 首次运行引导。
+→ 截屏 → 覆盖窗口 → 托盘 → 热键 → 双语窗口 → 设置窗口 → 自动化接口 →（AppOptions.extra_modules）
+→ 首次运行引导。
 - 托盘先于热键启动：热键在收到配置时注册，注册失败的通知要有托盘接收；
 - 配置服务最先启动，它在启动时发现的配置问题（ConfigRejected，是 Event，不回放）早于其他模块订阅，
   全部模块启动之后由这里补发一次，托盘与设置窗口都能收到；
@@ -29,6 +30,8 @@
 - 模型管理模块的 NMT 模型目录由 [nmt] 节解析（model_dir 单独指定，留空时用模型目录下的 nmt），与 NMT 进程
   用同一个目录；它在运行中改变时换一个新的模型管理模块。模型装好或删除后（ModelsInstalled）重载 NMT 进程；
 - 存储位置模块的 RestartApp 由这里记下“退出后重新启动”，入口在释放单实例锁之后启动新进程（__main__.py）；
+- 自动化接口（lst.app.automation，架构文档第 16 章）直接操作截屏、覆盖窗口与设置窗口，所以在它们之后启动，
+  停止时先于它们关掉管道。开关的默认值随构建类型（AppOptions.flavor）；
 - 首次运行引导最后启动：它在 start 里可能立即弹出窗口，这时其他模块都已就绪。
 退出时按相反顺序停止，再停推理进程、关缓存、关 HTTP 客户端。
 """
@@ -47,6 +50,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from lst.app.automation import CONFIG_SECTIONS as AUTOMATION_SECTIONS
+from lst.app.automation import AutomationDeps, AutomationModule
 from lst.app.paths import (
     INSTALL_MARKER,
     PROGRAM_DIR,
@@ -58,6 +63,7 @@ from lst.app.paths import (
 from lst.app.storage import migrate_legacy_layout
 from lst.app.storage_module import StorageModule
 from lst.app.supervisor import WorkerSupervisor
+from lst.contracts.automation import BuildFlavor
 from lst.contracts.config import AppConfig
 from lst.contracts.events import (
     NoticeLevel,
@@ -159,7 +165,11 @@ class StorageConfig(BaseModel):
         return value
 
 
-APP_SECTIONS: dict[str, type[BaseModel]] = {"nmt": NmtConfig, "storage": StorageConfig}
+APP_SECTIONS: dict[str, type[BaseModel]] = {
+    "nmt": NmtConfig,
+    "storage": StorageConfig,
+    **AUTOMATION_SECTIONS,
+}
 
 i18n.register_catalog(
     {
@@ -406,6 +416,11 @@ class AppOptions:
     data: DataDirChoice | None = None
     """数据目录的来源与位置文件（入口按 choose_data_dir 给出）。None 表示数据目录由调用方固定（测试），
     设置里不能更改数据目录。"""
+    flavor: BuildFlavor = BuildFlavor.NORMAL
+    """构建类型（lst/app/flavor.py）：决定 [automation].enabled 的默认值与应用内更新下载哪一种安装包。"""
+    automation_pipe: str | None = None
+    """自动化接口的管道名；None 时按当前用户生成（或取环境变量 LST_AUTOMATION_PIPE）。
+    测试用它避开正在运行的实例。"""
 
 
 class Application:
@@ -447,6 +462,7 @@ class Application:
         self.nmt_runtime: NmtRuntimeModule | None = None
         self.storage: StorageModule | None = None
         self.onboarding: OnboardingModule | None = None
+        self.automation: AutomationModule | None = None
         self._suspended = False
         """模型目录正在更换：进程与用到模型目录的模块已经停下，进程决策暂停。"""
         self._refresh_index = False
@@ -514,6 +530,27 @@ class Application:
             )
         )
         self.storage = StorageModule(lambda: self._paths, self._data_choice(), self)
+        version = running_version(INSTALL_MARKER)
+        capture = CaptureModule()
+        overlay = OverlayModule()
+        settings = SettingsModule(
+            self._paths.ui_state_file,
+            sections=all_config_sections(),
+            engine_kinds={kind: spec.settings_model for kind, spec in ENGINE_KINDS.items()},
+            flavor=self._options.flavor,
+        )
+        self.automation = AutomationModule(
+            AutomationDeps(
+                flavor=self._options.flavor,
+                version=version,
+                installed=is_installed(),
+                paths=lambda: self._paths,
+                capture=capture,
+                overlay=overlay,
+                settings=settings,
+            ),
+            pipe_name=self._options.automation_pipe,
+        )
         modules: list[Module] = [
             StatsModule(SqliteStatsStore(self._paths.stats_db)),
             CacheModule(self.cache),
@@ -525,8 +562,9 @@ class Application:
             *([OcrModule(self.ocr)] if self.ocr is not None else []),
             UpdatesModule(
                 self.client,
-                current_version=running_version(INSTALL_MARKER),
+                current_version=version,
                 can_install=is_installed(),
+                flavor=self._options.flavor,
                 record_file=self._paths.data_dir / "updates.json",
                 download_dir=self._paths.tmp_dir / "updates",
                 startup_delay=self._options.updates_startup_delay,
@@ -534,16 +572,13 @@ class Application:
             self.storage,
             # 界面模块从这里开始。截屏与覆盖窗口在全部业务模块之后启动：CaptureCompleted 的订阅顺序是
             # OCR、竞速在前，覆盖窗口在后，识别请求先提交，再创建窗口。
-            CaptureModule(),
-            OverlayModule(),
+            capture,
+            overlay,
             TrayModule(APP_NAME, self._options.tray_icon, self._paths.logs_dir),
             HotkeysModule(),
             BilingualModule(self._paths.ui_state_file),
-            SettingsModule(
-                self._paths.ui_state_file,
-                sections=all_config_sections(),
-                engine_kinds={kind: spec.settings_model for kind, spec in ENGINE_KINDS.items()},
-            ),
+            settings,
+            self.automation,
             *self._options.extra_modules,
             self.onboarding,
         ]

@@ -50,7 +50,7 @@ from lst.contracts.config import AppConfig
 from lst.contracts.errors import ErrorCode
 from lst.contracts.events import WorkerStatuses
 from lst.contracts.ids import SessionId
-from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed, RawImage, RetryOcr
+from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed, OcrStarted, RawImage, RetryOcr
 from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineKind
 from lst.contracts.ports import WorkerChannel, WorkerRequestHandle, WorkerState
 from lst.contracts.worker_protocol import (
@@ -309,6 +309,7 @@ class OcrModule:
             return
         attempt = _Attempt(capture.session_id, request, config, handle, resubmits, self._clock())
         self._attempt = attempt
+        self._publish(OcrStarted(capture.session_id))
         state = self._channel.state
         self._logger.info(
             "会话 %s 提交识别请求 %s：%d×%d，%s 引擎，%s 模式，处理时限 %g 秒%s",
@@ -387,7 +388,13 @@ class OcrModule:
             mode = self._result_mode(attempt)
             text_mode = mode is OcrMode.TEXT
             normalizer = self._normalizer
-            blocks = normalizer.apply(decoded, NormalizeContext(request.width, request.height, text_mode))
+            capture = self._capture
+            image = (
+                capture.image if capture is not None and capture.session_id == attempt.session_id else None
+            )
+            blocks = normalizer.apply(
+                decoded, NormalizeContext(request.width, request.height, text_mode, image)
+            )
             if text_mode and normalizer.merges_paragraphs:
                 segments = blocks_to_segments(blocks, mode, premerged=True)
             else:
@@ -493,7 +500,7 @@ class OcrModule:
         )
         return actual
 
-    def _publish(self, message: OcrCompleted | OcrFailed) -> None:
+    def _publish(self, message: OcrCompleted | OcrFailed | OcrStarted) -> None:
         if self._bus is not None and self._running:
             self._bus.publish(message)
 

@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import time
 from collections.abc import Awaitable, Callable, Coroutine
@@ -43,6 +42,7 @@ from typing import Any, Final
 import httpx
 from pydantic import ValidationError
 
+from lst.contracts.automation import BuildFlavor
 from lst.contracts.config import AppConfig
 from lst.contracts.events import NoticeLevel, NotificationRequested, QuitRequested
 from lst.contracts.updates import (
@@ -72,6 +72,7 @@ from lst.services.updates.releases import (
     Candidate,
     ReleaseFormatError,
     parse_checksum,
+    parse_installer_name,
     parse_releases,
     select_update,
 )
@@ -110,7 +111,6 @@ NOTICE_MESSAGE_SOURCE_KEY: Final = "update.notify.available_source.message"
 PART_SUFFIX: Final = ".part"
 
 _HTTP_OK: Final = 200
-_INSTALLER_FILE = re.compile(r"^LSTtranslate-(.+)-setup\.exe$")
 _BLOCKING_STATES: Final = frozenset({UpdateState.DOWNLOADING, UpdateState.READY, UpdateState.INSTALLING})
 """这几个状态下不检查新版本：检查结果会覆盖下载进度或已就绪的安装包。"""
 
@@ -149,9 +149,9 @@ def _cleanup_downloads(
         if not path.is_file():
             continue
         obsolete = path.name.endswith(PART_SUFFIX)
-        match = _INSTALLER_FILE.match(path.name)
-        if match is not None:
-            version = parse_version(match.group(1))
+        parsed = parse_installer_name(path.name)
+        if parsed is not None:
+            version = parse_version(parsed[0])
             if version is None:
                 obsolete = False
             elif keep is True:
@@ -179,6 +179,7 @@ class UpdatesModule:
         record_file：检查时间与已通知版本的记录文件，例如 ``<数据目录>/updates.json``；
         download_dir：安装包的下载目录，例如 ``<数据目录>/tmp/updates``；
         releases_url：GitHub 版本列表 API 的地址；
+        flavor：正在运行的构建类型，只下载同一种构建类型的安装包（开发版是 ``-dev-setup.exe``）；
         launcher：启动安装程序的函数，测试注入记录调用的假函数；
         startup_delay：启动后第一次自动检查之前等待的秒数；
         sleep：异步等待函数，测试注入由测试控制何时返回的假函数；
@@ -199,6 +200,7 @@ class UpdatesModule:
         record_file: Path,
         download_dir: Path,
         releases_url: str = DEFAULT_RELEASES_URL,
+        flavor: BuildFlavor = BuildFlavor.NORMAL,
         launcher: Launcher = launch_detached,
         startup_delay: float = STARTUP_DELAY_S,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -213,6 +215,7 @@ class UpdatesModule:
         self._record_file = Path(record_file)
         self._download_dir = Path(download_dir)
         self._releases_url = releases_url
+        self._flavor = flavor
         self._launcher = launcher
         self._startup_delay = max(0.0, startup_delay)
         self._sleep = sleep
@@ -514,7 +517,7 @@ class UpdatesModule:
         except ValueError as exc:
             raise _Failure(UpdateErrorCode.BAD_RELEASE, "版本列表不是合法的 JSON") from exc
         try:
-            return parse_releases(data, self._logger)
+            return parse_releases(data, self._logger, self._flavor)
         except ReleaseFormatError as exc:
             raise _Failure(UpdateErrorCode.BAD_RELEASE, str(exc)) from exc
 

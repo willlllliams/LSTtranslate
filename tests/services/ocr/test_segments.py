@@ -115,6 +115,21 @@ def test_table_without_cell_grid_falls_back_to_one_segment() -> None:
     ]
 
 
+def test_table_without_cell_grid_has_one_segment_per_line() -> None:
+    # 没开表格识别：PaddleX 不给单元格网格，整页 OCR 的行一格一行，逐行出段，范围是行框。
+    lines = [line(20, 10, 80, 30, "Region"), line(120, 10, 170, 30, "Sales"), line(20, 40, 70, 60, " ")]
+    lines.append(line(120, 40, 150, 60, "120"))
+    segments = blocks_to_segments(
+        [block("t", BlockCategory.TABLE, text="Region Sales\n120", lines=lines)], STRUCTURE
+    )
+    assert [(s.segment.id, s.segment.text, s.cell, s.bbox) for s in segments] == [
+        ("bt-l0", "Region", None, BBox(20, 10, 80, 30)),
+        ("bt-l1", "Sales", None, BBox(120, 10, 170, 30)),
+        ("bt-l3", "120", None, BBox(120, 40, 150, 60)),
+    ]
+    assert {s.block_id for s in segments} == {"t"}
+
+
 def test_chart_table_cells_use_the_chart_bbox() -> None:
     chart = block(
         "c", BlockCategory.CHART, chart_table=(("year", "sales"), ("2025", ""), ("2026", "15", "extra"))
@@ -132,16 +147,45 @@ def test_chart_table_cells_use_the_chart_bbox() -> None:
     assert [s.cell for s in segments][:2] == [(0, 0), (0, 1)]
 
 
-def test_chart_without_table_has_no_segments() -> None:
+def test_chart_without_table_or_lines_has_no_segments() -> None:
     assert blocks_to_segments([block("c", BlockCategory.CHART, text="chart")], STRUCTURE) == ()
 
 
+def test_chart_without_table_has_one_segment_per_line() -> None:
+    chart = block("c", BlockCategory.CHART, text="Sales\n2026", lines=[line(20, 10, 80, 30, "Sales")])
+    segments = blocks_to_segments([chart], STRUCTURE)
+    assert [(s.segment.id, s.segment.text, s.cell, s.bbox) for s in segments] == [
+        ("bc-l0", "Sales", None, BBox(20, 10, 80, 30))
+    ]
+
+
+def test_chart_with_table_ignores_its_lines() -> None:
+    chart = block("c", BlockCategory.CHART, lines=[line(20, 10, 80, 30, "Sales")], chart_table=(("x",),))
+    assert summary(blocks_to_segments([chart], STRUCTURE)) == [("bc-r0c0", "x")]
+
+
 @pytest.mark.parametrize("category", [BlockCategory.FORMULA, BlockCategory.IMAGE])
-def test_formula_and_image_are_not_translated(category: BlockCategory) -> None:
+def test_formula_and_image_without_lines_are_not_translated(category: BlockCategory) -> None:
     blocks = [
         block("x", category, text="E = mc^2", latex="E = mc^2" if category is BlockCategory.FORMULA else None)
     ]
     assert blocks_to_segments(blocks, STRUCTURE) == ()
+
+
+def test_formula_lines_are_not_translated() -> None:
+    formula = block("f", BlockCategory.FORMULA, lines=[line(20, 10, 80, 30, "E = mc^2")], latex="E = mc^2")
+    assert blocks_to_segments([formula], STRUCTURE) == ()
+
+
+def test_image_block_has_one_segment_per_line() -> None:
+    # PP-DocLayout 把一排按钮连同下面的表格判成 image：块内识别出的每一行都要出段。
+    words = ["Public", "Star", "Code"]
+    lines = [line(20 + 100 * i, 10, 80 + 100 * i, 30, word) for i, word in enumerate(words)]
+    image = block("3", BlockCategory.IMAGE, text="\n".join(words), bbox=BBox(0, 0, 400, 100), lines=lines)
+    segments = blocks_to_segments([image], STRUCTURE)
+    assert summary(segments) == [("b3-l0", "Public"), ("b3-l1", "Star"), ("b3-l2", "Code")]
+    assert [s.bbox for s in segments] == [entry.bbox for entry in lines]
+    assert {(s.block_id, s.cell) for s in segments} == {("3", None)}
 
 
 def test_segments_follow_block_order() -> None:

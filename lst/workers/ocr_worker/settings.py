@@ -114,7 +114,7 @@ _CHOICES: Final[dict[str, frozenset[str]]] = {
 _RANGES: Final[dict[str, tuple[float, float]]] = {
     "text_det_limit_side_len": (0, 4096),
     "text_det_thresh": (0.0, 1.0),
-    "text_det_box_thresh": (0.0, 1.0),
+    "text_det_box_thresh": (0.0, 0.7),  # 上限的依据见 lst/services/ocr/config.py 的 MAX_DET_BOX_THRESH
     "text_det_unclip_ratio": (1.0, 4.0),
     "text_rec_score_thresh": (0.0, 1.0),
     "layout_threshold": (0.0, 1.0),

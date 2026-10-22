@@ -1,0 +1,26 @@
+{
+  "image-1.png": {
+    "file": "blog-zh-hant.png",
+    "sha256": "42db5703fcc17ce3c650679c958d253a81921ca2637a1e2ee63231ad21313d3f",
+    "width": 2219,
+    "height": 1144
+  },
+  "image-2.png": {
+    "file": "addons-zh-hant.png",
+    "sha256": "a2917d036545ce50524effaa90a0aa4fafdf33835227909866553a829ac3531d",
+    "width": 1766,
+    "height": 1137
+  },
+  "image-3.png": {
+    "file": "blog-en.png",
+    "sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2",
+    "width": 1908,
+    "height": 1150
+  },
+  "image-4.png": {
+    "file": "addons-en.png",
+    "sha256": "771a279f889860f1d89d0aa7fca410458bc2bd8eb4c92e4afd3e46a9d7378871",
+    "width": 1827,
+    "height": 924
+  }
+}

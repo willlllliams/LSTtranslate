@@ -1,8 +1,10 @@
-"""程序入口：`python -m lst [--data-dir 目录] [--log-level 级别]`。
+"""程序入口：`python -m lst [--data-dir 目录] [--log-level 级别] [--flavor normal|dev]`。
 
 数据目录按优先级取：--data-dir → 环境变量 LST_DATA_DIR → 设置里选的目录（位置文件）→ 默认位置
 （lst/app/paths.py）。设置里选的目录无法使用时本次退回默认位置，启动后通知用户。
 程序因“立即重启”退出时，在释放单实例锁之后启动新进程（lst/app/restart.py）。
+构建类型（lst/app/flavor.py）：安装版读 installed.json；源码版取 --flavor，其次是环境变量 LST_FLAVOR，
+缺省为普通版。
 """
 
 import argparse
@@ -17,8 +19,16 @@ import qasync
 from PySide6.QtWidgets import QApplication
 
 from lst.app.bootstrap import APP_NAME, Application, AppOptions, single_instance_name
+from lst.app.flavor import choose_flavor
 from lst.app.logging_setup import setup_logging
-from lst.app.paths import AppPaths, DataDirChoice, choose_data_dir, default_data_dir
+from lst.app.paths import (
+    INSTALL_MARKER,
+    AppPaths,
+    DataDirChoice,
+    choose_data_dir,
+    default_data_dir,
+    is_installed,
+)
 from lst.app.restart import relaunch
 from lst.app.single_instance import RunningMutex, SingleInstance
 from lst.contracts.storage import DataDirSource
@@ -30,6 +40,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="lst", description="LSTtranslate：多引擎竞速的屏幕翻译工具")
     parser.add_argument("--data-dir", help="数据目录，优先于环境变量 LST_DATA_DIR 与设置里选的目录")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--flavor",
+        choices=["normal", "dev"],
+        help="构建类型（源码运行时有效）：dev 时自动化接口默认开启；优先于环境变量 LST_FLAVOR",
+    )
     return parser.parse_args(argv)
 
 
@@ -96,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         set_app_user_model_id()
         qt_app.setQuitOnLastWindowClosed(False)  # 关掉双语窗口不能退出程序，托盘常驻（需求 TR-01）
 
-        application = Application(AppOptions(paths=paths, data=choice), qt_app)
+        flavor = choose_flavor(args.flavor, installed=is_installed(), marker=INSTALL_MARKER)
+        application = Application(AppOptions(paths=paths, data=choice, flavor=flavor), qt_app)
         logs.add_filter(application.redactor)
         instance = SingleInstance(
             single_instance_name(paths), paths.lock_file, application.notify_second_instance
