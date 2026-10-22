@@ -25,9 +25,10 @@ from typing import Final
 
 from lst.contracts.ids import SegmentId
 from lst.contracts.ocr import BBox, BlockCategory, LayoutBlock, OcrSegment, TextLine
+from lst.contracts.text import join_lines
 from lst.contracts.translation import Segment
 from lst.services.ocr.config import OcrMode
-from lst.services.ocr.paragraphs import GeometricMerger, ParagraphMerger, join_lines
+from lst.services.ocr.paragraphs import GeometricMerger, ParagraphMerger
 
 logger = logging.getLogger(__name__)
 

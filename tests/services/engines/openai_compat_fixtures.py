@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from lst.contracts.ids import EngineId, Lang, SegmentId, SessionId
-from lst.contracts.translation import Job, Segment, SegmentOutcome
+from lst.contracts.translation import Job, JobImage, Segment, SegmentOutcome
 from lst.services.engines.openai_compat import OpenAICompatSettings
 from lst.services.engines.openai_compat.engine import OpenAICompatEngine
 from lst.services.engines.openai_compat.prompt import CONTEXT_SEPARATOR
@@ -157,9 +157,13 @@ class FakeServer:
         return json.loads(self.requests[index].content)
 
     def user_message(self, index: int) -> str:
+        """user 消息的文本；附带截图时取 content 数组里的文本部分。"""
         messages = self.body(index)["messages"]
         assert [m["role"] for m in messages] == ["system", "user"]
-        return messages[1]["content"]
+        content: str | list[dict[str, Any]] = messages[1]["content"]
+        if isinstance(content, list):
+            return next(str(part["text"]) for part in content if part["type"] == "text")
+        return content
 
     def context_part(self, index: int) -> str:
         """user 消息中分隔标记之前的部分：会话全文，加上固定的开头说明。"""
@@ -248,10 +252,17 @@ def make_engine(
 # ---------------------------------------------------------------- 任务与结果
 
 
-def make_job(*texts: str, context: str = "", source: Lang = EN, target: Lang = ZH, prefix: str = "s") -> Job:
-    """段号为 prefix1、prefix2……"""
+def make_job(
+    *texts: str,
+    context: str = "",
+    source: Lang = EN,
+    target: Lang = ZH,
+    prefix: str = "s",
+    image: JobImage | None = None,
+) -> Job:
+    """段号为 prefix1、prefix2……；image 是随任务附带的截图。"""
     segments = tuple(Segment(SegmentId(f"{prefix}{i}"), text) for i, text in enumerate(texts, start=1))
-    return Job(SESSION, EngineId("e"), segments, source, target, context)
+    return Job(SESSION, EngineId("e"), segments, source, target, context, image)
 
 
 async def collect(stream: AsyncIterator[SegmentOutcome]) -> list[SegmentOutcome]:

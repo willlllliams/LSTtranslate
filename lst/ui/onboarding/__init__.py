@@ -9,6 +9,7 @@
 第一版只覆盖本地翻译模型的下载。UI-08 中的 GPU 与 CUDA、Ollama 检测和“配置第一个引擎实例”尚未实现。
 """
 
+from lst.ui.onboarding import strings as strings  # 导入时登记文案
 from lst.ui.onboarding.module import OnboardingModule
 from lst.ui.onboarding.presenter import (
     DEFAULT_PAIR,

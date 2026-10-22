@@ -1,4 +1,4 @@
-"""设置窗口的页面基类，以及由声明生成的四个页面：常规、热键、截屏与识别、竞速（需求 UI-05）。
+"""设置窗口的页面基类，以及由声明生成的三个页面：常规、热键、竞速（需求 UI-05）。
 
 页面是一个可滚动的区域，里面从上到下排列分组标题、说明文字和设置卡片。页面不保存状态：
 展示器通过 ``Topic`` 通知哪类数据变了，页面据此刷新自己的控件。
@@ -134,7 +134,11 @@ class SettingsPage(QScrollArea):
                     self.add_field(item)
 
     def finish(self) -> None:
-        """内容构建完成：底部留出弹性空白，设置文案并显示配置里的值。"""
+        """内容构建完成：底部留出弹性空白，设置文案并显示配置里的值。
+
+        子类的 ``__init__`` 只建控件，不调用它；窗口在页面构造完成之后统一调用一次。可重写的 retranslate、
+        refresh_all 因此不会在子类的控件建好之前执行，子类不需要检查属性是否已经存在。
+        """
         self.body.addStretch(1)
         self.retranslate()
         self.refresh_all()
@@ -201,7 +205,6 @@ class GeneralPage(SettingsPage):
                 FieldDef("ui", ("theme",)),
             ]
         )
-        self.finish()
 
 
 class HotkeysPage(SettingsPage):
@@ -219,44 +222,6 @@ class HotkeysPage(SettingsPage):
                 FieldDef("hotkeys", ("bilingual",), widget="hotkey"),
             ]
         )
-        self.finish()
-
-
-class CapturePage(SettingsPage):
-    """截屏与识别：[ocr] 节与 [screenshot] 节的语言。"""
-
-    page_id = "capture"
-    icon = Glyph.SCREEN_CAPTURE
-
-    def __init__(self, presenter: SettingsPresenter, builder: CardBuilder, dialogs: Dialogs) -> None:
-        super().__init__(presenter, builder, dialogs)
-        self.build(
-            [
-                Title("settings.section.ocr"),
-                FieldDef("ocr", ("enabled",)),
-                FieldDef("ocr", ("mode",)),
-                FieldDef("ocr", ("device",)),
-                FieldDef("ocr", ("language",), widget="language_auto"),
-                Title("settings.section.ocr_features"),
-                FieldDef("ocr", ("table",)),
-                FieldDef("ocr", ("formula",)),
-                FieldDef("ocr", ("chart",)),
-                FieldDef("ocr", ("doc_orientation",)),
-                FieldDef("ocr", ("doc_unwarping",)),
-                FieldDef("ocr", ("textline_orientation",)),
-                Title("settings.section.preprocess"),
-                FieldDef("ocr", ("grayscale",)),
-                FieldDef(
-                    "ocr",
-                    ("resize_max_side",),
-                    suffix="settings.suffix.pixels",
-                    zero="settings.special.no_scaling",
-                ),
-                Title("settings.section.translation"),
-                FieldDef("screenshot", ("target_lang",), widget="language"),
-            ]
-        )
-        self.finish()
 
 
 # ---------------------------------------------------------------- 竞速统计
@@ -294,6 +259,8 @@ class StatsPanel(QWidget):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setMinimumHeight(190)
+        # Tab 离开表格而不是逐格移动；Ctrl+Tab 因此也交给窗口切换页面（需求 UI-07）。
+        self.table.setTabKeyNavigation(False)
         self.empty_label = ThemedLabel("secondary", TOKENS.caption_px)
         self.empty_label.setWordWrap(True)
         self.reset_button = QPushButton()
@@ -302,7 +269,6 @@ class StatsPanel(QWidget):
         self.clear_cache_button.setIcon(fluent_icon(Glyph.DELETE))
         self.cache_label = ThemedLabel("secondary", TOKENS.caption_px)
         self.cache_label.setWordWrap(True)
-        self.cache_label.setAccessibleName(tr("settings.cache.clear"))
         self.cache_label.hide()
 
         buttons = QHBoxLayout()
@@ -332,6 +298,7 @@ class StatsPanel(QWidget):
         self.reset_button.setText(tr("settings.stats.reset"))
         self.clear_cache_button.setText(tr("settings.cache.clear"))
         self.refresh()
+        self.refresh_cache()
 
     def rows(self) -> list[tuple[str, EngineStatsRow | None]]:
         """表的内容：(实例名, 统计行)。没有统计数据的实例统计行为 None。"""
@@ -370,8 +337,10 @@ class StatsPanel(QWidget):
     def refresh_cache(self) -> None:
         count = self._presenter.last_cache_cleared
         self.cache_label.setVisible(count is not None)
-        if count is not None:
-            self.cache_label.setText(tr("settings.cache.cleared", count=count))
+        text = tr("settings.cache.cleared", count=count) if count is not None else ""
+        self.cache_label.setText(text)
+        # 可访问名称就是结果本身，读屏软件读到的与屏幕上显示的一致，切换界面语言后一起更新。
+        self.cache_label.setAccessibleName(text)
 
     def _reset(self) -> None:
         if self._dialogs.confirm(tr("settings.confirm.title"), tr("settings.stats.reset.confirm")):
@@ -408,16 +377,14 @@ class RacePage(SettingsPage):
         self.stats_card = SettingCard(self.stats, stacked=True)
         self.stats_card.hide_header()
         self.add_card(self.stats_card)
-        self.finish()
 
     def retranslate(self) -> None:
         super().retranslate()
-        if hasattr(self, "stats"):
-            self.stats.retranslate()
+        self.stats.retranslate()
 
     def refresh(self, topic: Topic) -> None:
         super().refresh(topic)
-        if topic in (Topic.STATS, Topic.ENGINES):
+        if topic in (Topic.STATS, Topic.ENGINES, Topic.CONFIG):
             self.stats.refresh()
         elif topic is Topic.CACHE:
             self.stats.refresh_cache()

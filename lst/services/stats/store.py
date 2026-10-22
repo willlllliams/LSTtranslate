@@ -4,8 +4,10 @@
 
 统计口径：
 
-- 执行过的尝试（executed）：已结束、started 为真、cached 为假。命中缓存的尝试和在执行前被取消的尝试
-  都不计入，节省模式大量取消低优先级实例的排队尝试，计入会压低它们的胜出率（RACE-07）。
+- 执行过的尝试（executed）：已结束、started 为真、cached 为假，并且不是因实例被移除而结束的
+  （错误码 race.engine_removed）。命中缓存的尝试和在执行前被取消的尝试都不计入，节省模式大量取消
+  低优先级实例的排队尝试，计入会压低它们的胜出率（RACE-07）。实例被移除是用户改了配置，
+  与引擎本身的可靠性无关，计入会抬高失败率。
 - 胜出次数：以该实例为最终胜出者的段数，并且胜出的那个尝试本身是执行过的；以缓存结果胜出的段不计。
 - 首个结果耗时 P50、P95：每个实例最近 window 个执行过且成功（DONE）的尝试的 latency_ms，
   按 ``percentile`` 的线性插值计算。
@@ -20,9 +22,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from lst.contracts.errors import ErrorCode
 from lst.contracts.ids import EngineId, SegmentId, SessionId
 from lst.contracts.translation import AttemptState, AttemptView, SegmentView
-from lst.services.stats._sqlite import SqliteThread, ensure_schema, transaction
+from lst.services._shared.sqlite import SqliteThread, ensure_schema, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +59,10 @@ CREATE TABLE segments (
 """
 
 _TERMINAL = (AttemptState.DONE.name, AttemptState.FAILED.name, AttemptState.CANCELLED.name)
-_EXECUTED = f"started = 1 AND cached = 0 AND state IN ({', '.join(repr(s) for s in _TERMINAL)})"
+_EXECUTED = (
+    f"started = 1 AND cached = 0 AND state IN ({', '.join(repr(s) for s in _TERMINAL)})"
+    f" AND error_code IS NOT '{ErrorCode.ENGINE_REMOVED.value}'"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,12 +150,8 @@ class SqliteStatsStore:
         )
         await self._db.run(lambda conn: self._insert_attempt(conn, row))
 
-    async def record_segment(self, session_id: SessionId, view: SegmentView) -> None:
-        """段显示已定时记录它当前的胜出者；未定的段不记录。"""
-        await self.record_segments(session_id, (view,))
-
-    async def record_segments(self, session_id: SessionId, views: Sequence[SegmentView]) -> None:
-        """批量版的 ``record_segment``，在一个事务里写入。
+    async def record_segments(self, session_id: SessionId, views: Sequence[SegmentView]) -> int:
+        """记录显示已定的段的胜出者，在一个事务里写入，返回写入的段数。未定的段跳过。
 
         按 (会话, 段) 覆盖写入：晚加入让胜出者改变时以最后一次为准；winner 为 None 记为无胜出者。
         只保存胜出实例号、胜出尝试是否执行过和原文的字符数。
@@ -169,8 +171,9 @@ class SqliteStatsStore:
         ]
         if not rows:
             self._db.ensure_open()
-            return
+            return 0
         await self._db.run(lambda conn: self._upsert_segments(conn, rows))
+        return len(rows)
 
     async def summary(self) -> list[EngineStats]:
         """每个出现过的引擎实例一行，按实例号排序。"""

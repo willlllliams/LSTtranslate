@@ -1,7 +1,8 @@
 """文本行的段落合并（需求 OCR-05，架构文档第 7 章第 5 步）。
 
-文本模式下 OCR 进程只给出文本行（RapidOCR 不做版面分析），本模块把它们合并成段落，每个段落成为
-一个参加竞速的段。合并器做成可替换的组件：``ParagraphMerger`` 是协议，``GeometricMerger`` 是默认实现。
+文本模式下 OCR 进程只给出文本行（PaddleOCR 文本模式与 Windows OCR 都不做版面分析），
+本模块把它们合并成段落，每个段落成为一个参加竞速的段。合并器做成可替换的组件：
+``ParagraphMerger`` 是协议，``GeometricMerger`` 是默认实现。
 
 默认实现参考用户笔记中的“方法 1”（先横向、再纵向逐步合并），分四步：
 
@@ -23,9 +24,9 @@
    同一条栏间空隙，就合回一组再竖切，这样两栏中恰好对齐的段间空白不会把栏切碎，通栏标题和通栏段落
    仍然单独成带。各部分递归处理，切不开时按（上边缘，左边缘）排序。
 
-段落文本由成员行按阅读顺序（行从上到下，行内碎片从左到右）用 ``join_lines`` 拼接：两侧有一侧是
-中文或日文字符（含全角标点）时直接相连，否则加一个空格。韩文词间本来有空格，按西文处理。
-英文行尾是“字母 + 连字符”且下一行以小写字母开头时，视为断词，去掉空格、保留连字符。
+段落文本由成员行按阅读顺序（行从上到下，行内碎片从左到右）用 ``join_lines`` 拼接，规则见
+lst/contracts/text.py：两侧有一侧是中日文字符（含注音、笔画与全角标点）时直接相连，否则加一个空格；
+韩文词间本来有空格，按西文处理；英文行尾是“字母 + 连字符”且下一行以小写字母开头时视为断词。
 
 阈值默认值的依据：
 
@@ -66,6 +67,7 @@ from dataclasses import dataclass, fields
 from typing import Protocol
 
 from lst.contracts.ocr import BBox, TextLine
+from lst.contracts.text import join_lines
 
 # ---------------------------------------------------------------- 结果与协议
 
@@ -91,50 +93,6 @@ class ParagraphMerger(Protocol):
     """
 
     def merge(self, lines: Sequence[TextLine]) -> tuple[Paragraph, ...]: ...
-
-
-# ---------------------------------------------------------------- 文本拼接
-
-
-def is_cjk(char: str) -> bool:
-    """字符是否属于“行间不加空格”的中日文字符：汉字、假名、中日文标点与全角字符。"""
-    code = ord(char)
-    return (
-        0x2E80 <= code <= 0x2FDF  # 部首
-        or 0x3000 <= code <= 0x30FF  # 中日文标点、平假名、片假名
-        or 0x3100 <= code <= 0x312F  # 注音
-        or 0x31C0 <= code <= 0x31FF  # 笔画、片假名音标扩展
-        or 0x3400 <= code <= 0x4DBF  # 扩展 A
-        or 0x4E00 <= code <= 0x9FFF  # 基本汉字
-        or 0xF900 <= code <= 0xFAFF  # 兼容汉字
-        or 0xFE30 <= code <= 0xFE4F  # 竖排兼容标点
-        or 0xFF00 <= code <= 0xFFEF  # 全角与半角形式
-        or 0x20000 <= code <= 0x3FFFF  # 扩展 B 及以后
-    )
-
-
-def join_lines(parts: Iterable[str]) -> str:
-    """把多行文本拼成一段。
-
-    每行先去掉首尾空白，空行跳过。相邻两行的交界处：前一行末字或后一行首字是中日文字符时直接相连；
-    前一行以“字母 + 连字符”结尾且后一行以小写字母开头时直接相连（断词，保留连字符）；其余情况加一个空格。
-    """
-    out = ""
-    for raw in parts:
-        part = raw.strip()
-        if not part:
-            continue
-        if not out:
-            out = part
-        elif is_cjk(out[-1]) or is_cjk(part[0]) or _hyphenated(out, part):
-            out += part
-        else:
-            out += " " + part
-    return out
-
-
-def _hyphenated(left: str, right: str) -> bool:
-    return len(left) >= 2 and left[-1] == "-" and left[-2].isalpha() and right[0].islower()
 
 
 # ---------------------------------------------------------------- 参数

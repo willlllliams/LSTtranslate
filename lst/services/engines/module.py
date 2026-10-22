@@ -14,6 +14,9 @@ EngineInfo 序列变化时发布，调度器据此替换实例（架构文档 6.
 
 状态里不出现 API key：缺少 key 时 detail 只写 keyring 条目名。
 
+API key 在线程池里读取（keyring 后端可能访问系统凭据服务，耗时不定），每次重建时每个条目只读一次：
+读到的值经 _Preloaded 交给工厂，工厂不再访问 keyring。重建按消息到达的顺序串行执行。
+
 连接测试：收到 CheckEngineConnection 命令后，模块按实例当前的配置翻译一个固定的短词，发布
 EngineConnectionChecked。测试不经过调度器和译文缓存，也不记录任何文本。
 """
@@ -21,8 +24,8 @@ EngineConnectionChecked。测试不经过调度器和译文缓存，也不记录
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from typing import Final
 
 from pydantic import ValidationError
@@ -40,10 +43,11 @@ from lst.contracts.events import (
     WorkerStatuses,
 )
 from lst.contracts.ids import EngineId, Lang, SegmentId, SessionId
-from lst.contracts.ports import WorkerState
+from lst.contracts.ports import SecretReader, WorkerState
 from lst.contracts.translation import Engine, EngineInfo, Job, Segment
 from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus, ModuleContext
+from lst.services._shared.aio import close_quietly
 from lst.services.engines.common import EngineSettings
 from lst.services.engines.local_nmt.capabilities import CapabilityError, read_fingerprint
 from lst.services.engines.registry import (
@@ -72,6 +76,32 @@ _WORKER_ERROR_DETAIL: Final[Mapping[WorkerState, str]] = {
     WorkerState.CRASHED: "NMT 进程崩溃，正在重启",
     WorkerState.FAILED: "NMT 进程多次崩溃或无法启动，已停止自动重启",
 }
+
+
+class _Preloaded:
+    """已经读出的 API key，实现 SecretReader。读取时抛出的异常原样保存，取值时再抛出。"""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Mapping[str, str | Exception | None]) -> None:
+        self._values = values
+
+    def get_secret(self, name: str) -> str | None:
+        value = self._values.get(name)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _read_secrets(reader: SecretReader, names: Iterable[str]) -> dict[str, str | Exception | None]:
+    """在线程池里调用：逐个读取 keyring 条目。单个条目出错不影响其他条目。"""
+    values: dict[str, str | Exception | None] = {}
+    for name in names:
+        try:
+            values[name] = reader.get_secret(name)
+        except Exception as exc:
+            values[name] = exc
+    return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,9 +157,12 @@ class EnginesModule:
         self._logger = logger if logger is not None else logging.getLogger(__name__)
         self._bus: EventBus | None = None
         self._running = False
+        self._refreshing = asyncio.Lock()
+        self._epoch = 0  # 每次 _reset 加一；重建期间模块被停止或重启时据此放弃
         self._reset()
 
     def _reset(self) -> None:
+        self._epoch += 1
         # None 表示还没收到 AppConfig；收到之前不创建实例，也不发布任何状态。
         self._entries: tuple[_Entry, ...] | None = None
         self._secrets_revision = 0
@@ -159,15 +192,15 @@ class EnginesModule:
 
     # ------------------------------------------------------------------ 消息处理
 
-    def _on_config(self, config: AppConfig) -> None:
+    async def _on_config(self, config: AppConfig) -> None:
         if not self._running:
             return
         self._entries = self._parse_entries(config.section("engines"))
         self._secrets_revision = config.secrets_revision
         self._nmt_fingerprint = self._read_nmt_fingerprint()
-        self._refresh()
+        await self._refresh()
 
-    def _on_worker_statuses(self, message: WorkerStatuses) -> None:
+    async def _on_worker_statuses(self, message: WorkerStatuses) -> None:
         if not self._running:
             return
         self._nmt_status = message.statuses.get(NMT_WORKER)
@@ -176,7 +209,7 @@ class EnginesModule:
         if self._nmt_status is not None and self._nmt_status.state is WorkerState.READY:
             # 指纹变化时，本地 NMT 条目的 _BuildKey 随之变化，_refresh 只重建这些条目。
             self._nmt_fingerprint = self._read_nmt_fingerprint()
-        self._refresh()
+        await self._refresh()
 
     async def _on_check_connection(self, command: CheckEngineConnection) -> None:
         bus = self._bus
@@ -198,7 +231,7 @@ class EnginesModule:
         if entry is None:
             self._logger.warning("连接测试：配置里没有实例 %s", engine_id)
             return failed(ErrorCode.INTERNAL)
-        engine = self._engine_for_probe(entry)
+        engine = await self._engine_for_probe(entry)
         if isinstance(engine, EngineStatus):
             return failed(engine.error_code or ErrorCode.INTERNAL)
         pair = next((pair for pair in _PROBE_PAIRS if engine.supports(*pair)), None)
@@ -226,8 +259,8 @@ class EnginesModule:
             self._logger.warning("连接测试：实例 %s 抛出异常 %s", engine_id, type(exc).__name__)
             code = ErrorCode.INTERNAL
         finally:
-            if isinstance(stream, AsyncGenerator):
-                await stream.aclose()
+            if await close_quietly(stream):
+                self._logger.warning("连接测试：关闭实例 %s 的结果流时出错", engine_id)
         latency_ms = (time.perf_counter() - started) * 1000
         outcome_text = "通过" if code is None else f"失败（{code.value}）"
         self._logger.info("连接测试：实例 %s %s", engine_id, outcome_text)
@@ -235,7 +268,7 @@ class EnginesModule:
             return EngineConnectionChecked(engine_id, ok=True, latency_ms=latency_ms)
         return failed(code, latency_ms)
 
-    def _engine_for_probe(self, entry: _Entry) -> Engine | EngineStatus:
+    async def _engine_for_probe(self, entry: _Entry) -> Engine | EngineStatus:
         """测试用的实例：已创建的直接用；已停用的临时创建一个。无法创建时返回出错状态。"""
         built = self._built.get(entry.settings.id)
         if built is not None:
@@ -243,11 +276,13 @@ class EnginesModule:
                 return built.fault
             if built.engine is not None:
                 return built.engine
+        names = self._secret_names([entry])
+        secrets = _Preloaded(await asyncio.to_thread(_read_secrets, self._deps.secrets, names))
         try:
-            fault = self._key_fault(entry)
+            fault = self._key_fault(entry, secrets)
             if fault is not None:
                 return fault
-            return entry.spec.build(entry.settings, self._deps)
+            return entry.spec.build(entry.settings, replace(self._deps, secrets=secrets))
         except EngineUnavailableError as exc:
             return EngineStatus(EngineHealth.ERROR, exc.detail, exc.code)
         except Exception as exc:
@@ -305,8 +340,44 @@ class EnginesModule:
 
     # ------------------------------------------------------------------ 创建实例与发布
 
-    def _refresh(self) -> None:
-        """按当前配置与 NMT 状态更新实例，内容有变化时发布名册与状态。"""
+    async def _refresh(self) -> None:
+        """按当前配置与 NMT 状态更新实例，内容有变化时发布名册与状态。
+
+        要重建的网络引擎实例的 API key 先在线程池里读出。读取期间可能又到了新配置，所以读完后按当时的
+        配置再核对一遍，缺的条目补读，直到不缺为止；然后同步完成重建与发布，中间不再让出事件循环。
+        """
+        epoch = self._epoch
+        async with self._refreshing:
+            values: dict[str, str | Exception | None] = {}
+            while True:
+                if not self._running or self._epoch != epoch:
+                    return
+                names = self._secret_names(self._stale_entries())
+                missing = [name for name in names if name not in values]
+                if not missing:
+                    break
+                values.update(await asyncio.to_thread(_read_secrets, self._deps.secrets, missing))
+            self._rebuild(_Preloaded(values))
+
+    def _stale_entries(self) -> list[_Entry]:
+        """启用、且输入与上次创建时不同、需要重建的条目。"""
+        stale: list[_Entry] = []
+        for entry in self._entries or ():
+            if not entry.settings.enabled:
+                continue
+            previous = self._built.get(entry.settings.id)
+            if previous is None or previous.key != self._key_for(entry):
+                stale.append(entry)
+        return stale
+
+    @staticmethod
+    def _secret_names(entries: Iterable[_Entry]) -> list[str]:
+        """这些条目要读取的 keyring 条目名，去重并保持顺序。本地 NMT 不读 key。"""
+        names = (e.settings.secret for e in entries if not e.spec.uses_nmt and e.settings.secret is not None)
+        return list(dict.fromkeys(names))
+
+    def _rebuild(self, secrets: SecretReader) -> None:
+        """_refresh 的同步部分。secrets 已包含全部要重建的条目所需的 key。"""
         entries = self._entries if self._entries is not None else ()
         built: dict[str, _Built] = {}
         ranked: list[tuple[int, int, Engine]] = []
@@ -326,7 +397,7 @@ class EnginesModule:
             if previous is not None and previous.key == key:
                 current = previous
             else:
-                current = self._build(entry, key, previous)
+                current = self._build(entry, key, previous, secrets)
             built[settings.id] = current
             if current.engine is not None:
                 ranked.append((settings.priority, entry.index, current.engine))
@@ -340,12 +411,15 @@ class EnginesModule:
             return _BuildKey(entry.settings, None, self._nmt_fingerprint)
         return _BuildKey(entry.settings, self._secrets_revision, None)
 
-    def _build(self, entry: _Entry, key: _BuildKey, previous: _Built | None) -> _Built:
-        """创建一个实例。新实例的 EngineInfo 与旧实例相等时沿用旧实例对象。"""
+    def _build(self, entry: _Entry, key: _BuildKey, previous: _Built | None, secrets: SecretReader) -> _Built:
+        """创建一个实例。新实例的 EngineInfo 与旧实例相等时沿用旧实例对象。
+
+        secrets 是已经读出的 key；工厂经它取 key，不访问 keyring。
+        """
         settings = entry.settings
         try:
-            fault = self._key_fault(entry)
-            engine = entry.spec.build(settings, self._deps)
+            fault = self._key_fault(entry, secrets)
+            engine = entry.spec.build(settings, replace(self._deps, secrets=secrets))
         except EngineUnavailableError as exc:
             self._logger.warning("引擎实例 %s 无法创建：%s", settings.id, exc.detail)
             return _Built(key, None, EngineStatus(EngineHealth.ERROR, exc.detail, exc.code))
@@ -359,7 +433,8 @@ class EnginesModule:
             self._logger.info("已创建引擎实例 %s（%s）", settings.id, entry.spec.kind)
         return _Built(key, engine, fault)
 
-    def _key_fault(self, entry: _Entry) -> EngineStatus | None:
+    @staticmethod
+    def _key_fault(entry: _Entry, secrets: SecretReader) -> EngineStatus | None:
         """检查网络引擎的 API key。配置了条目名但读不到 key、或必须有 key 却没配置条目名时返回出错状态。"""
         if entry.spec.uses_nmt:
             return None
@@ -369,7 +444,7 @@ class EnginesModule:
             if entry.spec.requires_key(settings):
                 return EngineStatus(EngineHealth.ERROR, "没有配置 API key 的 keyring 条目名", ErrorCode.AUTH)
             return None
-        value = self._deps.secrets.get_secret(name)
+        value = secrets.get_secret(name)
         if value is None or not value.strip():
             detail = f"keyring 中没有 API key 条目 {name!r}，或该条目为空"
             return EngineStatus(EngineHealth.ERROR, detail, ErrorCode.AUTH)

@@ -80,15 +80,14 @@ class StatsModule:
     async def _on_segments(self, message: SegmentsUpdated) -> None:
         if not self._running:
             return
-        finished = [view for view in message.views if view.finished]
-        if not finished:
-            return
+        # 只有显示已定的段写入统计库，由 record_segments 筛选；没有这样的段时它不访问数据库线程。
         try:
-            await self._store.record_segments(message.session_id, finished)
+            written = await self._store.record_segments(message.session_id, message.views)
         except Exception:
             self._logger.exception("写入竞速统计失败（会话 %s 的胜出记录）", message.session_id)
             return
-        self._schedule_snapshot()
+        if written:
+            self._schedule_snapshot()
 
     # ------------------------------------------------------------------ 快照
 

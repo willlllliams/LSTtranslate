@@ -46,7 +46,6 @@ from lst.services.ocr import (
     Paragraph,
     ParagraphMerger,
     request_options,
-    worker_settings,
 )
 from lst.services.ocr.module import (
     ERROR_CANCELLED,
@@ -302,20 +301,16 @@ async def bus() -> AsyncIterator[EventBus]:
 class Factory:
     bus: EventBus
     harnesses: list[Harness] = field(default_factory=lambda: list[Harness]())
-    reloads: list[dict[str, JsonValue]] = field(default_factory=lambda: list[dict[str, JsonValue]]())
 
     async def __call__(
         self,
         *,
         merger: ParagraphMerger | None = None,
-        reload: bool = True,
         start: bool = True,
         clock: Callable[[], float] | None = None,
     ) -> Harness:
         channel = FakeChannel()
-        module = OcrModule(
-            channel, merger=merger, clock=clock, on_reload_required=self.reloads.append if reload else None
-        )
+        module = OcrModule(channel, merger=merger, clock=clock)
         ctx = ModuleContext(self.bus, logging.getLogger(MODULE_LOGGER))
         harness = Harness(self.bus, channel, module, ctx)
         self.harnesses.append(harness)
@@ -354,7 +349,8 @@ async def test_capture_submits_a_request_with_pixels_and_options(make: Factory) 
     assert (request.width, request.height, request.stride) == (400, 300, 1600)
     assert request.options == request_options(OcrConfig())
     assert submission.payload == shot.data
-    assert submission.timeout_s == 120  # 版面模式 60 秒，默认开启的表格识别再加 60 秒
+    assert submission.timeout_s == 30  # 默认引擎是 Windows OCR，只有文本模式
+    assert request.options["mode"] == "text"
     assert harness.module.busy
 
 
@@ -370,9 +366,11 @@ async def test_payload_is_trimmed_to_stride_times_height(make: Factory) -> None:
     ("ocr", "timeout"),
     [
         ({"mode": "text"}, 30),
-        ({"mode": "structure", "table": False}, 60),
-        ({"mode": "structure", "formula": True}, 180),
-        ({"mode": "structure", "table": True, "formula": True, "chart": True}, 240),
+        ({"engine": "paddle", "mode": "text"}, 30),
+        ({"engine": "paddle", "mode": "structure", "table": False}, 60),
+        ({"engine": "paddle", "mode": "structure", "formula": True}, 180),
+        ({"engine": "paddle", "mode": "structure", "table": True, "formula": True, "chart": True}, 240),
+        ({"engine": "windows", "mode": "structure", "table": True, "formula": True}, 30),
     ],
 )
 async def test_timeout_follows_mode_and_features(
@@ -427,12 +425,56 @@ async def test_text_mode_result_is_merged_into_paragraphs(make: Factory) -> None
 async def test_mode_of_the_request_decides_the_conversion(make: Factory) -> None:
     # 请求发出后改成版面模式：结果仍按提交时的文本模式转换。
     harness = await make()
-    harness.configure({"mode": "text"})
+    harness.configure({"engine": "paddle", "mode": "text"})
     await harness.settle()
     harness.capture("s1")
     await harness.settle()
-    harness.configure({"mode": "structure"})
+    harness.configure({"engine": "paddle", "mode": "structure"})
     await harness.settle()
+    harness.channel.last.result(text_mode_json())
+    await harness.settle()
+    assert [s.segment.id for s in harness.completed[0].segments] == ["p1", "p2"]
+
+
+async def test_result_from_a_process_in_another_mode_uses_the_process_mode(make: Factory) -> None:
+    """配置已改成版面模式、组合根还没重载完时，请求发给了仍在文本模式的旧进程：按进程实际的模式转换。"""
+    harness = await make()
+    harness.configure({"engine": "paddle", "mode": "structure"})
+    await harness.settle()
+    harness.channel.capabilities = {"mode": "text"}  # 正在服务的进程按文本模式加载
+    harness.capture("s1")
+    await harness.settle()
+    assert harness.channel.last.request.options["mode"] == "structure"
+    harness.channel.last.result(text_mode_json())
+    await harness.settle()
+    assert [s.segment.id for s in harness.completed[0].segments] == ["p1", "p2"]
+
+
+async def test_process_mode_is_taken_when_processing_starts(make: Factory) -> None:
+    """进程的模式在收到 Started 时记下；结果到达前进程已经换成新模式，也按处理该请求的进程转换。"""
+    harness = await make()
+    harness.configure({"engine": "paddle", "mode": "structure"})
+    await harness.settle()
+    harness.channel.capabilities = {"mode": "text"}
+    harness.capture("s1")
+    await harness.settle()
+    handle = harness.channel.last
+    handle.push(Started(handle.request_id))
+    await harness.settle()
+    harness.channel.capabilities = {"mode": "structure"}
+    handle.push(OcrResult(handle.request_id, text_mode_json()))
+    await harness.settle()
+    assert [s.segment.id for s in harness.completed[0].segments] == ["p1", "p2"]
+
+
+async def test_windows_engine_result_is_converted_in_text_mode(make: Factory) -> None:
+    # 配置里写着版面模式，Windows OCR 下照样按文本模式提交和转换。
+    harness = await make()
+    harness.configure({"engine": "windows", "mode": "structure"})
+    await harness.settle()
+    harness.capture("s1")
+    await harness.settle()
+    assert harness.channel.last.request.options["mode"] == "text"
     harness.channel.last.result(text_mode_json())
     await harness.settle()
     assert [s.segment.id for s in harness.completed[0].segments] == ["p1", "p2"]
@@ -704,17 +746,20 @@ async def test_configuration_present_at_start_is_the_baseline(make: Factory) -> 
     await harness.module.start(harness.ctx)
     await harness.settle()
     assert harness.module.config.mode == "text"
-    assert make.reloads == []
     harness.capture("s1")
     await harness.settle()
     assert harness.channel.submissions[0].timeout_s == 30
 
 
 async def test_feature_switches_apply_to_later_requests_without_reload(make: Factory) -> None:
-    harness = await make()
+    harness = await make(start=False)
+    harness.configure({"engine": "paddle"})
+    await harness.module.start(harness.ctx)
     harness.capture("s1")
     await harness.settle()
-    harness.configure({"table": False, "formula": True, "grayscale": True, "resize_max_side": 1600})
+    harness.configure(
+        {"engine": "paddle", "table": False, "formula": True, "grayscale": True, "resize_max_side": 1600}
+    )
     await harness.settle()
     assert harness.channel.submissions[0].request.options["formula"] is False  # 已提交的请求不变
     harness.capture("s2")
@@ -727,32 +772,33 @@ async def test_feature_switches_apply_to_later_requests_without_reload(make: Fac
         1600,
     )
     assert harness.channel.submissions[1].timeout_s == 120
-    assert make.reloads == []
 
 
-async def test_mode_device_or_language_change_requests_a_reload(make: Factory) -> None:
+async def test_process_level_changes_update_the_configuration_without_warnings(
+    make: Factory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """引擎、模式、设备、语言变化只更新模块的配置；重载 OCR 进程由组合根负责，模块不报警告。"""
     harness = await make()
-    harness.configure({"mode": "text"})
-    harness.configure({"mode": "text", "table": False})
-    harness.configure({"mode": "text", "table": False, "device": "gpu"})
-    harness.configure({"mode": "text", "table": False, "device": "gpu", "language": "ko"})
-    await harness.settle()
-    expected = [
-        OcrConfig.model_validate({"mode": "text"}),
-        OcrConfig.model_validate({"mode": "text", "table": False, "device": "gpu"}),
-        OcrConfig.model_validate({"mode": "text", "table": False, "device": "gpu", "language": "ko"}),
+    steps: list[dict[str, JsonValue]] = [
+        {"mode": "text"},
+        {"mode": "text", "device": "gpu", "language": "en"},
+        {"mode": "text", "device": "gpu", "language": "en", "engine": "paddle"},
     ]
-    assert make.reloads == [worker_settings(c) for c in expected]
+    with caplog.at_level(logging.WARNING, logger=MODULE_LOGGER):
+        for step in steps:
+            harness.configure(step)
+            await harness.settle()
+            assert harness.module.config == OcrConfig.model_validate(step)
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 async def test_missing_section_means_defaults(make: Factory) -> None:
     harness = await make()
-    harness.configure({"mode": "text"})
+    harness.configure({"engine": "paddle", "mode": "text"})
     await harness.settle()
     harness.configure(None)
     await harness.settle()
     assert harness.module.config == OcrConfig()
-    assert len(make.reloads) == 2
 
 
 async def test_unparsable_section_keeps_the_current_configuration(make: Factory) -> None:
@@ -762,32 +808,6 @@ async def test_unparsable_section_keeps_the_current_configuration(make: Factory)
     harness.configure({"mode": "hologram"})
     await harness.settle()
     assert harness.module.config.mode == "text"
-
-
-async def test_reload_without_callback_only_logs(make: Factory, caplog: pytest.LogCaptureFixture) -> None:
-    harness = await make(reload=False)
-    with caplog.at_level(logging.WARNING, logger=MODULE_LOGGER):
-        harness.configure({"device": "cpu"})
-        await harness.settle()
-    assert "没有提供重载 OCR 进程的回调" in caplog.text
-    assert harness.module.config.device == "cpu"
-
-
-async def test_reload_callback_error_is_logged(bus: EventBus, caplog: pytest.LogCaptureFixture) -> None:
-    def broken(settings: dict[str, JsonValue]) -> None:
-        raise RuntimeError("supervisor is gone")
-
-    channel = FakeChannel()
-    module = OcrModule(channel, on_reload_required=broken)
-    ctx = ModuleContext(bus, logging.getLogger(MODULE_LOGGER))
-    await module.start(ctx)
-    with caplog.at_level(logging.ERROR, logger=MODULE_LOGGER):
-        bus.publish(AppConfig(sections={"ocr": {"device": "cpu"}}, revision=1))
-        await bus.drain()
-    assert "请求重载 OCR 进程时出错" in caplog.text
-    assert module.config.device == "cpu"
-    await module.stop()
-    ctx.close()
 
 
 # ---------------------------------------------------------------- 进程状态、生命周期

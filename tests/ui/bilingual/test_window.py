@@ -7,12 +7,14 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
-from lst.contracts.events import ToggleBilingualWindow
-from lst.contracts.ids import Lang
+from lst.contracts.config import AppConfig
+from lst.contracts.events import SegmentsUpdated, ToggleBilingualWindow
+from lst.contracts.ids import Lang, SessionId
 from lst.contracts.translation import AttemptState
 from lst.ui import i18n
-from lst.ui.bilingual.state import GROUP, fit_on_screens
-from tests.ui.bilingual.conftest import Harness, StartHarness, attempt, config, segment
+from lst.ui.bilingual.state import GROUP
+from lst.ui.common.window import fit_on_screens
+from tests.ui.bilingual.conftest import Harness, StartHarness, attempt, config, segment, statuses
 
 _ON_TOP = Qt.WindowType.WindowStaysOnTopHint
 
@@ -297,3 +299,21 @@ async def test_stop_closes_window_and_cancels_nothing_else(start_harness: StartH
     assert not window.isVisible()
     assert harness.module.window is None
     assert harness.module.presenter is None
+
+
+async def test_stopped_presenter_ignores_late_messages(harness: Harness) -> None:
+    """模块停止后、订阅取消之前排队的消息不再改动正在关闭的窗口。"""
+    presenter, window = harness.presenter, harness.window
+    presenter.shutdown()
+    presenter.on_config(config(layout="horizontal"))
+    presenter.on_segments_updated(SegmentsUpdated(SessionId("x"), (segment("a", "hello"),)))
+    presenter.on_engine_statuses(statuses({"deepseek": "DeepSeek"}))
+    assert window.content_splitter.orientation() == Qt.Orientation.Vertical
+    assert presenter.translation_text() == ""
+
+
+async def test_window_follows_the_language_in_the_config(harness: Harness) -> None:
+    """配置里的界面语言由双语窗口自己应用：别的模块还没处理这份配置时，标题也已经换成英文。"""
+    i18n.set_language("zh-Hans")
+    await harness.publish(AppConfig(sections={"ui": {"language": "en"}}, revision=5))
+    assert harness.window.windowTitle() == "Bilingual Translator"

@@ -11,6 +11,10 @@
 分隔标记以换行开头，而本批段落以 JSON 编码、其中的换行都被转义，所以 user 消息里最后一次出现的
 分隔标记就是真正的分界，即使会话原文里恰好含有同样的文字。
 
+截屏翻译附带截图时（需求 ENG-07），with_image 把 user 消息的内容改成数组：第一项是与不带图时
+逐字相同的文本，第二项是截图的 data URL。图片放在文本之后，文本前缀与不带图时一致；system 消息末尾
+加一句 IMAGE_NOTE，说明截图的用途。一个会话里的各批请求附带同一张截图，前缀因此仍然相同。
+
 模型的输出格式固定为 `{"r":[{"i":1,"t":"译文"},...]}`，i 是段在本批中的序号（从 1 开始）。
 分隔标记之后总是写明这个格式并带示例，所以即使用户换掉系统提示词，json_object 模式的要求
 （提示词里出现 "json" 并给出示例）也仍然满足。
@@ -23,6 +27,7 @@ from typing import Final
 from lst.services.engines.openai_compat.settings import OutputMode
 
 # 内置提示词或消息模板改变时加一。它参与配置指纹，旧模板下的缓存译文因此不会被误用。
+# IMAGE_NOTE 与 with_image 的消息结构也属于模板，修改它们同样要加一。
 PROMPT_VERSION: Final = 2
 
 # user 消息中会话全文与本批段落之间的分隔标记。
@@ -41,6 +46,12 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "- Output only translations, without explanations, notes or the source text.\n"
     'Reply with a single json object, for example {"r":[{"i":1,"t":"translation of segment 1"},'
     '{"i":2,"t":"translation of segment 2"}]}.'
+)
+
+# 附带截图时追加在 system 消息末尾的说明。
+IMAGE_NOTE: Final = (
+    "The attached screenshot shows the screen the source text was recognized from. Use it to understand "
+    "the context and to correct text recognition errors. Translate only the given segments."
 )
 
 _CONTEXT_HEADER: Final = "Full source text of the document, for reference only:\n\n"
@@ -189,6 +200,25 @@ def build_messages(
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user},
+    ]
+
+
+def with_image(messages: Sequence[Mapping[str, str]], data_url: str) -> list[dict[str, object]]:
+    """把 build_messages 的结果改成附带截图的形式。
+
+    system 消息末尾加一行 IMAGE_NOTE；user 消息的内容换成数组，先放原样的文本，再放图片：
+    `[{"type":"text","text":...},{"type":"image_url","image_url":{"url":data_url}}]`。
+    """
+    system, user = messages
+    return [
+        {"role": "system", "content": f"{system['content']}\n{IMAGE_NOTE}"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user["content"]},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
     ]
 
 

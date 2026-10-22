@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import QApplication
 
 from lst.app.bootstrap import Application, AppOptions
 from lst.app.paths import AppPaths
-from lst.contracts.config import UpdateConfig
+from lst.contracts.config import ConfigRejected, UpdateConfig
 from lst.contracts.events import (
     EngineRoster,
     OpenSettings,
@@ -33,7 +34,9 @@ from lst.contracts.events import (
 )
 from lst.contracts.ids import EngineId, Lang, SessionId
 from lst.contracts.models import ModelCatalog, ModelsInstalled
+from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineKind
 from lst.contracts.ports import WorkerState
+from lst.kernel import ModuleContext
 from lst.services.config import MemorySecretStore
 from lst.ui.settings.window import SettingsWindow
 
@@ -83,7 +86,7 @@ async def test_app_starts_translates_in_bilingual_entry_and_quits(qapp: QApplica
             paths=AppPaths(tmp_path / "data"),
             secrets=MemorySecretStore(),
             nmt_command=NMT_FAKE,
-            ocr_command=OCR_FAKE,
+            ocr_command=lambda _engine: OCR_FAKE,
             tray_icon=None,
             http_transport=httpx.MockTransport(network.handle),
             models_index_url=INDEX_URL,
@@ -189,7 +192,7 @@ async def test_changing_model_dir_replaces_models_module(qapp: QApplication, tmp
             paths=AppPaths(tmp_path / "data"),
             secrets=MemorySecretStore(),
             nmt_command=NMT_FAKE,
-            ocr_command=OCR_FAKE,
+            ocr_command=lambda _engine: OCR_FAKE,
             tray_icon=None,
             http_transport=httpx.MockTransport(network.handle),
             models_index_url=INDEX_URL,
@@ -213,5 +216,103 @@ async def test_changing_model_dir_replaces_models_module(qapp: QApplication, tmp
         assert app.models is not None and app.models.models_dir == new_dir
         assert sum(1 for module, _ in app._started if module is app.models) == 1  # pyright: ignore[reportPrivateUsage]
         assert all(module is not old for module, _ in app._started)  # pyright: ignore[reportPrivateUsage]
+    finally:
+        await app.stop()
+
+
+@pytest.mark.timeout(120)
+async def test_switching_ocr_engine_restarts_ocr_process_with_new_command(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """改 [ocr].engine：OCR 进程用新引擎的命令重启（OCRE-04）。
+
+    源码运行时 PaddleOCR 是否可用取决于 .venv-ocr 与本地模型。
+    """
+    requested: list[OcrEngineKind] = []
+
+    def command(engine: OcrEngineKind) -> Sequence[str]:
+        requested.append(engine)
+        return OCR_FAKE
+
+    app = Application(
+        AppOptions(
+            paths=AppPaths(tmp_path / "data"),
+            secrets=MemorySecretStore(),
+            nmt_command=NMT_FAKE,
+            ocr_command=command,
+            tray_icon=None,
+            http_transport=httpx.MockTransport(_Network().handle),
+            models_index_url=INDEX_URL,
+        ),
+        qapp,
+    )
+    await app.start()
+    try:
+        bus, ocr, engines = app.bus, app.ocr, app.ocr_engines
+        assert bus is not None and ocr is not None and engines is not None
+        if not engines.can_run(OcrEngineKind.WINDOWS):
+            pytest.skip("本机没有 Windows OCR 语言")
+        assert await asyncio.wait_for(ocr.wait_for_state(WorkerState.READY), 60) is WorkerState.READY
+        assert requested[-1] is OcrEngineKind.WINDOWS
+        if not engines.can_run(OcrEngineKind.PADDLE):
+            pytest.skip("本机没有可用的 PaddleOCR 开发环境")
+        first_pid = ocr.pid
+
+        bus.send(UpdateConfig({"ocr": {"engine": "paddle"}}))
+
+        async def switched() -> None:
+            while ocr.pid in (None, first_pid) or ocr.state is not WorkerState.READY:
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(switched(), 30)
+        assert requested[-1] is OcrEngineKind.PADDLE
+        catalog = bus.latest(OcrEngineCatalog)
+        assert catalog is not None and catalog.active is OcrEngineKind.PADDLE
+    finally:
+        await app.stop()
+
+
+class _RejectionRecorder:
+    """附加模块：记录启动后收到的 ConfigRejected。它晚于托盘启动，与设置窗口的位置相同。"""
+
+    name = "rejection-recorder"
+
+    def __init__(self) -> None:
+        self.rejections: list[ConfigRejected] = []
+
+    async def start(self, ctx: ModuleContext) -> None:
+        ctx.subscribe(ConfigRejected, self.rejections.append)
+
+    async def stop(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(120)
+async def test_startup_config_errors_reach_modules_started_after_the_tray(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """配置文件里的错误在全部模块启动之后补发一次，晚于托盘启动的模块（设置窗口）也能收到（U6）。"""
+    config_file = tmp_path / "data" / "config" / "settings.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('[ocr]\nmode = "hologram"\n', encoding="utf-8")
+    recorder = _RejectionRecorder()
+    app = Application(
+        AppOptions(
+            paths=AppPaths(tmp_path / "data"),
+            secrets=MemorySecretStore(),
+            nmt_command=NMT_FAKE,
+            ocr_command=None,
+            tray_icon=None,
+            extra_modules=(recorder,),
+            http_transport=httpx.MockTransport(_Network().handle),
+            models_index_url=INDEX_URL,
+        ),
+        qapp,
+    )
+    try:
+        await app.start()
+        assert app.bus is not None
+        await app.bus.drain()
+        assert [r.location for r in recorder.rejections] == [("ocr", "mode")]
     finally:
         await app.stop()

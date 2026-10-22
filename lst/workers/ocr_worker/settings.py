@@ -1,6 +1,6 @@
 """OCR 进程的设置（Configure）与单次请求的选项（OcrRequest.options）。
 
-Configure 的设置项（主进程的 lst/services/ocr/config.py 的 worker_settings 给出前 11 项）：
+Configure 的设置项（主进程的 lst/services/ocr/config.py 的 worker_settings 给出前 11 项与末尾的 engine）：
 
 | 键 | 默认值 | 含义 |
 |---|---|---|
@@ -17,9 +17,11 @@ Configure 的设置项（主进程的 lst/services/ocr/config.py 的 worker_sett
 | rec_model | 按 language 选择 | 识别模型；显式给出时不再按语言选择 |
 | cpu_threads | 0 | CPU 推理线程数，0 表示自动 |
 | warmup | true | 加载阶段用一张合成小图推理一次，把首次推理的开销放在 Ready 之前 |
+| engine | 无 | OCR 引擎（worker_settings 给出）；本后端是 paddle，取其他值时记 WARNING 后照常加载 |
 
-model_cache_dir 不设时取环境变量 PADDLE_PDX_CACHE_HOME（监管器启动 OCR 进程时设置，架构文档 8.5 节），
-环境变量也没有时为工作目录下的 data/models/ocr。
+model_cache_dir 由组合根经 Configure 给出（lst/app/bootstrap.py 的 ocr_process_settings，架构文档 8.5 节）。
+没有给出时取环境变量 PADDLE_PDX_CACHE_HOME（单独运行 OCR 进程调试时用），环境变量也没有时为工作目录下的
+data/models/ocr。
 
 子能力开关与预处理参数以每个请求的 options 为准（键名同上），Configure 里的同名项只决定预加载哪些模型、
 以及请求缺少该项时的默认值。请求用到没有预加载的子能力时，后端在这次请求里补加载。
@@ -55,10 +57,11 @@ DEFAULT_DET_MODEL: Final = "PP-OCRv5_mobile_det"
 DEFAULT_REC_MODEL: Final = "PP-OCRv5_mobile_rec"
 DEFAULT_MODEL_CACHE_DIR: Final = Path("data") / "models" / "ocr"
 
-_KNOWN_KEYS: Final = frozenset(
+KNOWN_KEYS: Final = frozenset(
     {"mode", "device", "language", *FEATURES, "grayscale", "resize_max_side", "model_cache_dir",
-     "layout_model", "det_model", "rec_model", "cpu_threads", "warmup"}
+     "layout_model", "det_model", "rec_model", "cpu_threads", "warmup", "engine"}
 )  # fmt: skip
+"""Configure 设置的全部键（上表）。Windows OCR 后端用同一份清单判断未知的键。"""
 
 
 class BadOptions(ValueError):
@@ -115,7 +118,7 @@ class OcrSettings:
     @classmethod
     def parse(cls, raw: Mapping[str, JsonValue]) -> "OcrSettings":
         """校验 Configure 的设置；无效时抛 ConfigError。未知的键记警告后忽略。"""
-        unknown = sorted(set(raw) - _KNOWN_KEYS)
+        unknown = sorted(set(raw) - KNOWN_KEYS)
         if unknown:
             log.warning("忽略未知的设置项：%s", ", ".join(unknown))
         mode: Mode
@@ -136,6 +139,9 @@ class OcrSettings:
                 device = "gpu"
             case other:
                 raise ConfigError(f"device 应为 auto、cpu 或 gpu，实际为 {other!r}")
+        engine = raw.get("engine")
+        if engine is not None and engine != "paddle":
+            log.warning("engine 为 %r，但本进程使用 PaddleOCR 后端；按 PaddleOCR 的设置加载", engine)
         language = _get_str(raw, "language", "auto")
         features = frozenset(
             name for name in FEATURES if _get_bool(raw, name, name in DEFAULT_FEATURES, ConfigError)

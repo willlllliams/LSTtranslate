@@ -13,13 +13,20 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from lst.contracts.errors import ErrorCode
 from lst.contracts.ids import Lang
 from lst.contracts.ports import SecretReader
 from lst.contracts.translation import Engine, EngineInfo, EngineKind, Job, Segment, SegmentOutcome
-from lst.services.engines.common import EngineSettings, build_info
+from lst.services.engines.common import (
+    EngineSettings,
+    build_info,
+    check_count,
+    failures,
+    parse_json,
+    split_blank,
+)
 from lst.services.engines.deepl.languages import source_code, supports_pair, target_code
 from lst.services.engines.http import EngineError, RetryPolicy, Sleep, send_with_retry
 
@@ -101,22 +108,11 @@ def fit_context(payload: dict[str, object], context: str, limit: int = MAX_BODY_
     return context[:low]
 
 
-def _failures(segments: Sequence[Segment], code: ErrorCode, detail: str) -> list[SegmentOutcome]:
-    return [SegmentOutcome(segment.id, error=detail, code=code) for segment in segments]
-
-
 def _parse(response: httpx.Response, expected: int) -> list[str]:
     """取出与输入同序的译文；结构不对或条数不符时抛出 BAD_RESPONSE。错误信息不含响应正文。"""
-    try:
-        parsed = _TranslateResponse.model_validate_json(response.content)
-    except ValidationError as exc:
-        where = ", ".join(".".join(str(part) for part in error["loc"]) or "<root>" for error in exc.errors())
-        raise EngineError(ErrorCode.BAD_RESPONSE, f"响应结构不符合预期（{where}）") from None
-    if len(parsed.translations) != expected:
-        raise EngineError(
-            ErrorCode.BAD_RESPONSE, f"返回 {len(parsed.translations)} 条译文，请求了 {expected} 条"
-        )
-    return [item.text for item in parsed.translations]
+    translations = parse_json(response.content, _TranslateResponse).translations
+    check_count(len(translations), expected)
+    return [item.text for item in translations]
 
 
 class DeepLEngine:
@@ -158,11 +154,9 @@ class DeepLEngine:
         return supports_pair(source, target)
 
     async def translate(self, job: Job) -> AsyncIterator[SegmentOutcome]:
-        # 空白段不发给接口，原样作为译文返回。
-        pending = [segment for segment in job.segments if segment.text.strip()]
-        for segment in job.segments:
-            if not segment.text.strip():
-                yield SegmentOutcome(segment.id, text=segment.text)
+        blank, pending = split_blank(job.segments)
+        for outcome in blank:
+            yield outcome
         if not pending:
             return
         for outcome in await self._translate_batch(job, pending):
@@ -170,10 +164,10 @@ class DeepLEngine:
 
     async def _translate_batch(self, job: Job, segments: Sequence[Segment]) -> list[SegmentOutcome]:
         if self._key is None:
-            return _failures(segments, ErrorCode.AUTH, "未配置 DeepL API key")
+            return failures(segments, ErrorCode.AUTH, "未配置 DeepL API key")
         target = target_code(job.target_lang)
         if target is None:
-            return _failures(
+            return failures(
                 segments, ErrorCode.UNSUPPORTED_LANGUAGE, f"DeepL 不支持目标语言 {job.target_lang}"
             )
 
@@ -193,7 +187,7 @@ class DeepLEngine:
             texts = _parse(response, len(segments))
         except EngineError as exc:
             logger.info("DeepL 实例 %s 请求失败：%s", self._info.id, exc.detail)
-            return _failures(segments, exc.code, exc.detail)
+            return failures(segments, exc.code, exc.detail)
         return [SegmentOutcome(segment.id, text=text) for segment, text in zip(segments, texts, strict=True)]
 
     def _encode(self, job: Job, segments: Sequence[Segment], target: str) -> bytes:

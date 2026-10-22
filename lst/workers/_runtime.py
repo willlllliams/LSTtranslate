@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import faulthandler
+import importlib
 import io
 import logging
 import os
@@ -177,6 +178,29 @@ def parse_args(
     if add_arguments is not None:
         add_arguments(parser)
     return parser.parse_args(argv)
+
+
+def load_backend(spec: str) -> object:
+    """按 `module:attr` 导入后端工厂并调用它，返回后端实例（各进程入口的 --backend 参数）。
+
+    `attr` 是一个无参可调用对象。格式不对或找不到可调用的属性时以 CONFIG_ERROR 退出；
+    导入模块失败（ImportError，或 DLL 加载失败的 OSError）时以 DEPENDENCY_ERROR 退出。
+    返回值的类型由调用方按自己的后端协议标注。
+    """
+    module_name, sep, attr = spec.partition(":")
+    if not sep or not module_name or not attr:
+        log.error("--backend 应为 module:attr 格式，实际为 %r", spec)
+        exit_process(ExitCode.CONFIG_ERROR)
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, OSError) as exc:
+        log.error("无法导入后端模块 %s：%s", module_name, exc)
+        exit_process(ExitCode.DEPENDENCY_ERROR)
+    factory = getattr(module, attr, None)
+    if not callable(factory):
+        log.error("后端模块 %s 中没有可调用的 %s", module_name, attr)
+        exit_process(ExitCode.CONFIG_ERROR)
+    return factory()
 
 
 def read_authkey() -> bytes:

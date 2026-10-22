@@ -16,7 +16,8 @@ from lst.ui.settings.controls import (
     SwitchEditor,
 )
 from lst.ui.settings.pages import SettingsPage
-from tests.ui.settings.conftest import Harness, StartSettings, wait_until
+from tests.ui.conftest import wait_until
+from tests.ui.settings.conftest import Harness, StartSettings
 from tests.ui.settings.support import default_config
 
 
@@ -157,6 +158,9 @@ async def test_dropdown_commits_immediately(harness: Harness) -> None:
 
 
 async def test_switch_commits_immediately(harness: Harness) -> None:
+    await harness.publish(
+        default_config({"ocr": {"engine": "paddle"}}, revision=2)
+    )  # 表格等开关只对 PaddleOCR 可用
     editor = binding(harness.window.page("capture"), "ocr", "formula").editor
     assert isinstance(editor, SwitchEditor)
     editor.switch.click()

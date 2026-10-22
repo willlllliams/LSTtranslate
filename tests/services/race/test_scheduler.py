@@ -15,6 +15,7 @@ from typing import Protocol
 
 import pytest
 
+from lst.contracts.errors import ErrorCode
 from lst.contracts.ids import EngineId, Entry, Lang, SegmentId, SessionId
 from lst.contracts.ports import CacheKey
 from lst.contracts.translation import (
@@ -23,11 +24,13 @@ from lst.contracts.translation import (
     EngineInfo,
     EngineKind,
     Job,
+    JobImage,
     Segment,
     SegmentOutcome,
     SegmentView,
     SkipReason,
 )
+from lst.services.race.merger import SessionRace
 from lst.services.race.scheduler import LangPair, RaceMode, RaceScheduler, pack_segments
 
 EN = Lang("en")
@@ -104,6 +107,7 @@ class FakeEngine:
         pairs: Iterable[tuple[str, str]] | None = None,
         fingerprint: str = "",
         revision: int = 0,
+        image_max_side: int | None = None,
     ) -> None:
         self._info = EngineInfo(
             id=EngineId(name),
@@ -117,6 +121,7 @@ class FakeEngine:
             timeout_s=timeout_s,
             fingerprint=fingerprint,
             revision=revision,
+            image_max_side=image_max_side,
         )
         self.pairs = None if pairs is None else {(Lang(s), Lang(t)) for s, t in pairs}
         self.behavior: dict[SegmentId, Behavior] = {}
@@ -329,12 +334,19 @@ class Harness:
         langs: Mapping[SegmentId, LangPair] | None = None,
         include_billing: bool = True,
         context: str = "",
+        images: Mapping[int, JobImage] | None = None,
     ) -> None:
         """langs 给出时直接使用；否则每段的语言对是（sources 中的源语言，默认 en）→ zh-Hans。"""
         if langs is None:
             langs = {s.id: ((sources or {}).get(s.id, EN), ZH) for s in segments}
         await self.scheduler.start_session(
-            entry, SessionId(session), segments, langs, include_billing=include_billing, context=context
+            entry,
+            SessionId(session),
+            segments,
+            langs,
+            include_billing=include_billing,
+            context=context,
+            images=images,
         )
 
     async def extend(self, session: str = "sess") -> None:
@@ -681,6 +693,49 @@ class TestCache:
         assert h.attempt(S1, a).state is CANCELLED
         assert h.finished(S1)
 
+    async def test_identical_texts_share_one_cache_entry(self, make: MakeHarness) -> None:
+        """同一会话里原文相同的段共用一个缓存键，命中后每个段都以缓存结果完成。"""
+        a = FakeEngine("a", 1)
+        cache = FakeCache({key("OK", a): "好"})
+        h = make(a, cache=cache)
+        await h.start(segs("OK", "OK"))
+        await h.drain()
+
+        assert cache.get_calls == [(key("OK", a),)]
+        assert a.jobs == []
+        for segment_id in (S1, S2):
+            hit = h.attempt(segment_id, a)
+            assert (hit.state, hit.text, hit.cached) == (DONE, "好", True)
+            assert h.view(segment_id).finished
+
+    async def test_identical_texts_all_join_on_billing_hit(self, make: MakeHarness) -> None:
+        """双语窗口不含计费实例时，原文相同的段都因缓存命中让计费实例参赛。"""
+        free = FakeEngine("free", 2)
+        paid = FakeEngine("paid", 1, billing=True)
+        cache = FakeCache({key("OK", paid): "好"})
+        h = make(free, paid, cache=cache)
+        await h.start(segs("OK", "OK"), entry=Entry.BILINGUAL, include_billing=False)
+        await h.drain()
+
+        assert paid.jobs == []
+        for segment_id in (S1, S2):
+            assert (h.view(segment_id).winner, h.view(segment_id).display_text) == (paid.id, "好")
+
+    async def test_blank_translation_is_not_written(self, make: MakeHarness) -> None:
+        """译文去掉空白后为空时不写缓存，免得以后每次都命中这个空结果。"""
+
+        class BlankEngine(FakeEngine):
+            def text(self, segment: Segment) -> str:
+                return " 	" if segment.id == S1 else super().text(segment)
+
+        a = BlankEngine("a", 1)
+        cache = FakeCache()
+        h = make(a, cache=cache)
+        await h.start(segs("一", "二"))
+        await h.drain()
+
+        assert cache.puts == [(key("二", a), "a:二")]
+
 
 # ---------------------------------------------------------------- 3 打包
 
@@ -922,6 +977,34 @@ class TestEngineFaults:
         attempt = h.attempt(S2, a)
         assert (attempt.state, attempt.error) == (FAILED, "超时（0.02 秒）")
         assert a.cancelled == a.jobs  # 生成器收到了 CancelledError
+
+    async def test_dequeue_error_fails_attempts_of_the_job(
+        self, make: MakeHarness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """出队剪枝出错时丢弃任务，任务里的尝试记为内部错误，不会停在 QUEUED 让竞速挂起。"""
+        caplog.set_level(logging.ERROR, logger=LOGGER)
+        a = FakeEngine("a", 1, max_batch_segments=2)
+        h = make(a)
+
+        def broken(self: SessionRace, segment_id: SegmentId, engine_id: EngineId) -> None:
+            raise RuntimeError("合并器出错")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(SessionRace, "start", broken)
+            await h.start(segs("一", "二"))
+            await h.drain()
+
+        assert a.jobs == []
+        for segment_id in (S1, S2):
+            failed = h.attempt(segment_id, a)
+            assert (failed.state, failed.error_code) == (FAILED, ErrorCode.INTERNAL)
+            assert h.finished(segment_id)
+        assert any("出队剪枝出错" in r.getMessage() for r in caplog.records)
+
+        # 工作协程没有退出，之后的任务照常执行。
+        await h.start(segs("三", prefix="n"), session="next", entry=Entry.BILINGUAL)
+        await h.drain()
+        assert a.segments_seen() == [(SegmentId("n1"),)]
 
 
 # ---------------------------------------------------------------- 6 竞速模式
@@ -1221,6 +1304,73 @@ class TestLateJoin:
         assert [(job.source_lang, job.target_lang) for job in paid.jobs] == [(EN, ZH), (ZH, EN)]
         assert h.view(S2).attempts == ()
         assert [a.engine_id for a in h.view(S3).attempts] == [free.id]
+
+    async def test_extend_admits_replaced_billing_instance(self, make: MakeHarness) -> None:
+        """计费实例在会话开始后被替换（例如补填了 API key），Ctrl+Enter 时由新实例参赛。"""
+        local = FakeEngine("argos", 2)
+        old = FakeEngine("deepseek", 1, billing=True, revision=1)
+        h = make(local, old)
+        await h.start(segs("hello"), entry=Entry.BILINGUAL, include_billing=False)
+        await h.drain()
+
+        new = FakeEngine("deepseek", 1, billing=True, revision=2)
+        new.gate(S1)
+        h.scheduler.set_engines([local, new])
+        await h.extend()
+        await h.sink.signal.wait_until(lambda: h.state(S1, new) is RUNNING)
+        assert not h.finished(S1)
+        new.release(S1)
+        await h.drain()
+
+        assert old.jobs == []
+        assert new.segments_seen() == [(S1,)]
+        assert (h.view(S1).winner, h.view(S1).display_text) == (new.id, "deepseek:hello")
+
+    async def test_extend_reruns_attempt_failed_by_replaced_instance(self, make: MakeHarness) -> None:
+        """旧实例失败的段由同号新实例重新参赛，旧实例成功的段保持原状。"""
+        local = FakeEngine("argos", 2)
+        old = FakeEngine("deepseek", 1, billing=True, revision=1)
+        old.behavior[S1] = Behavior.FAIL
+        h = make(local, old)
+        await h.start(segs("一", "二"), entry=Entry.BILINGUAL)
+        await h.drain()
+        assert h.attempt(S1, old).state is FAILED
+        assert h.view(S1).winner == local.id
+
+        new = FakeEngine("deepseek", 1, billing=True, revision=2)
+        h.scheduler.set_engines([local, new])
+        await h.extend()
+        await h.drain()
+
+        assert new.segments_seen() == [(S1,)]
+        assert (h.view(S1).winner, h.view(S1).display_text) == (new.id, "deepseek:一")
+        assert h.view(S2).display_text == "deepseek:二"  # 旧实例的结果
+        assert [r.state for r in h.sink.recorded(S1, new)] == [FAILED, DONE]
+
+        # 新实例自己的结果不再被替换：再按一次 Ctrl+Enter 什么也不发生。
+        await h.extend()
+        await h.drain()
+        assert new.segments_seen() == [(S1,)]
+
+    async def test_replacement_that_joined_is_retired_like_original(self, make: MakeHarness) -> None:
+        """加入会话的新实例再被移除时，它在这个会话里的尝试同样按“实例已移除”结束。"""
+        local = FakeEngine("argos", 2)
+        old = FakeEngine("deepseek", 1, billing=True, revision=1)
+        h = make(local, old)
+        await h.start(segs("一"), entry=Entry.BILINGUAL, include_billing=False)
+        await h.drain()
+        new = FakeEngine("deepseek", 1, billing=True, revision=2)
+        new.gate(S1)
+        h.scheduler.set_engines([local, new])
+        await h.extend()
+        await wait_jobs(new, 1)
+
+        h.scheduler.set_engines([local])
+        await h.drain()
+        removed = h.attempt(S1, new)
+        assert (removed.state, removed.error) == (FAILED, "实例已移除")
+        assert new.cancelled == new.jobs
+        assert (h.view(S1).winner, h.view(S1).finished) == (local.id, True)
 
     async def test_extend_ignores_unknown_or_cancelled_sessions(self, make: MakeHarness) -> None:
         paid = FakeEngine("paid", 1, billing=True)
@@ -1546,3 +1696,86 @@ class TestConfigFingerprint:
         await h.start(segs("二", prefix="n"), session="second", entry=Entry.BILINGUAL)
         await h.drain()
         assert [job.session_id for job in new_a.jobs] == [SessionId("second")]
+
+
+# ---------------------------------------------------------------- 附带截图
+
+
+def job_image(content: bytes, side: int = 64) -> JobImage:
+    return JobImage.from_encoded("image/png", content, side, side // 2)
+
+
+class TestImages:
+    """截屏会话的截图只交给接收截图的实例，带图尝试的缓存键含截图摘要（需求 ENG-07）。"""
+
+    async def test_only_image_lanes_receive_matching_image(self, make: MakeHarness) -> None:
+        small, large = job_image(b"small", 512), job_image(b"large", 1568)
+        vision = FakeEngine("vision", 1, image_max_side=1568)
+        other_side = FakeEngine("other", 2, image_max_side=1024)
+        plain = FakeEngine("plain", 3)
+        h = make(vision, other_side, plain)
+        await h.start(segs("一"), images={512: small, 1568: large})
+        await h.drain()
+
+        assert [job.image for job in vision.jobs] == [large]
+        # 会话里没有 1024 的截图：该实例照常参赛，只是不带图。
+        assert [job.image for job in other_side.jobs] == [None]
+        assert [job.image for job in plain.jobs] == [None]
+
+    async def test_session_without_images_sends_none(self, make: MakeHarness) -> None:
+        vision = FakeEngine("vision", 1, image_max_side=1568)
+        h = make(vision)
+        await h.start(segs("一"), entry=Entry.BILINGUAL)
+        await h.drain()
+        assert [job.image for job in vision.jobs] == [None]
+
+    async def test_cache_key_contains_image_digest(self, make: MakeHarness) -> None:
+        image = job_image(b"shot-1")
+        vision = FakeEngine("vision", 1, image_max_side=64)
+        plain = FakeEngine("plain", 2)
+        cache = FakeCache()
+        h = make(vision, plain, cache=cache, mode=RaceMode.FULL)
+        await h.start(segs("一"), images={64: image})
+        await h.drain()
+
+        written = dict(cache.puts)
+        with_image = CacheKey("一", EN, ZH, vision.id, "", image.sha256)
+        assert written[with_image] == "vision:一"
+        assert written[key("一", plain)] == "plain:一"  # 不带图的实例，键与原来相同
+        assert key("一", vision) not in written
+        assert {k.image_digest for k in cache.get_calls[0]} == {image.sha256, ""}
+
+    async def test_same_text_with_other_image_misses_cache(self, make: MakeHarness) -> None:
+        first, second = job_image(b"shot-1"), job_image(b"shot-2")
+        vision = FakeEngine("vision", 1, image_max_side=64)
+        cache = FakeCache()
+        h = make(vision, cache=cache)
+        await h.start(segs("一"), session="first", images={64: first})
+        await h.drain()
+        await h.start(segs("一"), session="second", images={64: second})
+        await h.drain()
+        assert len(vision.jobs) == 2
+        assert not h.attempt(S1, vision, "second").cached
+
+        await h.start(segs("一"), session="third", images={64: job_image(b"shot-1")})
+        await h.drain()
+        assert len(vision.jobs) == 2  # 同一张截图（摘要相同）命中缓存
+        assert h.attempt(S1, vision, "third").cached
+
+    async def test_text_only_cache_entry_is_not_used_for_image_attempt(self, make: MakeHarness) -> None:
+        vision = FakeEngine("vision", 1, image_max_side=64)
+        cache = FakeCache({key("一", vision): "不带图的译文"})
+        h = make(vision, cache=cache)
+        await h.start(segs("一"), images={64: job_image(b"shot")})
+        await h.drain()
+        assert h.view(S1).display_text == "vision:一"
+        assert not h.attempt(S1, vision).cached
+
+    async def test_attempt_records_carry_no_image(self, make: MakeHarness) -> None:
+        vision = FakeEngine("vision", 1, image_max_side=64)
+        h = make(vision)
+        await h.start(segs("一"), images={64: job_image(b"PIXELS")})
+        await h.drain()
+        assert h.sink.records
+        for _, _, attempt in h.sink.records:
+            assert "PIXELS" not in repr(attempt)

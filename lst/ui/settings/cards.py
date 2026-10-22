@@ -15,7 +15,8 @@ from typing import Final, cast
 from PySide6.QtWidgets import QWidget
 
 from lst.contracts.worker_protocol import JsonValue
-from lst.ui.i18n import tr
+from lst.ui.common.text import LANGUAGES, language_name
+from lst.ui.i18n import current_language, tr
 from lst.ui.settings.controls import (
     DEFAULT_DEBOUNCE_MS,
     ChoiceEditor,
@@ -33,7 +34,7 @@ from lst.ui.settings.controls import (
 from lst.ui.settings.dialogs import Dialogs
 from lst.ui.settings.presenter import Location, SettingsPresenter
 from lst.ui.settings.schema import FieldSpec, Kind
-from lst.ui.settings.strings import LANGUAGES, language_name, text_or
+from lst.ui.settings.strings import text_or
 from lst.ui.theme import Glyph
 
 FIELD_GLYPHS: Final[dict[str, str]] = {
@@ -62,6 +63,9 @@ FIELD_GLYPHS: Final[dict[str, str]] = {
     "bilingual.auto_billing": Glyph.BILL,
     "bilingual.layout": Glyph.LAYOUT,
     "nmt.model_dir": Glyph.FOLDER,
+    "updates.auto_check": Glyph.SYNC,
+    "updates.check_interval_hours": Glyph.STOPWATCH,
+    "updates.include_prerelease": Glyph.TAG,
     # 引擎实例的参数，键为 engine.<字段名>
     "engine.name": Glyph.PENCIL,
     "engine.enabled": Glyph.POWER,
@@ -84,6 +88,8 @@ FIELD_GLYPHS: Final[dict[str, str]] = {
     "engine.appid": Glyph.TAG,
     "engine.tier": Glyph.LIBRARY,
     "engine.processing_timeout_s": Glyph.STOPWATCH,
+    "engine.send_image": Glyph.PICTURE,
+    "engine.image_max_side": Glyph.SLIDERS,
 }
 """设置卡片左侧的图标。键是设置项的位置（“节.字段”）或 engine.<引擎参数名>；没有登记的设置项不显示图标。"""
 
@@ -91,6 +97,8 @@ INT_MIN: Final = -(2**31)
 INT_MAX: Final = 2**31 - 1
 MULTILINE_FIELDS: Final = frozenset({"system_prompt"})
 """用多行文本框编辑的字段。"""
+INT_SUFFIXES: Final = {"image_max_side": "settings.suffix.pixels"}
+"""页面没有声明单位后缀时，这些整数字段按字段名取单位后缀（引擎参数表单没有逐项声明）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,15 +141,40 @@ class Binding:
         self._title_key = title_key
         self._relabel = relabel
         self._load = load
+        self._note_key = ""
+        self._note_replaces = False
 
     def retranslate(self) -> None:
         self._relabel()
+        self._apply_texts()
+
+    def _apply_texts(self) -> None:
+        description = text_or(f"{self._title_key}.desc", "")
+        if self._note_key:
+            note = tr(self._note_key)
+            # 中文句子之间不加空格，英文加一个空格。
+            separator = "" if current_language() == "zh-Hans" else " "
+            replace = self._note_replaces or not description
+            description = note if replace else f"{description}{separator}{note}"
         self.card.set_texts(
             text_or(
                 f"{self._title_key}.title", self.location[-1] if isinstance(self.location[-1], str) else ""
             ),
-            text_or(f"{self._title_key}.desc", ""),
+            description,
         )
+
+    @property
+    def note_key(self) -> str:
+        return self._note_key
+
+    def set_note(self, key: str, *, replace: bool = False) -> None:
+        """在说明后面追加一句（文案键），例如“仅 PaddleOCR 可用”；replace 为真时用它代替原来的说明。
+
+        key 为空串表示去掉，恢复原来的说明。不重建控件的可选项。
+        """
+        if (key, replace) != (self._note_key, self._note_replaces):
+            self._note_key, self._note_replaces = key, replace
+            self._apply_texts()
 
     def refresh(self, presenter: SettingsPresenter) -> None:
         self.editor.set_json(self._load(presenter))
@@ -205,6 +238,8 @@ def make_editor(
             minimum = int(spec.minimum) if spec.minimum is not None else INT_MIN
             maximum = int(spec.maximum) if spec.maximum is not None else INT_MAX
             integer = IntEditor(minimum, maximum, debounce_ms=debounce_ms)
+            if suffix == "" and spec.name in INT_SUFFIXES:
+                suffix = INT_SUFFIXES[spec.name]
 
             def retext() -> None:
                 integer.set_texts(tr(suffix) if suffix else "", tr(zero) if zero else "")
@@ -272,6 +307,8 @@ class CardBuilder:
 
         editor.committed.connect(commit)
         editor.edited.connect(lambda: presenter.clear_rejection(location))
+        if isinstance(editor, HotkeyEditor):
+            editor.button.recording_changed.connect(presenter.set_hotkey_recording)
         binding = Binding(
             location,
             card,

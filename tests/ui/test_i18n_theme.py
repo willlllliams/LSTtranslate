@@ -5,6 +5,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from lst.contracts.errors import ErrorCode
+from lst.contracts.ocr_engines import OcrEngineErrorCode
+from lst.contracts.updates import UpdateErrorCode
 from lst.ui import i18n
 from lst.ui.theme import TOKENS, UiConfig, apply_app_style, engine_color
 
@@ -17,12 +19,26 @@ def restore_language() -> object:
 
 
 def test_every_error_code_has_reason_and_suggestion_in_both_languages() -> None:
+    """翻译引擎、OCR 引擎、应用更新三类错误码都有中英文的原因与处理建议，且不退回到内部错误的文案。"""
+    families = (ErrorCode, OcrEngineErrorCode, UpdateErrorCode)
+    assert families == i18n.ERROR_CODE_FAMILIES
     for language in i18n.SUPPORTED:
         i18n.set_language(language)
-        for code in ErrorCode:
-            reason, suggestion = i18n.error_text(code)
-            assert reason and not reason.startswith("error."), (language, code)
-            assert suggestion and not suggestion.startswith("error."), (language, code)
+        for family in families:
+            for code in family:
+                reason, suggestion = i18n.error_text(code)
+                assert reason and not reason.startswith("error."), (language, code)
+                assert suggestion and not suggestion.startswith("error."), (language, code)
+                assert i18n.error_text(code.value) == (reason, suggestion)
+        assert i18n.error_text(ErrorCode.IMAGE_UNSUPPORTED) != i18n.error_text(ErrorCode.INTERNAL)
+
+
+def test_error_text_uses_the_family_default_for_unknown_codes() -> None:
+    i18n.set_language("zh-Hans")
+    internal = i18n.error_text(OcrEngineErrorCode.INTERNAL)
+    assert i18n.error_text(None, OcrEngineErrorCode.INTERNAL) == internal
+    assert i18n.error_text("ocr_engine.nonsense", OcrEngineErrorCode.INTERNAL) == internal
+    assert i18n.error_text(None, UpdateErrorCode.INTERNAL) == i18n.error_text(UpdateErrorCode.INTERNAL)
 
 
 def test_unknown_error_code_falls_back_to_internal() -> None:

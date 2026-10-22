@@ -108,7 +108,6 @@ class ModelsPage(SettingsPage):
         self.cancel_button.clicked.connect(self._cancel)
         self.delete_button.clicked.connect(self._delete)
         self.refresh_button.clicked.connect(presenter.refresh_models)
-        self.finish()
 
     # ------------------------------------------------------------------ 文案与刷新
 
@@ -229,6 +228,3 @@ class ModelsPage(SettingsPage):
         if self.dialogs.confirm(tr("settings.confirm.title"), text):
             for row in rows:
                 self.presenter.delete_model(row.model_id)
-
-    def focus_chain_widgets(self) -> list[QWidget]:
-        return [self.filter_edit, self.installed_only, self.tree]

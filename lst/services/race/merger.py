@@ -22,7 +22,7 @@ from lst.contracts.translation import (
 
 @dataclass(slots=True)
 class Attempt:
-    """一个引擎实例在一个段上的尝试。arrival_seq 记录成功结果在本段内的到达次序。"""
+    """一个引擎实例在一个段上的尝试。"""
 
     engine_id: EngineId
     priority: int
@@ -31,7 +31,6 @@ class Attempt:
     finished_at: float | None = None
     text: str | None = None
     error: str | None = None
-    arrival_seq: int | None = None
     cached: bool = False
     started: bool = False
     error_code: ErrorCode | None = None
@@ -56,15 +55,17 @@ class SegmentRace:
     记参赛实例集合为 E，当前胜出实例为 w（尚无成功结果时为 None）。
     成功结果按“w 为空，或新结果优先级严格更高”替换 w；失败结果不改变 w。
     竞速在集合 H 为空时结束，H 是仍处于 QUEUED/RUNNING、且 w 为空或优先级严格高于 w 的实例。
+
+    每个实例号在 E 中最多一个尝试。唯一的例外是 rejoin：计费实例被替换为同号的新实例后晚加入时，
+    新尝试替换旧实例已经失败的尝试。失败的尝试从不是 w，所以替换不改变 w，下面的引理不受影响。
     """
 
-    __slots__ = ("_arrivals", "_attempts", "_winner", "segment", "skip_reason")
+    __slots__ = ("_attempts", "_winner", "segment", "skip_reason")
 
     def __init__(self, segment: Segment) -> None:
         self.segment = segment
         self._attempts: dict[EngineId, Attempt] = {}
         self._winner: EngineId | None = None
-        self._arrivals = 0
         self.skip_reason: SkipReason | None = None
 
     # ---- 查询 ----
@@ -83,7 +84,10 @@ class SegmentRace:
 
     @property
     def finished(self) -> bool:
-        """显示已定：H 为空。没有任何参赛实例时也视为结束，界面显示原文。"""
+        """显示已定：H 为空。没有任何参赛实例时也视为结束，界面显示原文。
+
+        晚加入（add、rejoin）的尝试若优先级高于 w，会让已定的段重新变为未定。
+        """
         return not any(self._can_change_display(a) for a in self._attempts.values())
 
     @property
@@ -94,8 +98,10 @@ class SegmentRace:
     def contending(self, engine_id: EngineId) -> bool:
         """该实例的尝试是否属于 H，即仍可能改变显示。
 
-        当前胜出者的优先级只升不降，所以一个尝试一旦不属于 H，之后再也不会属于 H。
-        节省模式据此在出队时剪枝（架构文档 6.4 节）。
+        引理：当前胜出者的优先级只升不降，所以一个尝试一旦不属于 H，之后再也不会属于 H。
+        证明：w 只在新结果的优先级严格高于 w 时改变；rejoin 替换的是失败的尝试，它不是 w。
+        因此 w 的优先级 p(w) 单调不增，而尝试 a 属于 H 的条件 p(a) < p(w) 一旦不成立就保持不成立；
+        尝试离开 QUEUED/RUNNING 后也不会回到这两个状态。节省模式据此在出队时剪枝（架构文档 6.4 节）。
         """
         return self._can_change_display(self._attempts[engine_id])
 
@@ -128,6 +134,19 @@ class SegmentRace:
             engine_id=engine_id, priority=priority, state=AttemptState.QUEUED, dispatched_at=now
         )
 
+    def rejoin(self, engine_id: EngineId, priority: int, now: float) -> None:
+        """用同号新实例的尝试替换一个已失败的尝试，新尝试的初始状态为 QUEUED。
+
+        只用于计费实例被替换后的晚加入（调度器的 extend_session）。被替换的尝试必须处于 FAILED。
+        """
+        attempt = self._attempts.get(engine_id)
+        if attempt is None or attempt.state is not AttemptState.FAILED:
+            state = "未参赛" if attempt is None else attempt.state.name
+            raise ValueError(f"实例 {engine_id} 在段 {self.segment.id} 上{state}，不能重新参赛")
+        self._attempts[engine_id] = Attempt(
+            engine_id=engine_id, priority=priority, state=AttemptState.QUEUED, dispatched_at=now
+        )
+
     def start(self, engine_id: EngineId) -> None:
         """实例开始处理这个段：QUEUED → RUNNING。"""
         attempt = self._attempts[engine_id]
@@ -144,7 +163,7 @@ class SegmentRace:
         """记录一个结果，返回显示的译文是否改变。
 
         结果可以来自 QUEUED（缓存命中时直接完成，cached=True）或 RUNNING 状态。已经结束的尝试再收到结果时
-        忽略，返回 False：这只会在引擎违反“每段恰好产出一次”的协议时发生。
+        忽略，返回 False：这只会在引擎违反“每段至多产出一次”的协议时发生。
         """
         if outcome.segment_id != self.segment.id:
             raise ValueError(f"结果属于段 {outcome.segment_id}，不属于段 {self.segment.id}")
@@ -162,8 +181,6 @@ class SegmentRace:
 
         attempt.state = AttemptState.DONE
         attempt.text = outcome.text
-        attempt.arrival_seq = self._arrivals
-        self._arrivals += 1
 
         if self._winner is None or attempt.priority < self._attempts[self._winner].priority:
             self._winner = engine_id
@@ -210,9 +227,6 @@ class SessionRace:
         # 包括暂时没有参赛者的段（例如双语窗口里只等计费实例的段）。
         self._dirty: dict[SegmentId, None] = dict.fromkeys(self._races)
 
-    def __contains__(self, segment_id: object) -> bool:
-        return segment_id in self._races
-
     def segment(self, segment_id: SegmentId) -> SegmentRace:
         return self._races[segment_id]
 
@@ -229,6 +243,10 @@ class SessionRace:
 
     def add(self, segment_id: SegmentId, engine_id: EngineId, priority: int, now: float) -> None:
         self._races[segment_id].add(engine_id, priority, now)
+        self._mark(segment_id)
+
+    def rejoin(self, segment_id: SegmentId, engine_id: EngineId, priority: int, now: float) -> None:
+        self._races[segment_id].rejoin(engine_id, priority, now)
         self._mark(segment_id)
 
     def start(self, segment_id: SegmentId, engine_id: EngineId) -> None:

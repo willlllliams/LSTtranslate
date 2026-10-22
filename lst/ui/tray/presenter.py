@@ -25,16 +25,26 @@ from lst.contracts.events import (
     NotificationRequested,
     OpenSettings,
     QuitRequested,
+    RestartWorker,
     ShowModelDownloads,
     StartCapture,
     ToggleBilingualWindow,
     WorkerStatus,
     WorkerStatuses,
 )
+from lst.contracts.messages import Command
 from lst.contracts.ports import WorkerState
+from lst.contracts.updates import (
+    CheckForUpdates,
+    DownloadUpdate,
+    InstallUpdate,
+    UpdateErrorCode,
+    UpdateState,
+    UpdateStatus,
+)
 from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import ModuleContext, Subscription
-from lst.ui.i18n import error_text, tr
+from lst.ui.i18n import apply_config_language, error_text, tr
 from lst.ui.tray.strings import LOCATION_SEPARATOR
 
 DEFAULT_CAPTURE_HOTKEY: Final = "Alt+Q"
@@ -57,6 +67,9 @@ WORKER_HEALTH: Final[Mapping[WorkerState, EngineHealth]] = {
 }
 """监管器状态到托盘五种显示状态的映射（架构文档 8.2 节，需求 TR-03）。"""
 
+RESTARTABLE_STATES: Final = frozenset({WorkerState.CRASHED, WorkerState.FAILED})
+"""状态区里提供“重新启动”的推理进程状态。"""
+
 # 已知推理进程的显示顺序与名称文案键；其他进程排在后面，直接显示进程名。
 _WORKER_ORDER: Final = ("ocr", "nmt")
 _WORKER_NAME_KEYS: Final[Mapping[str, str]] = {"ocr": "worker.ocr", "nmt": "worker.nmt"}
@@ -71,6 +84,7 @@ class TrayAction(StrEnum):
     MODELS = "models"
     OPEN_LOGS = "open_logs"
     EXPORT_DIAGNOSTICS = "export_diagnostics"
+    UPDATE = "update"
     QUIT = "quit"
 
 
@@ -81,6 +95,7 @@ MENU_LAYOUT: Final[tuple[TrayAction | None, ...]] = (
     TrayAction.MODELS,
     TrayAction.OPEN_LOGS,
     TrayAction.EXPORT_DIAGNOSTICS,
+    TrayAction.UPDATE,
     None,
     TrayAction.QUIT,
 )
@@ -93,13 +108,16 @@ class StatusLine:
 
     key 在多次渲染之间保持不变（``worker:ocr``、``engine:<实例号>``），视图据此复用菜单条目。
     details 只在出错时非空，依次是原因和处理建议（需求 TR-03、OBS-04）。text 与 details 都是纯文本，
-    视图负责转义其中的 ``&``。
+    视图负责转义其中的 ``&``。restart 是出错的推理进程的进程名，非空时子菜单里有“重新启动”，
+    选择它发送 ``RestartWorker``；restart_text 是这一项的文字（含助记符）。
     """
 
     key: str
     text: str
     health: EngineHealth
     details: tuple[str, ...] = ()
+    restart: str = ""
+    restart_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +187,10 @@ class TrayIntents(Protocol):
         """菜单即将弹出。"""
         ...
 
+    def restart_worker(self, worker: str) -> None:
+        """用户在出错的推理进程的子菜单里选择了“重新启动”。"""
+        ...
+
 
 class OneShotTimer(Protocol):
     """单次计时器。start 重新开始计时，到时调用构造时给定的回调；stop 取消尚未到时的回调。"""
@@ -222,7 +244,8 @@ def worker_display_name(name: str) -> str:
 def worker_lines(statuses: Mapping[str, WorkerStatus]) -> list[StatusLine]:
     """推理进程的状态行：OCR、NMT 在前，其他进程按映射顺序排在后面。
 
-    出错时的原因按监管器状态区分：CRASHED 正在退避后重启，FAILED 已停止自动重启。
+    出错时的原因按监管器状态区分：CRASHED 正在退避后重启，FAILED 已停止自动重启；两种状态的子菜单里
+    都有“重新启动”，立即重启并清零崩溃计数。未启用（STOPPED）的进程是否启动由配置决定，不提供重新启动。
     监管器的 detail 是技术细节，只进日志和诊断，不在菜单里显示（架构文档 10.3 节）。
     """
     names = [name for name in _WORKER_ORDER if name in statuses]
@@ -236,8 +259,16 @@ def worker_lines(statuses: Mapping[str, WorkerStatus]) -> list[StatusLine]:
             details = _details(tr("tray.worker.crashed.reason"), tr("tray.worker.crashed.suggestion"))
         elif state is WorkerState.FAILED:
             details = _details(tr("tray.worker.failed.reason"), tr("tray.worker.failed.suggestion"))
+        restart = name if state in RESTARTABLE_STATES else ""
         lines.append(
-            StatusLine(f"worker:{name}", _status_text(worker_display_name(name), health), health, details)
+            StatusLine(
+                f"worker:{name}",
+                _status_text(worker_display_name(name), health),
+                health,
+                details,
+                restart=restart,
+                restart_text=tr("tray.worker.restart") if restart else "",
+            )
         )
     return lines
 
@@ -277,13 +308,120 @@ def overall_status(healths: Sequence[EngineHealth]) -> str:
     return tr("tray.overall.idle")
 
 
+def _offers_install(status: UpdateStatus) -> bool:
+    """菜单项是否显示“安装更新 x.y.z…”：发现了新版本、能自动安装，并且没有在进行别的操作。
+
+    ERROR 状态下 available 保留上一次检查到的版本，菜单项照样显示“安装更新”，点击即重试下载。
+    """
+    return (
+        status.available is not None
+        and status.can_install
+        and status.state in (UpdateState.AVAILABLE, UpdateState.READY, UpdateState.ERROR)
+    )
+
+
+def update_entry(status: UpdateStatus | None) -> MenuEntry:
+    """“检查更新”菜单项的文字与可用状态。
+
+    - 还没有收到 UpdateStatus（组合根没有装配更新服务）：显示“检查更新”，禁用；
+    - 正在检查、下载、启动安装程序：显示进行中的文字，禁用；
+    - 发现新版本且能自动安装（包括已下载就绪、上次下载失败）：显示“安装更新 x.y.z…”；
+    - 其他情况（没有检查过、已是最新、检查失败、源码运行）：显示“检查更新”。
+    """
+    if status is None:
+        return MenuEntry(TrayAction.UPDATE, tr("tray.action.update"), enabled=False)
+    version = status.available.version if status.available is not None else ""
+    match status.state:
+        case UpdateState.CHECKING:
+            return MenuEntry(TrayAction.UPDATE, tr("tray.update.checking"), enabled=False)
+        case UpdateState.DOWNLOADING:
+            if status.progress is None:
+                text = tr("tray.update.downloading_unknown", version=version)
+            else:
+                percent = int(min(max(status.progress, 0.0), 1.0) * 100)
+                text = tr("tray.update.downloading", version=version, percent=percent)
+            return MenuEntry(TrayAction.UPDATE, text, enabled=False)
+        case UpdateState.INSTALLING:
+            return MenuEntry(TrayAction.UPDATE, tr("tray.update.installing"), enabled=False)
+        case _:
+            pass
+    if _offers_install(status):
+        return MenuEntry(TrayAction.UPDATE, tr("tray.update.install", version=version))
+    return MenuEntry(TrayAction.UPDATE, tr("tray.action.update"))
+
+
+def update_command(status: UpdateStatus | None) -> Command | None:
+    """点击“检查更新”菜单项时发送的命令；菜单项禁用的状态下返回 None。
+
+    READY 发送 InstallUpdate，显示“安装更新”的其余状态发送 DownloadUpdate，其他状态发送手动检查。
+    """
+    if status is None or status.state in (
+        UpdateState.CHECKING,
+        UpdateState.DOWNLOADING,
+        UpdateState.INSTALLING,
+    ):
+        return None
+    if _offers_install(status):
+        return InstallUpdate() if status.state is UpdateState.READY else DownloadUpdate()
+    return CheckForUpdates(manual=True)
+
+
+def update_error_text(code: UpdateErrorCode | None) -> str:
+    """更新错误码的说明。缺失的错误码按 update.internal 处理。"""
+    resolved = code if code is not None else UpdateErrorCode.INTERNAL
+    return tr(f"update.error.{resolved.value.removeprefix('update.')}")
+
+
+class UpdateOperation(StrEnum):
+    """用户从托盘菜单发起、需要告诉用户结果的更新操作。"""
+
+    CHECK = "check"
+    DOWNLOAD = "download"
+    INSTALL = "install"
+
+
+UPDATE_PROGRESS_STATE: Final[Mapping[UpdateOperation, UpdateState]] = {
+    UpdateOperation.CHECK: UpdateState.CHECKING,
+    UpdateOperation.DOWNLOAD: UpdateState.DOWNLOADING,
+    UpdateOperation.INSTALL: UpdateState.INSTALLING,
+}
+"""每种操作被更新服务接受后进入的状态。"""
+
+
+def update_result_notice(operation: UpdateOperation, status: UpdateStatus) -> Notice | None:
+    """用户发起的更新操作结束后的通知；status 不是这种操作的结果时返回 None。"""
+    version = status.available.version if status.available is not None else ""
+    match operation, status.state:
+        case UpdateOperation.CHECK, UpdateState.UP_TO_DATE:
+            return Notice(
+                tr("tray.notify.update_latest.title"),
+                tr("tray.notify.update_latest.message", version=status.current_version),
+            )
+        case UpdateOperation.CHECK, UpdateState.AVAILABLE:
+            if status.can_install:
+                key = "update.notify.available.message"
+            else:
+                key = "update.notify.available_source.message"
+            return Notice(tr("update.notify.available.title"), tr(key, version=version))
+        case UpdateOperation.DOWNLOAD, UpdateState.READY:
+            return Notice(
+                tr("tray.notify.update_ready.title"), tr("tray.notify.update_ready.message", version=version)
+            )
+        case _, UpdateState.ERROR:
+            title = f"tray.notify.update_{operation.value}_failed.title"
+            return Notice(tr(title), update_error_text(status.error_code), NoticeLevel.WARNING)
+        case _:
+            return None
+
+
 def build_menu(
     app_name: str,
     workers: Mapping[str, WorkerStatus],
     engines: EngineStatuses | None,
     hotkeys: Hotkeys,
+    update: UpdateStatus | None = None,
 ) -> TrayMenu:
-    """按当前界面语言生成完整的菜单模型（需求 TR-02、TR-03）。"""
+    """按当前界面语言生成完整的菜单模型（需求 TR-02、TR-03）。update 决定“检查更新”菜单项的文字。"""
     lines = [*worker_lines(workers), *engine_lines(engines)]
     tooltip = tr("tray.tooltip", app=app_name, status=overall_status([line.health for line in lines]))
     if not lines:
@@ -292,6 +430,8 @@ def build_menu(
     entries = tuple(
         None
         if action is None
+        else update_entry(update)
+        if action is TrayAction.UPDATE
         else MenuEntry(
             action,
             tr(f"tray.action.{action.value}"),
@@ -357,6 +497,10 @@ class TrayPresenter:
         self._workers: Mapping[str, WorkerStatus] = {}
         self._engines: EngineStatuses | None = None
         self._hotkeys = Hotkeys()
+        self._update: UpdateStatus | None = None
+        # 用户从菜单发起、还没有结果的更新操作；armed 表示已经看到更新服务接受了这次操作。
+        self._update_operation: UpdateOperation | None = None
+        self._update_armed = False
         self._last_menu: TrayMenu | None = None
         # 聚合窗口内收到的无效配置位置。dict 当作保持顺序的集合用，同一位置只算一处。
         self._rejected: dict[tuple[str | int, ...], None] = {}
@@ -384,6 +528,7 @@ class TrayPresenter:
             subscribe(NotificationRequested, self._on_notification),
             subscribe(HotkeyRegistrationFailed, self._on_hotkey_failed),
             subscribe(ConfigRejected, self._on_config_rejected),
+            subscribe(UpdateStatus, self._on_update_status),
         ]
 
     def close(self) -> None:
@@ -406,7 +551,7 @@ class TrayPresenter:
         """按当前状态和界面语言重新生成菜单；与上次相同时不打扰视图。"""
         if self._closed:
             return
-        menu = build_menu(self._app_name, self._workers, self._engines, self._hotkeys)
+        menu = build_menu(self._app_name, self._workers, self._engines, self._hotkeys, self._update)
         if menu != self._last_menu:
             self._last_menu = menu
             self._view.render(menu)
@@ -430,6 +575,8 @@ class TrayPresenter:
                 self._open_logs()
             case TrayAction.EXPORT_DIAGNOSTICS:
                 self.logger.info("导出诊断信息的命令尚未定义，菜单项保持禁用")
+            case TrayAction.UPDATE:
+                self._start_update_operation()
             case TrayAction.QUIT:
                 bus.publish(QuitRequested())
 
@@ -440,6 +587,11 @@ class TrayPresenter:
     def menu_opening(self) -> None:
         # 界面语言可能在上次渲染之后改变，弹出前按当前语言重新生成一次。
         self.refresh()
+
+    def restart_worker(self, worker: str) -> None:
+        if not self._closed:
+            self.logger.info("托盘：重新启动推理进程 %s", worker)
+            self._ctx.bus.send(RestartWorker(worker))
 
     # ------------------------------------------------------------ 消息处理
 
@@ -452,8 +604,48 @@ class TrayPresenter:
         self.refresh()
 
     def _on_app_config(self, message: AppConfig) -> None:
+        # 悬停提示随界面语言变化。组合根设置界面语言的时机晚于本处理函数，所以这里先按配置设置。
+        apply_config_language(message)
         self._hotkeys = read_hotkeys(message)
         self.refresh()
+
+    def _start_update_operation(self) -> None:
+        command = update_command(self._update)
+        if command is None:
+            self.logger.debug("更新正在进行或更新服务没有启动，忽略菜单操作")
+            return
+        if isinstance(command, InstallUpdate):
+            operation = UpdateOperation.INSTALL
+        elif isinstance(command, DownloadUpdate):
+            operation = UpdateOperation.DOWNLOAD
+        else:
+            operation = UpdateOperation.CHECK
+        self._update_operation, self._update_armed = operation, False
+        self._ctx.bus.send(command)
+
+    def _on_update_status(self, message: UpdateStatus) -> None:
+        """刷新菜单项；用户发起的操作结束时弹出结果通知。
+
+        命令发出后、更新服务处理之前到达的状态是旧状态，不算结果：只有先看到操作对应的进行中状态
+        （检查中、下载中），之后的状态才是结果。更新服务拒绝操作时直接发布 ERROR，这时也通知用户。
+        启动安装程序成功后程序随即退出，不再通知。
+        """
+        self._update = message
+        self.refresh()
+        operation = self._update_operation
+        if operation is None:
+            return
+        if message.state is UPDATE_PROGRESS_STATE[operation]:
+            self._update_armed = True
+            if operation is UpdateOperation.INSTALL:
+                self._update_operation = None
+            return
+        if not self._update_armed and message.state is not UpdateState.ERROR:
+            return
+        self._update_operation, self._update_armed = None, False
+        notice = update_result_notice(operation, message)
+        if notice is not None:
+            self._view.notify(notice)
 
     def _on_notification(self, message: NotificationRequested) -> None:
         params = dict(message.params) if message.params is not None else {}

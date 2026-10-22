@@ -10,11 +10,12 @@ from PySide6.QtTest import QTest
 from lst.contracts.config import ConfigRejected
 from lst.kernel import Module
 from lst.ui import i18n
+from lst.ui.common.window import fit_on_screens
 from lst.ui.settings import SettingsModule
 from lst.ui.settings.controls import ChoiceEditor, DirectoryEditor
 from lst.ui.settings.page_engines import EnginesPage
 from lst.ui.settings.pages import RacePage
-from lst.ui.settings.state import GROUP, WindowStateStore, fit_on_screens
+from lst.ui.settings.state import GROUP, WindowStateStore
 from lst.ui.settings.window import SettingsWindow, describe_location
 from tests.ui.settings.conftest import Harness, StartSettings
 from tests.ui.settings.support import all_models, default_config, engine_kinds

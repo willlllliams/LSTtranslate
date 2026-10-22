@@ -98,6 +98,8 @@ class ThemeColors:
     text_secondary: QColor
     accent: QColor
     accent_text: QColor
+    accent_strong: QColor
+    """用作文字和细线的强调色：深色主题下调亮、浅色主题下调暗，在卡片上看得清（例如“当前引擎”标识）。"""
     critical: QColor
     nav_hover: QColor
     nav_selected: QColor
@@ -114,6 +116,7 @@ def theme_colors(app: QApplication | None = None, *, dark: bool | None = None) -
     palette = QGuiApplication.palette()
     accent = palette.color(QPalette.ColorRole.Accent)
     accent_text = QColor("#FFFFFF") if accent.lightnessF() < 0.62 else QColor("#000000")
+    accent_strong = _readable_accent(accent, dark=dark)
     if dark:
         return ThemeColors(
             dark=True,
@@ -125,6 +128,7 @@ def theme_colors(app: QApplication | None = None, *, dark: bool | None = None) -
             text_secondary=QColor(255, 255, 255, 190),
             accent=accent,
             accent_text=accent_text,
+            accent_strong=accent_strong,
             critical=QColor("#FF99A4"),
             nav_hover=QColor(255, 255, 255, 15),
             nav_selected=QColor(255, 255, 255, 20),
@@ -139,10 +143,18 @@ def theme_colors(app: QApplication | None = None, *, dark: bool | None = None) -
         text_secondary=QColor(0, 0, 0, 158),
         accent=accent,
         accent_text=accent_text,
+        accent_strong=accent_strong,
         critical=QColor("#C42B1C"),
         nav_hover=QColor(0, 0, 0, 10),
         nav_selected=QColor(0, 0, 0, 15),
     )
+
+
+def _readable_accent(accent: QColor, *, dark: bool) -> QColor:
+    """强调色用作文字时的颜色：深色主题下亮度至少 0.68，浅色主题下亮度至多 0.42，色相与饱和度不变。"""
+    lightness = accent.lightnessF()
+    lightness = max(lightness, 0.68) if dark else min(lightness, 0.42)
+    return QColor.fromHslF(accent.hslHueF(), accent.hslSaturationF(), lightness, accent.alphaF())
 
 
 def ui_font(pixel_size: int, *, semibold: bool = False, display: bool = False) -> QFont:
@@ -170,11 +182,15 @@ _PRIMARY_BUTTON_QSS: Final = (
 
 
 def style_primary_button(button: QPushButton, glyph: str | None = None) -> None:
-    """把按钮画成主要按钮：强调色填充、强调色上的文字色。强调色随系统，样式表里只引用调色板角色。"""
+    """把按钮画成主要按钮：强调色填充、强调色上的文字色。强调色随系统，样式表里只引用调色板角色。
+
+    图标与按钮文字用同一组调色板角色，在每次绘制时取色：可用时是 highlighted-text，禁用时是 mid，
+    与样式表一致。创建时固定颜色的话，切换深浅色后图标不变色，禁用时（灰底）白色图标也看不清。
+    """
     button.setProperty("primary", True)
     button.setStyleSheet(_PRIMARY_BUTTON_QSS % {"radius": TOKENS.radius_s})
     if glyph is not None:
-        button.setIcon(fluent_icon(glyph, theme_colors().accent_text))
+        button.setIcon(fluent_icon(glyph, role="on_accent"))
 
 
 # 引擎实例的标识颜色在配置里没有指定时，按实例号稳定地取下面一种（需求 RACE-06 的来源标记）。
@@ -336,6 +352,17 @@ class Glyph:
     TAG: Final = "\ue8ec"
     LIBRARY: Final = "\ue8f1"
     TRANSLATE_AA: Final = "\ue8c1"
+    SYSTEM: Final = "\ue770"  # 电脑：Windows 自带 OCR
+    DOCUMENT: Final = "\ue8a5"  # 文档：PaddleOCR
+    COMPLETED: Final = "\ue930"  # 带圆圈的对勾：已安装、就绪
+    CHECK: Final = "\ue73e"  # 对勾：当前使用的引擎
+    ERROR: Final = "\ue783"  # 带圆圈的感叹号：出错
+    BLOCKED: Final = "\ue733"  # 禁止符号：不可用
+    SYNC: Final = "\ue895"  # 循环箭头：安装中、加载中
+    RECENT: Final = "\ue823"  # 时钟：排队中
+    UPDATE: Final = "\ue777"  # 更新
+    OPEN_IN_NEW: Final = "\ue8a7"  # 在新窗口中打开：发布说明
+    CANCEL: Final = "\ue711"  # 叉号：取消
 
 
 _icon_font_ready: bool | None = None
@@ -368,19 +395,26 @@ def fluent_icon_font(pixel_size: int) -> QFont:
     return font
 
 
+type IconRole = Literal["text", "on_accent"]
+"""图标跟随调色板时用哪组颜色：text 是普通文字色，on_accent 是强调色底上的文字色（主要按钮）。"""
+
+
 class _GlyphIconEngine(QIconEngine):
     """按码位绘制字体图标。图标在每次绘制时才光栅化，所以任何尺寸和缩放比例下都是矢量清晰度。
 
-    color 为 None 时跟随调色板：普通状态用文字色，禁用时用禁用色，选中时用高亮文字色。
+    color 为 None 时跟随调色板，每次绘制时取色：
+    - role 为 text：普通状态用文字色，禁用时用禁用文字色，选中时用高亮文字色；
+    - role 为 on_accent：普通状态用高亮文字色（强调色底上的文字），禁用时用 mid（主要按钮禁用时的文字色）。
     """
 
-    def __init__(self, glyph: str, color: QColor | None = None) -> None:
+    def __init__(self, glyph: str, color: QColor | None = None, role: IconRole = "text") -> None:
         super().__init__()
         self._glyph = glyph
         self._color = color
+        self._role: IconRole = role
 
     def clone(self) -> QIconEngine:
-        return _GlyphIconEngine(self._glyph, self._color)
+        return _GlyphIconEngine(self._glyph, self._color, self._role)
 
     def paint(self, painter: QPainter, rect: QRect, mode: QIcon.Mode, state: QIcon.State) -> None:
         del state
@@ -408,6 +442,10 @@ class _GlyphIconEngine(QIconEngine):
                 color.setAlphaF(color.alphaF() * 0.4)
             return color
         palette = QGuiApplication.palette()
+        if self._role == "on_accent":
+            if mode == QIcon.Mode.Disabled:
+                return palette.color(QPalette.ColorRole.Mid)
+            return palette.color(QPalette.ColorRole.HighlightedText)
         if mode == QIcon.Mode.Disabled:
             return palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
         if mode == QIcon.Mode.Selected:
@@ -415,6 +453,6 @@ class _GlyphIconEngine(QIconEngine):
         return palette.color(QPalette.ColorRole.Text)
 
 
-def fluent_icon(glyph: str, color: QColor | str | None = None) -> QIcon:
-    """Fluent 图标。glyph 取 ``Glyph`` 里的码位；color 为 None 时跟随调色板（深浅色主题下都清晰）。"""
-    return QIcon(_GlyphIconEngine(glyph, None if color is None else QColor(color)))
+def fluent_icon(glyph: str, color: QColor | str | None = None, *, role: IconRole = "text") -> QIcon:
+    """Fluent 图标。glyph 取 ``Glyph`` 里的码位；color 为 None 时按 role 跟随调色板（深浅色主题下都清晰）。"""
+    return QIcon(_GlyphIconEngine(glyph, None if color is None else QColor(color), role))

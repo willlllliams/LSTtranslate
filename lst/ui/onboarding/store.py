@@ -6,16 +6,10 @@
 
 from PySide6.QtCore import QSettings
 
+from lst.ui.common.window import as_bool
+
 GROUP = "onboarding"
 COMPLETED_KEY = f"{GROUP}/completed"
-
-
-def _as_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1")
-    return False
 
 
 class SettingsCompletionStore:
@@ -25,7 +19,7 @@ class SettingsCompletionStore:
         self._settings = settings
 
     def completed(self) -> bool:
-        return _as_bool(self._settings.value(COMPLETED_KEY))
+        return as_bool(self._settings.value(COMPLETED_KEY)) is True
 
     def mark_completed(self) -> None:
         self._settings.setValue(COMPLETED_KEY, True)

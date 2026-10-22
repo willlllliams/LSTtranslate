@@ -26,6 +26,7 @@ from lst.contracts.events import (
     NotificationRequested,
     OpenSettings,
     QuitRequested,
+    RestartWorker,
     ShowModelDownloads,
     StartCapture,
     ToggleBilingualWindow,
@@ -35,6 +36,7 @@ from lst.contracts.events import (
 from lst.contracts.ids import EngineId
 from lst.contracts.messages import Message
 from lst.contracts.ports import WorkerState
+from lst.contracts.updates import DownloadUpdate, ReleaseInfo, UpdateState, UpdateStatus
 from lst.kernel import EventBus, Module, ModuleContext
 from lst.ui import i18n
 from lst.ui.tray import TrayAction, TrayModule
@@ -53,6 +55,7 @@ EXPECTED_COMMANDS_ZH = [
     "下载翻译模型(&M)…",
     "打开日志目录(&L)",
     "导出诊断信息(&D)…",
+    "检查更新(&U)…",
     "---",
     "退出(&X)",
 ]
@@ -276,10 +279,11 @@ async def test_hotkeys_shown_follow_app_config(
     assert view.command_action(TrayAction.CAPTURE) is capture
     assert capture.text() == "截屏翻译(&C)\tCtrl+Alt+T"
     assert bilingual.text() == "显示/隐藏双语窗口(&B)\tCtrl+&&"
+    # 新配置里没有 hotkeys 节：恢复默认热键；ui.language 由托盘自己按配置应用，不依赖组合根先处理。
     bus.publish(AppConfig(sections={"ui": {"language": "en"}}, revision=2))
     await bus.drain()
-    assert capture.text() == "截屏翻译(&C)\tAlt+Q"
-    assert bilingual.text() == "显示/隐藏双语窗口(&B)\tAlt+E"
+    assert capture.text() == "&Capture and translate\tAlt+Q"
+    assert bilingual.text() == "Show/hide &bilingual window\tAlt+E"
 
 
 # ---------------------------------------------------------------- 状态区
@@ -511,6 +515,7 @@ async def test_language_switch_updates_menu(bus: EventBus, modules: list[TrayMod
         "Download translation &models…",
         "Open &log folder",
         "Export &diagnostics…",
+        "Check for &updates…",
         "---",
         "E&xit",
     ]
@@ -520,3 +525,55 @@ async def test_language_switch_updates_menu(bus: EventBus, modules: list[TrayMod
     bus.publish(AppConfig(sections={"ui": {"language": "zh-Hans"}}, revision=5))
     await bus.drain()
     assert menu_texts(view)[0] == "OCR：就绪"
+
+
+async def test_update_entry_follows_update_status(
+    bus: EventBus, modules: list[TrayModule], tmp_path: Path, received: list[Message]
+) -> None:
+    view = view_of(await start_module(bus, modules, tmp_path))
+    action = view.command_action(TrayAction.UPDATE)
+    assert action.text() == "检查更新(&U)…"
+    assert not action.isEnabled()
+    release = ReleaseInfo("0.2.0", False, "2026-10-01T00:00:00Z", "", "https://github.invalid/r", 10)
+    bus.publish(UpdateStatus(UpdateState.AVAILABLE, "0.1.0", release, can_install=True))
+    await bus.drain()
+    assert action.text() == "安装更新 0.2.0(&U)…"
+    assert action.isEnabled()
+    action.trigger()
+    await bus.drain()
+    assert received == [DownloadUpdate()]
+
+
+# ---------------------------------------------------------------- 重新启动推理进程
+
+
+@pytest.mark.parametrize("state", [WorkerState.CRASHED, WorkerState.FAILED])
+async def test_failed_worker_submenu_offers_restart(
+    bus: EventBus, modules: list[TrayModule], tmp_path: Path, received: list[Message], state: WorkerState
+) -> None:
+    view = view_of(await start_module(bus, modules, tmp_path))
+    bus.publish(WorkerStatuses({"nmt": WorkerStatus(state), "ocr": WorkerStatus(WorkerState.STOPPED)}))
+    await bus.drain()
+    ocr, nmt = view.status_actions()  # OCR 排在前面
+    assert submenu_of(ocr) is None  # 未启用的进程不提供重新启动：是否启动由配置决定
+    menu = submenu_of(nmt)
+    assert menu is not None
+    restart = next(action for action in menu.actions() if action.text() == "重新启动(&R)")
+    assert restart.isEnabled()
+    restart.trigger()
+    await bus.drain()
+    assert received[-1] == RestartWorker("nmt")
+
+
+async def test_failed_worker_suggestion_matches_the_restart_entry(
+    bus: EventBus, modules: list[TrayModule], tmp_path: Path
+) -> None:
+    view = view_of(await start_module(bus, modules, tmp_path))
+    bus.publish(WorkerStatuses({"nmt": WorkerStatus(WorkerState.FAILED)}))
+    await bus.drain()
+    (nmt,) = view.status_actions()
+    menu = submenu_of(nmt)
+    assert menu is not None
+    texts = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert "重载" not in "".join(texts)
+    assert any("重新启动" in text for text in texts[:2]), texts

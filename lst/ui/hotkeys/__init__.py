@@ -2,6 +2,11 @@
 
 用 RegisterHotKey 注册热键，hWnd 为 NULL 时 WM_HOTKEY 投递到注册线程（Qt 主线程）的消息队列，
 由 QAbstractNativeEventFilter 收到。注册时带 MOD_NOREPEAT，按住不放不会连发。
+
+设置窗口录入热键期间（``HotkeyRecordingChanged(active=True)``）注销全部热键，否则录入一个已经注册的组合时
+按键被系统交给本模块，录入框收不到；录入结束后按当前配置重新注册。暂停期间配置变化照常记下，恢复时生效。
+
+写法无效、两个热键相同时的说明文字都是文案键，按当前界面语言给出。
 """
 
 import ctypes
@@ -11,13 +16,14 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from PySide6.QtCore import QAbstractNativeEventFilter, QByteArray, QCoreApplication
 
 from lst.contracts.config import AppConfig
 from lst.contracts.events import HotkeyRegistrationFailed, StartCapture, ToggleBilingualWindow
 from lst.contracts.messages import Command
 from lst.kernel import ModuleContext
+from lst.ui.common.messages import HotkeyRecordingChanged
 from lst.ui.i18n import register_catalog, tr
 
 logger = logging.getLogger(__name__)
@@ -66,25 +72,25 @@ def parse_hotkey(text: str) -> Hotkey:
     """
     parts = [part.strip().lower() for part in text.split("+")]
     if not parts or any(not part for part in parts):
-        raise ValueError(f"热键写法无效：{text!r}")
+        raise ValueError(tr("hotkeys.invalid.format", text=text))
     *modifier_parts, key = parts
     modifiers = 0
     for part in modifier_parts:
         if part not in _MODIFIERS:
-            raise ValueError(f"未知的修饰键：{part!r}")
+            raise ValueError(tr("hotkeys.invalid.modifier", part=part))
         modifiers |= _MODIFIERS[part]
     if modifiers == 0:
-        raise ValueError("热键至少要包含 Ctrl、Alt、Shift、Win 中的一个修饰键")
+        raise ValueError(tr("hotkeys.invalid.no_modifier"))
     if len(key) == 1 and ("a" <= key <= "z" or "0" <= key <= "9"):
         vk, key_name = ord(key.upper()), key.upper()
     elif key.startswith("f") and key[1:].isdigit() and 1 <= int(key[1:]) <= 24:
         if key == "f12":
-            raise ValueError("F12 由系统保留，不能注册为全局热键")
+            raise ValueError(tr("hotkeys.invalid.f12"))
         vk, key_name = 0x70 + int(key[1:]) - 1, key.upper()
     elif key in _NAMED_KEYS:
         vk, key_name = _NAMED_KEYS[key]
     else:
-        raise ValueError(f"不支持的按键：{key!r}")
+        raise ValueError(tr("hotkeys.invalid.key", name=key))
     names = [name for flag, name in _MODIFIER_ORDER if modifiers & flag]
     return Hotkey(modifiers=modifiers, vk=vk, text="+".join([*names, key_name]))
 
@@ -102,6 +108,13 @@ class HotkeysConfig(BaseModel):
     def _normalize(cls, value: str) -> str:
         return parse_hotkey(value).text
 
+    @model_validator(mode="after")
+    def _distinct(self) -> "HotkeysConfig":
+        # 两个热键相同时第二个注册不上。跨字段的错误由配置服务归到这次修改的那个字段上（patch_section）。
+        if self.capture == self.bilingual:
+            raise ValueError(tr("hotkeys.invalid.duplicate", hotkey=self.capture))
+        return self
+
 
 CONFIG_SECTIONS: dict[str, type[BaseModel]] = {"hotkeys": HotkeysConfig}
 
@@ -112,6 +125,25 @@ register_catalog(
             "en": "already used by another program",
         },
         "hotkeys.error.other": {"zh-Hans": "系统错误 {code}", "en": "system error {code}"},
+        "hotkeys.error.duplicate": {
+            "zh-Hans": "与本程序的另一个热键（{other}）相同",
+            "en": "the same as another LSTtranslate hotkey ({other})",
+        },
+        "hotkeys.invalid.format": {"zh-Hans": "热键写法无效：{text}", "en": "Invalid hotkey: {text}"},
+        "hotkeys.invalid.modifier": {"zh-Hans": "未知的修饰键：{part}", "en": "Unknown modifier key: {part}"},
+        "hotkeys.invalid.no_modifier": {
+            "zh-Hans": "热键至少要包含 Ctrl、Alt、Shift、Win 中的一个修饰键",
+            "en": "A hotkey needs at least one of Ctrl, Alt, Shift and Win",
+        },
+        "hotkeys.invalid.f12": {
+            "zh-Hans": "F12 由系统保留，不能注册为全局热键",
+            "en": "F12 is reserved by the system and cannot be a global hotkey",
+        },
+        "hotkeys.invalid.key": {"zh-Hans": "不支持的按键：{name}", "en": "Unsupported key: {name}"},
+        "hotkeys.invalid.duplicate": {
+            "zh-Hans": "截屏翻译与双语窗口不能使用同一个热键（{hotkey}）",
+            "en": "Capture and the bilingual window cannot use the same hotkey ({hotkey})",
+        },
     }
 )
 
@@ -161,7 +193,10 @@ class HotkeysModule:
         self._ctx: ModuleContext | None = None
         self._filter: _HotkeyFilter | None = None
         self._registered: dict[int, Command] = {}
+        self._texts: dict[int, str] = {}
         self._current: HotkeysConfig | None = None
+        self._paused = False
+        self._failed: set[tuple[str, str]] = set()
 
     async def start(self, ctx: ModuleContext) -> None:
         self._ctx = ctx
@@ -170,6 +205,7 @@ class HotkeysModule:
             self._filter = _HotkeyFilter(self.dispatch)
             app.installNativeEventFilter(self._filter)
         ctx.subscribe(AppConfig, self._on_config)
+        ctx.subscribe(HotkeyRecordingChanged, self._on_recording)
 
     async def stop(self) -> None:
         self._unregister_all()
@@ -187,6 +223,11 @@ class HotkeysModule:
         self._ctx.bus.send(command)
         return True
 
+    @property
+    def paused(self) -> bool:
+        """设置窗口正在录入热键，全局热键已暂停。"""
+        return self._paused
+
     def _on_config(self, config: AppConfig) -> None:
         raw = config.section("hotkeys")
         try:
@@ -197,29 +238,60 @@ class HotkeysModule:
         if wanted == self._current:
             return
         self._current = wanted
+        if not self._paused:
+            self._register_all(announce_all=True)
+
+    def _on_recording(self, event: HotkeyRecordingChanged) -> None:
+        if event.active == self._paused:
+            return
+        self._paused = event.active
+        if event.active:
+            logger.info("设置窗口正在录入热键，暂停全局热键")
+            self._unregister_all()
+        else:
+            logger.info("热键录入结束，恢复全局热键")
+            # 恢复时只通知新出现的失败，暂停前已经通知过的不再重复弹出。
+            self._register_all(announce_all=False)
+
+    def _register_all(self, *, announce_all: bool) -> None:
         self._unregister_all()
+        wanted = self._current or HotkeysConfig()
+        previous = self._failed
+        self._failed = set()
         for hotkey_id, (text, command) in enumerate(
             ((wanted.capture, StartCapture()), (wanted.bilingual, ToggleBilingualWindow())), start=1
         ):
-            self._register(hotkey_id, text, command)
+            failure = self._register(hotkey_id, text, command)
+            if failure is None:
+                continue
+            self._failed.add(failure)
+            if (announce_all or failure not in previous) and self._ctx is not None:
+                self._ctx.bus.publish(HotkeyRegistrationFailed(*failure))
 
-    def _register(self, hotkey_id: int, text: str, command: Command) -> None:
+    def _register(self, hotkey_id: int, text: str, command: Command) -> tuple[str, str] | None:
+        """注册一个热键。成功返回 None，失败返回 (热键, 原因)。"""
         hotkey = parse_hotkey(text)
         error = self._backend.register(hotkey_id, hotkey)
         if error == 0:
             self._registered[hotkey_id] = command
+            self._texts[hotkey_id] = hotkey.text
             logger.info("已注册热键 %s", hotkey.text)
-            return
-        reason = (
-            tr("hotkeys.error.in_use")
-            if error == ERROR_HOTKEY_ALREADY_REGISTERED
-            else tr("hotkeys.error.other", code=error)
-        )
+            return None
         logger.warning("热键 %s 注册失败（错误码 %s）", hotkey.text, error)
-        if self._ctx is not None:
-            self._ctx.bus.publish(HotkeyRegistrationFailed(hotkey.text, reason))
+        return hotkey.text, self._failure_reason(hotkey, error)
+
+    def _failure_reason(self, hotkey: Hotkey, error: int) -> str:
+        if error != ERROR_HOTKEY_ALREADY_REGISTERED:
+            return tr("hotkeys.error.other", code=error)
+        # 被本程序自己的另一个热键占用：配置模型拒绝相同的写法，这里防的是绕过配置服务的情况。
+        for registered in self._texts.values():
+            other = parse_hotkey(registered)
+            if (other.modifiers, other.vk) == (hotkey.modifiers, hotkey.vk):
+                return tr("hotkeys.error.duplicate", other=registered)
+        return tr("hotkeys.error.in_use")
 
     def _unregister_all(self) -> None:
         for hotkey_id in list(self._registered):
             self._backend.unregister(hotkey_id)
         self._registered.clear()
+        self._texts.clear()

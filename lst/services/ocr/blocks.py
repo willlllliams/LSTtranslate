@@ -37,8 +37,9 @@ row、col 是从 0 开始的行列号（必填），同一个表格里 (row, col
 
 - 版面模式：PP-StructureV3 的每个版面块对应一个对象，正文、标题、页眉页脚块是段落级的，带 text，
   lines 可以省略。
-- 文本模式：RapidOCR 不做版面分析。OCR 进程返回一个 text 块：bbox 为整张截图，order 为 0，
-  lines 为全部文本行（顺序不限），text 为空串。段落由主进程合并（``lst.services.ocr.paragraphs``）。
+- 文本模式：PaddleOCR 文本模式与 Windows OCR 都不做版面分析。OCR 进程返回一个 text 块：
+  bbox 为整张截图，order 为 0，lines 为全部文本行（顺序不限），text 为空串。
+  段落由主进程合并（``lst.services.ocr.paragraphs``）。
 
 示例::
 

@@ -1,15 +1,18 @@
 """ui.theme 的 Fluent 图标工具测试：字体加载、按码位绘制、颜色与禁用状态。"""
 
-import os
-
 import pytest
 from PySide6.QtCore import QSize
-from PySide6.QtGui import QColor, QIcon, QImage
+from PySide6.QtGui import QColor, QIcon, QImage, QPalette
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from lst.ui.theme import FLUENT_ICONS_FAMILY, Glyph, fluent_icon, fluent_icon_font, fluent_icons_available
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from lst.ui.theme import (
+    FLUENT_ICONS_FAMILY,
+    Glyph,
+    fluent_icon,
+    fluent_icon_font,
+    fluent_icons_available,
+    style_primary_button,
+)
 
 ALL_GLYPHS = [value for name, value in vars(Glyph).items() if name.isupper() and isinstance(value, str)]
 
@@ -80,3 +83,29 @@ def test_icon_can_be_set_on_widgets() -> None:
     button.setIcon(fluent_icon(Glyph.ADD))
     assert not button.icon().isNull()
     assert ink(button.icon().pixmap(QSize(16, 16)).toImage())
+
+
+def _rgb(color: QColor) -> tuple[int, int, int]:
+    return (color.red(), color.green(), color.blue())
+
+
+def test_primary_button_icon_follows_the_button_text_colors(qapp: QApplication) -> None:
+    """主要按钮的图标与按钮文字同色：可用时是强调色上的文字色，禁用时是禁用文字色，都在绘制时取。"""
+    button = QPushButton()
+    style_primary_button(button, Glyph.ADD)
+    palette = qapp.palette()
+    icon = button.icon()
+    normal = icon.pixmap(QSize(32, 32), QIcon.Mode.Normal).toImage()
+    disabled = icon.pixmap(QSize(32, 32), QIcon.Mode.Disabled).toImage()
+    assert {_rgb(c) for c in ink(normal)} >= {_rgb(palette.color(QPalette.ColorRole.HighlightedText))}
+    assert _rgb(palette.color(QPalette.ColorRole.Mid)) in {_rgb(c) for c in ink(disabled)}
+
+    original = QPalette(palette)
+    changed = QPalette(palette)
+    changed.setColor(QPalette.ColorRole.HighlightedText, QColor("#123456"))
+    qapp.setPalette(changed)
+    try:
+        repainted = icon.pixmap(QSize(32, 32), QIcon.Mode.Normal).toImage()
+        assert (0x12, 0x34, 0x56) in {_rgb(c) for c in ink(repainted)}  # 换主题后不必重新设置图标
+    finally:
+        qapp.setPalette(original)

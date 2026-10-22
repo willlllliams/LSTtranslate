@@ -18,6 +18,8 @@ from lst.contracts.events import (
     WorkerStatuses,
 )
 from lst.contracts.models import ModelCatalog
+from lst.contracts.ocr_engines import OcrEngineCatalog
+from lst.contracts.updates import UpdateStatus
 from lst.kernel import ModuleContext
 from lst.ui.settings.controls import DEFAULT_DEBOUNCE_MS
 from lst.ui.settings.dialogs import Dialogs, QtDialogs
@@ -44,7 +46,7 @@ class SettingsModule:
         settings_path：保存窗口位置、大小的 INI 文件，组合根传入与双语窗口、引导相同的 ui_state.ini，
             本模块用自己的 settings_window 组；
         sections：配置节名 → 该节的 pydantic 模型（[ui]、[hotkeys]、[ocr]、[screenshot]、[race]、
-            [bilingual]、[nmt] 等）。界面模块不能 import services，模型由组合根注入，设置项的类型、
+            [bilingual]、[nmt]、[updates] 等）。界面模块不能 import services，模型由组合根注入，设置项的类型、
             取值范围和默认值都从它们读出；某一节没有注入时，依赖它的设置项不显示；
         engine_kinds：引擎类别（kind）→ 该类引擎一条 ``[[engines]]`` 的 pydantic 模型；
         keyless_kinds：不需要 API key 的引擎类别，默认只有 local_nmt；
@@ -53,6 +55,8 @@ class SettingsModule:
         dialogs：确认与选择目录的对话框，缺省用 Qt 的模态对话框，测试时替换。
 
     start 时创建窗口并保持隐藏；收到 OpenSettings 命令时显示窗口，窗口已经显示时只是带到前面。
+    OCR 引擎目录（OcrEngineCatalog）与更新状态（UpdateStatus）从总线订阅；总线上没有它们时，
+    截屏与识别页的引擎卡片与关于页的更新卡片说明该功能不可用，不发送命令。
     """
 
     name = "ui.settings"
@@ -115,6 +119,8 @@ class SettingsModule:
         ctx.subscribe(StatsSnapshot, presenter.on_stats)
         ctx.subscribe(EngineConnectionChecked, presenter.on_connection_checked)
         ctx.subscribe(CacheCleared, presenter.on_cache_cleared)
+        ctx.subscribe(OcrEngineCatalog, presenter.on_ocr_engines)
+        ctx.subscribe(UpdateStatus, presenter.on_update_status)
         ctx.subscribe(OpenSettings, lambda _: presenter.on_open_settings())
 
     async def stop(self) -> None:

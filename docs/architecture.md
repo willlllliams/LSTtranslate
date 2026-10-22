@@ -24,7 +24,7 @@
 | Fluent 外观 | 自行实现（`lst/ui/theme`）：Qt `windows11` 样式、DWM Mica、Segoe Fluent Icons 字体 | 随 Qt 与 Windows 11 |
 | Qt 与 asyncio 整合 | qasync | 0.28.0 |
 | HTTP 客户端 | httpx；流式响应按服务器发送事件（Server-Sent Events，SSE）格式自行解析 | 0.28.1 |
-| 部分 JSON 解析 | jiter 的 partial 模式 | 0.17.0 |
+| 流式 JSON 解析 | 自写的增量结构扫描，单项用 jiter 严格解析 | 0.17.0 |
 | 推理进程通信 | subprocess 启动，`multiprocessing.connection` 命名管道加 authkey | 标准库 |
 | OCR 与版面分析 | PaddleOCR PP-StructureV3，独立 venv | PaddleOCR 3.7.0，PaddlePaddle 3.3.x |
 | OCR 文本模式 | PaddleOCR 检测加识别产线（PP-OCRv5 mobile） | PaddleOCR 3.7.0 |
@@ -204,9 +204,9 @@ NMT 进程使用主进程的 venv，因为 CTranslate2 与 PySide6 之间没有�
 - OpenAI、Ollama、llama.cpp 支持 `json_schema`，服务端按 schema 做约束解码。
 - DeepSeek 只支持 `json_object`，只保证输出是合法 JSON，所以提示词里要给出同样格式的示例。
 
-流式返回时，引擎每收到一块数据，就用 jiter 的 partial 模式把整个缓冲区重新解析一遍。判断数组中的一项已经完整的依据是：它后面出现了下一项，或者数组已经闭合。只看 `t` 键是否出现不够可靠，因为 `json_object` 模式不保证键的顺序，`t` 可能出现在 `i` 之前，此时段号可能还没收全。
+流式返回时，引擎增量扫描 JSON 结构，只从上次停下的位置继续：一项的括号闭合时，单独用 jiter 严格解析这一项；根对象闭合时再解析一次全文。总耗时与输出长度成正比。最初的做法是每收到一块数据就用 jiter 的 partial 模式重新解析整个缓冲区，输出越长越慢，复杂度是平方级。判断数组中的一项已经完整的依据是：它的括号已经闭合，或者数组已经闭合。只看 `t` 键是否出现不够可靠，因为 `json_object` 模式不保证键的顺序，`t` 可能出现在 `i` 之前，此时段号可能还没收全。
 
-流结束后，引擎核对收到的段号集合。缺失的段、以及整个输出无法解析时的全部段，退回逐段请求（`ENG-04`）。
+流结束后，引擎核对收到的段号集合。缺失的段、以及整个输出无法解析时的全部段，退回逐段请求（`ENG-04`）。原文非空而译文去空白后为空，按缺段处理：多段时逐段退回，单段时以 `engine.bad_response` 失败；调度器也不把空译文写进缓存。空译文曾作为成功结果胜出并写进缓存，之后这一段一直显示为空。
 
 LLM 请求只有两条消息：一条 system 消息是系统提示；一条 user 消息先放会话全文，再用固定的分隔标记接上本批段落和语言对。请求开头不放时间戳和批号，同一会话后续批次的请求开头（系统提示加会话全文）完全相同，能命中 DeepSeek 的上下文缓存。会话全文和本批段落合在一条 user 消息里，是为了兼容要求 user 与 assistant 严格交替的对话模板（llama.cpp 用 `--jinja` 加载 Gemma 等模型时就是这样）；缓存按 token 前缀匹配，合并后不影响命中。按 deepseek-flash 的峰时价格（每百万 token：命中缓存的输入 0.04 元，未命中的输入 2 元，输出 8 元）估算，上下文 20k token、本批 1k token、输出 1.5k token 时：
 
@@ -249,7 +249,9 @@ DeepSeek 的模型名为 `deepseek-flash` 和 `deepseek-v4-pro`，`deepseek-chat
 | 本地 LLM | 首次请求首 token 60 秒（含模型加载），之后 15 秒；总计 60 秒 | 503 最多重试 1 次 | 取服务端并行数，Ollama 默认 1 |
 | DeepL、Google、百度 | 总计 8 秒 | 限流、5xx、网络错误最多重试 1 次 | 2；百度按 QPS 限速 |
 
-重试次数是每个实例的配置项 `max_retries`（`ENG-05`），取值 0 至 3，默认 1。网络类引擎默认最多重试 1 次。竞速中其他引擎本身就是冗余，一个引擎反复重试只会拖长它处于“仍可能改变显示”状态的时间，推迟竞速结束（6.3 节）。重试前的等待按指数退避加随机抖动计算，响应带 `Retry-After` 时以它为准（`ENG-05`），等待时间计入任务的总时限。
+重试次数是每个实例的配置项 `max_retries`（`ENG-05`），取值 0 至 3，默认 1。网络类引擎默认最多重试 1 次。竞速中其他引擎本身就是冗余，一个引擎反复重试只会拖长它处于“仍可能改变显示”状态的时间，推迟竞速结束（6.3 节）。重试前的等待按指数退避加随机抖动计算，响应带 `Retry-After` 时以它为准（`ENG-05`），等待时间计入任务的总时限，不计入首 token 时限：首 token 时限从每次发送开始算，只包住单次发送。最初的实现让退避等待处在上一次请求设下的首 token 时限里，较慢的 5xx 或 429 之后重试根本没发出，还被误报成超时。
+
+LLM 引擎的整批阶段，HTTP 层重试与断流重发共用一份额度，合计最多 `max_retries + 1` 个请求；逐段退回时每段各有同样的额度。一个任务的请求数上限是 $(\text{max\_retries} + 1)(1 + m)$，$m$ 是整批阶段之后仍缺的段数。默认配置下整批最多 2 个请求，每个退回段最多再 2 个。
 
 本地 NMT 不重试，它的失败只有两种来源：模型缺失这类确定性错误，重试结果相同；进程崩溃，由监管器处理（8.2 节）。本地 NMT 的配置里 `max_retries` 固定为 0。
 
@@ -285,7 +287,9 @@ pydantic 没有内建“字段校验失败就回退默认值”的选项（`CFG-
 1. 对原始数据整体校验一次。
 2. 按错误信息中的字段路径处理出错的位置：普通字段从原始字典里删除该键；`[[engines]]` 数组中的条目整条删除，因为删掉条目里的必填键后，这一条仍然无法通过校验。
 3. 再校验一次，被删除的字段落到默认值，被删除的引擎条目不再加载。
-4. 每处回退记一条警告，并通过 `ConfigRejected` 事件报告给设置窗口。
+4. 每处回退记一条警告，并通过 `ConfigRejected` 事件报告给设置窗口。启动时发现的问题在全部模块启动后补发一次，晚于托盘启动的设置窗口也能收到。
+
+“不再加载”只发生在内存里，配置文件里的这一条原样保留。界面修改引擎列表时，配置服务以磁盘上的表数组为底稿，按 `id` 逐条更新：校验不过的表、运行期间手工添加的表原样保留，连同注释；对应上的表只写有差异的字段；界面删除的条目删掉对应的表，新增的条目新建表，顺序跟随界面提交的列表。最初的实现用内存里剩下的条目整节替换，启动时被丢弃的条目在下一次修改引擎时从文件里永久消失。
 
 #### 2.9.2 密钥
 
@@ -417,6 +421,8 @@ class Module(Protocol):
 
 `ModuleContext` 携带事件总线和该模块的日志器。模块需要的配置通过订阅 `AppConfig` 状态获得（第 9 章），所以配置只有总线这一个来源。模块在 `start` 里通过 `ctx.subscribe` 订阅消息，订阅句柄由 `ctx` 托管，`stop` 后由 `ctx.close()` 统一取消。模块代码里没有模块级单例，也没有 `get_xxx_manager()` 这类全局访问函数。
 
+组合根自己的决策也要防并发。总线把每个协程处理函数包成独立任务，连续两次发布 `AppConfig` 会得到两个同时运行的处理函数，各自握着自己那一版配置，中间又有多次等待（重载 NMT 进程要等旧进程退出）。最初的实现因此出现过旧配置把 OCR 进程重载回去、模型管理模块被替换两次的问题。现在组合根的全部决策入口（配置变化、引擎目录变化、卸载与重装前停进程、`RestartWorker`、模型变化后的 NMT 重载）都在同一把锁里串行执行，并且每一步都读 `bus.latest(AppConfig)`，不用参数传进来的旧配置。`stop()` 一开始先置停止标志，之后到达的决策直接返回。
+
 `app` 中的组合根按固定顺序启动模块：先 `config`，再 `cache`、`stats`、`models`，然后 `ocr`、`engines`、`race`，最后启动全部界面模块。退出时按相反顺序停止。
 
 ### 4.4 端口与注入
@@ -480,7 +486,7 @@ class EventBus:
 | `StartCapture` | 命令 | ui.tray、ui.hotkeys | ui.capture |
 | `ToggleBilingualWindow` | 命令 | ui.tray、ui.hotkeys | ui.bilingual |
 | `OpenSettings` | 命令 | ui.tray | ui.settings |
-| `CaptureCompleted(session, image, geometry)` | 事件 | ui.capture | services.ocr、ui.overlay |
+| `CaptureCompleted(session, image, geometry)` | 事件 | ui.capture | services.ocr、services.race（附带截图）、ui.overlay |
 | `OcrCompleted(session, blocks, segments)` | 事件 | services.ocr | services.race、ui.overlay |
 | `OcrFailed(session, error)` | 事件 | services.ocr | ui.overlay |
 | `RetryOcr(session)` | 命令 | ui.overlay | services.ocr |
@@ -498,6 +504,11 @@ class EventBus:
 | `EngineStatuses` | 状态 | services.engines | ui.tray、ui.settings、ui.bilingual（实例名与标识颜色） |
 | `WorkerStatuses` | 状态 | app（汇总各监管器的状态） | ui.tray、ui.overlay、services.engines |
 | `ModelCatalog` | 状态 | services.models | ui.settings、ui.onboarding |
+| `OcrEngineCatalog(engines, active)` | 状态 | services.ocr_engines（组合根合并 OCR 进程状态） | ui.settings、app |
+| `InstallOcrEngine(kind)`、`CancelOcrEngineInstall(kind)`、`UninstallOcrEngine(kind)` | 命令 | ui.settings | services.ocr_engines |
+| `OcrEnginesChanged(kind, installed)` | 事件 | services.ocr_engines | （保留给需要区分安装与卸载的订阅方） |
+| `UpdateStatus` | 状态 | services.updates | ui.tray、ui.settings |
+| `CheckForUpdates(manual)`、`DownloadUpdate`、`InstallUpdate` | 命令 | ui.tray、ui.settings | services.updates |
 | `ShowModelDownloads` | 命令 | ui.tray（菜单“下载翻译模型”） | ui.onboarding（重新显示引导窗口） |
 | `RefreshModelCatalog`、`DownloadModels(ids)`、`CancelModelDownload(id)`、`DeleteModel(id)` | 命令 | ui.onboarding、ui.settings | services.models |
 | `ModelsInstalled(ids, removed)` | 事件 | services.models | app（重载 NMT 进程） |
@@ -641,7 +652,7 @@ $$
 
 **活性**：在前提 3 下，每个段最终都会显示已定。$E$ 是有限集合，每个尝试在有限时间内结束，所以最终没有未结束的尝试，$H \subseteq \{\text{未结束的尝试}\} = \varnothing$。最高优先级实例失败时同样如此：例如 DeepSeek 返回 401 后，它离开 $H$，剩下的竞争中尝试结束后竞速就结束。
 
-**晚加入**：双语窗口按 `Ctrl+Enter` 时，计费引擎加入一个已经开始的会话（`BI-04`）。新实例进入 $E$，处于 QUEUED 状态。如果它的优先级高于当前胜出者，它属于 $H$，该段从显示已定变回未定。这一步扩大了 $E$，引理 1 和定理 1 的前提不再成立，所以“显示已定”是由当前状态算出来的属性，合并器每次查询时重新计算。已经被剪枝的尝试保持 CANCELLED，不会重新参赛；已经参赛的实例不会重复加入。
+**晚加入**：双语窗口按 `Ctrl+Enter` 时，计费引擎加入一个已经开始的会话（`BI-04`）。新实例进入 $E$，处于 QUEUED 状态。如果它的优先级高于当前胜出者，它属于 $H$，该段从显示已定变回未定。这一步扩大了 $E$，引理 1 和定理 1 的前提不再成立，所以“显示已定”是由当前状态算出来的属性，合并器每次查询时重新计算。已经被剪枝的尝试保持 CANCELLED，不会重新参赛；已经参赛的实例不会重复加入。计费实例在会话进行中被替换时（用户补填了 API key，revision 改变），晚加入改用当前同号的新实例；旧实例在某段上的尝试若是 FAILED，新实例以新尝试替换它重新参赛。被替换的尝试从来不是胜出者，胜出者不变，引理 1 中“胜出者优先级单调不增”仍成立。会话开始后才新增的实例号不加入。
 
 ### 6.4 任务打包、出队剪枝与流式结果
 
@@ -738,9 +749,19 @@ class Engine(Protocol):
 3. `ui.overlay` 收到 `CaptureCompleted`，在选区位置弹出覆盖窗口，显示模糊底图和“识别中”。OCR 进程还在加载时，覆盖窗口根据 `WorkerStatuses` 中 OCR 进程的状态显示“识别模型加载中”（`OCR-07`）。
 4. `services.ocr` 收到 `CaptureCompleted`，通过 `WorkerChannel` 把识别请求和图像字节发给 OCR 进程。OCR 进程完成预处理和识别，返回版面块。
 5. `services.ocr` 在主进程中做段落合并，把版面块转换成段，发布 `OcrCompleted`。段落合并是纯 Python 的几何计算，耗时在毫秒级，并且需要回归测试（`OCR-05`）；放在 `services` 里，测试时不需要启动 OCR 进程。
-6. `ui.overlay` 按版面块渲染原文；`services.race` 为每个段检测语言，然后开始竞速。
+6. `ui.overlay` 按版面块渲染原文；`services.race` 为每个段检测语言，然后开始竞速。开启了“附带截图”（`ENG-07`）的 LLM 实例，任务里同时带上截图（见 7.1 节）。
 7. 竞速过程中，`services.race` 按 6.6 节的规则发布 `SegmentsUpdated` 和 `SessionProgress`，`ui.overlay` 增量重绘并播放过渡。
 8. 每个尝试结束时，`services.race` 发布 `AttemptRecorded`，`services.stats` 写入统计库。
+
+### 7.1 附带截图
+
+`services.race` 订阅 `CaptureCompleted`，截屏一到就在线程里把截图缩放并编码为 PNG，编码与 OCR 同时进行，OCR 结束时截图通常已经编好。要编哪几种尺寸由名册决定：每个开启 `send_image` 的实例有自己的 `image_max_side`，名册里没有这样的实例时完全不编码。截屏会话开始时，调度器把对应尺寸的截图（`JobImage`：媒体类型、宽高、SHA-256 摘要与字节）放进这些实例的任务，其他实例的任务不带图。只保留最近一次截屏的截图。新截屏到达时只丢弃旧截图的引用，不取消正在进行的编码：线程里的编码本来无法中断，而上一次会话可能正等着它；只有模块停止时才取消。等待编码时内层任务被取消，按“没有截图”处理，不把取消传给调用方。编码失败只记日志，实例照常参赛，只是不带图。名册被调度器拒收时，截图尺寸仍按原名册计算。
+
+`services` 不能依赖 PySide6，所以编码用 numpy 与 zlib：缩放用面积平均，输出 8 位 RGB 的 PNG。3840×2160 缩到 1568×882 在线程里实测约 0.27 秒。编码函数可以通过 `RaceModule(image_encoder=…)` 替换。
+
+LLM 引擎把截图放在 user 消息的 content 数组里，排在文本部分之后，文本部分与不带图时逐字相同，前缀缓存照样命中。system 提示词末尾追加一句，说明截图用来理解上下文、纠正识别错误。服务返回“不支持图片”类错误时，这次尝试以 `engine.image_unsupported` 失败，不再逐段退回。
+
+带图的尝试，译文缓存键多一个截图摘要：同样的文字配不同截图不会互相命中，不带图的缓存键与原来逐字节相同。请求体从不写日志，服务端在错误消息里回显的 data URL 与长 base64 片段替换为占位文字。
 
 ## 8 推理进程与监管
 
@@ -827,6 +848,10 @@ FAILED ─（用户重载或修改配置）→ STARTING
 - `reload()` 结束旧进程再用新配置启动，与第 7 条一致。已发给旧进程的请求以 `cancelled` 结束，还在监管器排队的请求留给新进程。OCR 子能力这类可以就地生效的配置随每个请求发送（8.4 节），不经过 `configure`，所以监管器只需要启动与重载两种入口。
 - 监管器停止状态下提交的请求立即以失败结束，消费者不会一直等待。
 - 退避间隔按 10 分钟窗口内的崩溃次数取 1、2、4、8 秒，之后保持 8 秒；窗口内第 5 次崩溃进入 FAILED。
+- 启动命令可以延后给出：OCR 监管器构造时没有命令，由组合根第一次 `reload(settings, command=…)` 给出，命令随引擎而定。没有命令时 `start()`、`retry()` 抛异常。
+- 创建进程在线程里进行，命令在事件循环线程上取快照后传入；线程返回后若命令已被 `reload(command=…)` 换掉，就按重载结束刚起来的进程，用新命令重启。不这样做的话，切换引擎恰好落在进程创建期间时，新配置会发给按旧命令启动的进程。
+- FAILED 之后由 `RestartWorker` 命令恢复（托盘状态区与设置窗口关于页提供“重新启动”）：组合根按当前配置重新决定并启动进程，崩溃计数清零。
+- `stop()` 等待监管任务结束有总时限 `stop_timeout_s`（默认 10 秒），超时记 ERROR、取消监管任务并强制结束子进程，程序退出不会被卡在驱动里的进程挂住。
 
 #### 8.2.2 线程模型
 
@@ -861,12 +886,25 @@ FAILED ─（用户重载或修改配置）→ STARTING
 
 ### 8.4 OCR 进程
 
-OCR 进程有两种识别模式（`OCR-09`），由配置决定：
+OCR 进程的后端由当前 OCR 引擎决定（`OCRE-01`，引擎的安装与选择见 8.6 节）：
 
-| 模式 | 后端 | 输出 |
-|---|---|---|
-| 版面模式（默认） | PP-StructureV3 | 完整版面块 |
-| 文本模式 | PaddleOCR 检测加识别产线 | 一个覆盖整张截图的正文块，lines 为全部文本行；段落合并在主进程做 |
+| 引擎 | 模式 | 后端 | 运行环境 | 输出 |
+|---|---|---|---|---|
+| Windows 自带 OCR（默认） | 只有文本模式 | `winocr_backend.WinOcrBackend`，经 pywinrt 调用 Windows.Media.Ocr | 主环境 | 一个覆盖整张截图的正文块，lines 为每一行及其位置 |
+| PaddleOCR | 版面模式 | PP-StructureV3 | PaddleOCR 运行环境 | 完整版面块 |
+| PaddleOCR | 文本模式 | PaddleOCR 检测加识别产线 | PaddleOCR 运行环境 | 同 Windows 引擎 |
+
+全部引擎遵守同一条位置约定（`OCR-10`）：能给出文字位置的引擎按行返回各自的 bbox；只返回文字的引擎由 `plain_text.plain_text_blocks` 把整张截图作为一个 bbox 输出单个正文块，覆盖窗口把译文铺满选区。
+
+Windows 引擎的要点：
+
+- 像素转成 Bgra8 的 SoftwareBitmap 交给系统识别；长边超过 `resize_max_side` 与系统上限（本机 10000）中较小者时，先用面积平均等比缩小，坐标再换算回原图。
+- Windows 不给置信度，行的 score 记为 1.0。系统返回的中文行在汉字之间插了空格，所以行文字按词重新拼接：汉字、假名、全角标点之间直接相连，拉丁词之间加空格。
+- 一个识别器只认一种语言。识别语言为“自动”时用用户配置文件语言创建识别器，失败再取第一个可用语言；指定语言时映射到系统语言（例如 zh-Hans 对应 zh-Hans-CN），系统没有该语言时以配置错误退出。本机实测“自动”选到简体中文时，英文单词会识别错，混排场景需要用户指定语言或改用 PaddleOCR。
+- 等待异步结果用 `asyncio.run`：Qt 初始化过 COM 的线程是单线程套间，在那里调用 `IAsyncOperation.get()` 实测会抛异常。
+- 实测：1920×1080、30 行中英混排的截图识别约 0.33–0.37 秒，30 行全部识别出来。
+
+识别模式只对 PaddleOCR 有效。`OcrConfig.mode` 保留用户的选择，`effective_mode()` 在当前引擎是 Windows 时一律给出文本模式，请求、处理时限与结果转换都按它走；切回 PaddleOCR 时恢复原来的模式。
 
 PaddleOCR 输出格式的细节只在 OCR 进程内部出现。进程在返回结果前，把输出转换成 `contracts` 中定义的版面块：
 
@@ -891,11 +929,11 @@ PaddleOCR 输出格式的细节只在 OCR 进程内部出现。进程在返回�
 
 截图预处理（`CAP-05`）也在 OCR 进程里做，主线程不做图像处理。
 
-OCR 子能力的开关和预处理参数随每个 `ocr` 请求的 options 发送，OCR 进程以请求里的值为准，改动从下一次识别起生效，不需要重启进程。`configure` 里的同名字段只决定启动时预加载哪些模型；请求用到还没加载的子能力时，OCR 进程当场带上它重建产线，实测补加载公式模型加一次识别约 25 秒，在处理时限之内。组合根按 `[ocr]` 节启动 OCR 进程，`enabled`、识别模式、推理设备、识别语言或模型目录变化时重载，子能力开关变化不重载。
+OCR 子能力的开关和预处理参数随每个 `ocr` 请求的 options 发送，OCR 进程以请求里的值为准，改动从下一次识别起生效，不需要重启进程。`configure` 里的同名字段只决定启动时预加载哪些模型；请求用到还没加载的子能力时，OCR 进程当场带上它重建产线，实测补加载公式模型加一次识别约 25 秒，在处理时限之内。组合根按 `[ocr]` 节启动 OCR 进程：`process_key()` 给出决定进程的字段（Windows 引擎只看引擎与识别语言，PaddleOCR 再看识别模式与推理设备），这些字段、`enabled`、引擎可用性或模型目录变化时重载，子能力开关变化不重载。
 
 模型目录与联网：组合根把模型缓存目录作为 `model_cache_dir` 写进 `configure`（源码版在 `data/models/ocr` 没有模型时回退到旧项目的 `assets/PaddleOCR_and_PP-Structure`）。OCR 进程给每个要用的模型显式写上 `model_dir = <模型缓存>/official_models/<模型名>`，PaddleX 拿到目录就直接加载，不经过下载逻辑；有模型缺失时以配置错误（退出码 66）退出，列出全部缺失的模型。进程入口还用审计钩子拦截一切对非回环地址的解析和连接（`network_guard.py`），作为 `PRV-01` 的兜底。
 
-因此需求 `MOD-02` 的“缺失时自动下载 OCR 模型”还没有实现。组合根在模型目录里没有 `official_models` 时不启动 OCR 进程，只记一条 WARNING，避免进程以配置错误反复退出。实现 `MOD-02` 时，在 `configure` 里加一个只在下载阶段放行模型站点的开关，下载放在发现缺模型之后，用 `progress` 消息报告进度，其余时间仍然拦截。
+OCR 进程本身从不下载。PaddleOCR 的运行环境与模型由主进程的 `services.ocr_engines` 在用户点“下载”后安装（8.6 节，`MOD-02`、`OCRE-02`），OCR 进程的网络拦截因此可以一直开着。当前引擎不可用（Windows 没有 OCR 语言、PaddleOCR 未安装）时，组合根不启动 OCR 进程。
 
 推理设备设为 GPU 而安装的 PaddlePaddle 没有编译 CUDA 时，OCR 进程以依赖错误（65）退出；编译了 CUDA 但没有可用 GPU 时以配置错误（66）退出，与 NMT 进程一致。导入 paddle 时会短暂运行一次 `where ccache`，识别期间没有常驻子进程（8.2.3 节要求确认的事项）。
 
@@ -949,6 +987,22 @@ OCR 失败沿用 `engine.*` 错误码（`engine.timeout`、`engine.worker_crashe
 模型管理模块的目录必须与 NMT 进程扫描的目录相同。源码版在 `data/models/nmt` 没有模型时回退到旧项目的 `assets/argosmodel`，组合根把同一个解析结果交给两边；两边用了不同目录的话，第一次下载之后 NMT 进程会切到 `data/models/nmt`，旧目录里的模型就从目录里消失了。`[nmt].model_dir` 在运行中改变时，组合根停掉旧的模型管理模块，再启动一个指向新目录的实例（`MOD-04`）。
 
 索引无法事先说明一个包用的是哪种分词器。不是 SentencePiece 分词的包要下载完才会以 `models.invalid_package` 失败。
+
+### 8.6 OCR 引擎的安装与选择
+
+`services.ocr_engines` 发布 `OcrEngineCatalog`（契约见 `lst/contracts/ocr_engines.py`），处理 `InstallOcrEngine`、`CancelOcrEngineInstall`、`UninstallOcrEngine` 三个命令（`OCRE-01` 至 `OCRE-06`）：
+
+- Windows 引擎：模块启动时用 pywinrt 读取系统的 OCR 识别语言。一个都没有时状态为“不可用”，错误码 `ocr_engine.no_language`，设置里提示在 Windows 设置的“语言”中添加 OCR 功能；对它发“安装”命令会重新读取一次语言。
+- PaddleOCR（安装版）：分两段安装。
+  1. 运行环境：用安装包自带的 `tools\uv.exe`，按 `app\ocr-paddle-requirements.txt`（构建时由 `.venv-ocr` 冻结并生成哈希）以 `uv pip install --target` 装进 `<数据目录>\engines\paddle\site.part`，成功后写入清单哈希并原子改名为 `site`。
+  2. 模型：逐个从 PaddleX 官方地址下载 `<模型名>_infer.tar`，解压前逐个成员检查（拒绝绝对路径、`..`、盘符、链接与设备文件），校验后原子改名为 `<数据目录>\models\ocr\official_models\<模型名>`。
+  全部完成后写 `installed.json`，发布 `OcrEnginesChanged`。进度按字节加权：运行环境按装好后的约 975 MB 计，模型按清单里的大小计；uv 阶段每秒统计一次 uv 缓存目录的大小估计进度。取消或失败时删除半成品，已经装好的部分保留，重试时复用。
+  运行环境标记与 `installed.json` 都记录版本清单的 SHA-256，两者都与当前清单一致才算已安装。程序升级带来新清单时，引擎显示“未安装”并说明“版本清单已随程序更新，需要重新安装运行环境；已下载的模型保留”，用户点安装只重装运行环境。新环境装进 `site.part` 后、删除旧 `site` 之前，模块调用组合根的 `before_runtime_update`，组合根先停掉正在使用 PaddleOCR 的 OCR 进程。卸载开始时同步置忙标志，卸载期间的安装命令被忽略；运行时的 uv 命令带 `--no-build`，不在用户机器上从源码包构建。
+- PaddleOCR（源码版）：`.venv-ocr` 存在且模型缓存里有模型就算已安装，安装与卸载命令被忽略，模块从不改动开发环境。
+
+默认模型清单对应版面模式加表格识别，另带方向分类与去畸变三个小模型，合计约 968 MB；公式识别（PP-FormulaNet_plus-L，约 731 MB）不在默认清单里。PaddleOCR 装好后数据目录多出约 1.9 GB。
+
+当前引擎写在 `[ocr].engine`，默认 `windows`，安装版装好即可截屏识别。组合根订阅 `OcrEngineCatalog`：每次发布都重新判断 OCR 进程的启动条件（判断有去重，下载进度频繁发布不会重启进程），按引擎给出启动命令，经 `WorkerSupervisor.reload(settings, command=…)` 切换解释器与后端。OCR 进程的状态由组合根合并进目录：启动、加载、崩溃重启中显示“加载中”，就绪与忙碌显示“就绪”，FAILED 显示“出错”（`ocr_engine.worker_failed`）；合并只作用于当前引擎、并且已经装好的条目。卸载当前引擎前，组合根先停 OCR 进程，否则运行环境里的 DLL 被占用，删除会失败。
 
 ## 9 配置
 
@@ -1025,8 +1079,8 @@ API key 不经过 `UpdateConfig`。设置窗口发送 `UpdateSecret` 命令，�
 
 ### 10.1 网络请求
 
-- 程序发起的网络请求只有三类：用户启用的在线引擎实例、模型下载（`services.models` 和 OCR 进程预加载）、用户配置的本地 LLM 服务。
-- OCR 进程启动时设置 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`，关闭 PaddleX 启动时对模型源的连通性检查。模型已在本地时，OCR 进程不发起网络请求。
+- 程序发起的网络请求只有四类：用户启用的在线引擎实例；用户确认的下载（`services.models` 的 NMT 模型、`services.ocr_engines` 的 PaddleOCR 运行环境与模型、`services.updates` 的更新安装包）；检查新版本（只访问 GitHub 的版本列表，可以关闭）；用户配置的本地 LLM 服务。
+- OCR 进程启动时设置 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`，关闭 PaddleX 启动时对模型源的连通性检查，并用审计钩子拦截对外连接（`network_guard.py`）。判定规则：字面 IP 用 `ipaddress` 判断，只放行回环、未指定与映射到回环的地址；域名只放行 `localhost`；`socket.connect`、`sendto` 的地址不是字面 IP 时一律拒绝（按域名直连不经过 `getaddrinfo` 审计事件，否则会漏过）；反向解析 `getnameinfo` 也拦截。最初的实现用 `startswith("127.")` 判断，`127.evil.example.com` 会被放行。审计钩子不拦截 subprocess 启动的外部程序和原生库直接调用的套接字；PaddleX 3.7 只在公式结果生成图片与训练接口里启动外部程序，OCR 后端不走这两条路径。
 - 程序不包含任何统计上报或遥测。
 
 ### 10.2 日志内容
@@ -1070,6 +1124,12 @@ qasync 让 asyncio 运行在 Qt 主线程上，总线的处理函数也在主线
 
 `ui.theme` 集中定义主题：颜色、圆角、间距、字体（Segoe UI Variable）和 Mica 设置函数。所有界面模块都从这里取值，以保证视觉统一（`UI-01`）。`ui.i18n` 提供界面文案的简体中文和英文版本（`CFG-05`）。
 
+`ui.common` 是第三个共用模块，放各窗口共用的代码：窗口状态存储与屏外检测、`SecondaryWindow` 基类（首次显示前设置 Mica，失败即回到不透明背景，深浅色变化时三个窗口一起更新）、语言名与大小格式化、模型行状态、进度条换算，以及界面层内部事件 `HotkeyRecordingChanged`。三个共用模块不得依赖任何具体的界面模块，import-linter 有一条契约约束。
+
+界面语言由各界面模块在处理 `AppConfig` 时自己设置（`i18n.apply_config_language`），再刷新文案，不依赖组合根先处理配置。总线按订阅顺序调用处理函数，组合根的配置处理又是协程，要到下一轮循环才执行，最初双语窗口和托盘的悬停提示因此在切换语言后仍显示旧语言。
+
+界面的测试为每个测试新建一个 qasync 事件循环。旧循环留下的 Qt 对象（qasync 内部的计时器与信号对象）如果在执行器线程上被垃圾回收析构，主线程随后会在 `exec` 里访问违例；测试曾因此偶发崩溃。`tests/ui/conftest.py` 与 `tests/integration/conftest.py` 在每个测试的夹具拆完、循环关闭之后，于主线程执行一次 `gc.collect()`。正式程序全程只有一个循环，不受影响。
+
 所有窗口都按“Tab 顺序与视觉顺序一致”设置焦点链，并为每个按钮提供快捷键或助记键（`UI-07`）。焦点顺序由展示器测试检查。
 
 托盘菜单的状态区（`TR-03`）用子菜单显示出错原因：处于“出错”状态的条目带一个子菜单，列出原因和处理建议。鼠标悬停时子菜单自动展开，满足“悬停可查看原因”；用键盘打开托盘菜单时，方向键也能进入子菜单。菜单项的工具提示只响应鼠标，键盘用户看不到，所以没有采用（`UI-07`）。
@@ -1086,7 +1146,9 @@ qasync 让 asyncio 运行在 Qt 主线程上，总线的处理函数也在主线
 
 ### 11.3 热键
 
-`ui.hotkeys` 用 `RegisterHotKey` 注册热键，并加上 `MOD_NOREPEAT` 去掉按住时的连发。`WM_HOTKEY` 消息通过 `QAbstractNativeEventFilter` 在主线程收到，然后发送 `StartCapture` 或 `ToggleBilingualWindow` 命令。注册失败时发布 `HotkeyRegistrationFailed`，托盘弹出通知（`TR-05`）。
+`ui.hotkeys` 用 `RegisterHotKey` 注册热键，并加上 `MOD_NOREPEAT` 去掉按住时的连发。`WM_HOTKEY` 消息通过 `QAbstractNativeEventFilter` 在主线程收到，然后发送 `StartCapture` 或 `ToggleBilingualWindow` 命令。注册失败时发布 `HotkeyRegistrationFailed`，托盘弹出通知（`TR-05`）；失败原因是与本程序另一个热键相同时，照实说明，不说成被其他程序占用。
+
+两个热键不能设成同一组合，`HotkeysConfig` 的校验器拒绝它，原因随界面语言显示。设置窗口录入热键时，系统会把已注册的组合截走、变成 `WM_HOTKEY`，录入框收不到，所以录入期间暂停全部全局热键：录入按钮进入或退出录入状态时，设置窗口发布 `HotkeyRecordingChanged`，`ui.hotkeys` 收到后注销或按当前配置重新注册。录入按 `nativeVirtualKey()` 生成键名，Shift 加数字录成 `Ctrl+Shift+1`，而不是 Qt 给出的 `Ctrl+Shift+!`。
 
 ### 11.4 截屏蒙版
 
@@ -1177,7 +1239,7 @@ b"` 被看作没变，而窗口看作变了；竞速模块于是扩展旧会话�
 - 配置服务会把校验失败的 `[[engines]]` 条目整条丢弃，数组节又是整体替换的，所以界面在发送之前先用该类引擎的模型校验整条记录，不合法就不发送，原因显示在对应参数旁。
 - 连续两次修改（例如排序后紧接着改名）时，第二次在第一次的发送内容上构造，直到新的 `AppConfig` 确认、收到引擎相关的 `ConfigRejected`，或超过 2 秒。
 - 拖拽排序之外另有“上移”“下移”按钮，供键盘操作（`UI-07`）。实例的参数显示在列表下方的面板里，没有做成行内展开。
-- API key 只经 `UpdateSecret` 提交，输入框在回车或失去焦点后清空，界面只显示“已设置/未设置”。判断依据是引擎模块发布的状态：启用且缺 key 的实例处于 `engine.auth` 错误；没启用的实例不读 key，显示“启用后显示状态”。新增实例的 keyring 条目名等于实例号；删除实例时，没有别的实例引用的 key 一并删除。
+- API key 只经 `UpdateSecret` 提交，去掉首尾空白，只在回车或失去焦点时提交（不受文本框 500 毫秒停顿提交的影响，避免半截 key 写进凭据管理器），提交后清空；只有空白时不提交，删除 key 只走“清除”按钮，界面只显示“已设置/未设置”。判断依据是引擎模块发布的状态：启用且缺 key 的实例处于 `engine.auth` 错误；没启用的实例不读 key，显示“启用后显示状态”。新增实例的 keyring 条目名等于实例号；删除实例时，没有别的实例引用的 key 一并删除。
 - “测试连接”用实例当前配置翻译固定词 “Hello”，先试英译中，不支持时试中译英，不经过调度器和缓存。缺 API key 时不发请求，直接返回 `engine.auth`。
 
 删除实例、清空缓存、重置统计、删除模型都先弹确认框。竞速页的统计表列出执行段数、胜出次数、胜出率、耗时中位数、耗时 P95 和失败率。
@@ -1276,23 +1338,24 @@ M3.5 是开发过程中插入的里程碑。双语窗口不依赖 OCR，托盘�
 
 ```
 runtime\        独立版 CPython 3.13（来自 uv 管理的解释器，去掉 pip、tcl/tkinter、IDLE、头文件）
-site\main\      主进程与 NMT 进程的依赖（按 uv.lock 导出）
-site\ocr\       OCR 进程的依赖（PaddlePaddle、PaddleOCR、RapidOCR，按 .venv-ocr 的精确版本）
+site\main\      主进程、NMT 进程与 Windows OCR 引擎的依赖（按 uv.lock 导出）
 app\lst\        程序代码，构建时预编译为 .pyc
 app\assets\     图标
 app\installed.json   安装版标记：版本号与构建时间
+app\ocr-paddle-requirements.txt   PaddleOCR 运行环境的精确版本清单（带哈希），按需安装时使用
+tools\uv.exe    按需安装 PaddleOCR 运行环境用的 uv，许可证在 tools\licenses\uv\
 launcher\       启动器：lst_main.pyw（主程序）、worker.py（推理进程与维护命令）
 unins000.exe    卸载程序（Inno Setup 生成）
 ```
 
-主进程与 OCR 进程的依赖分放在 `site\main` 和 `site\ocr`，与源码版的 `.venv`、`.venv-ocr` 一一对应，PaddlePaddle 和其他依赖不会在同一个进程里加载（2.4 节）。两套依赖共用一个解释器，因为它们的 Python 版本相同；虚拟环境的 `pyvenv.cfg` 写死了解释器的绝对路径，不能随安装目录移动，所以安装版不用虚拟环境，而由启动器设定模块搜索路径。
+安装包不捆绑 PaddleOCR（`OCRE-02`）。用户下载后，它的运行环境在数据目录的 `engines\paddle\site\`，与主进程依赖分开，PaddlePaddle 和其他依赖不会在同一个进程里加载（2.4 节）。两套依赖共用一个解释器，因为它们的 Python 版本相同；虚拟环境的 `pyvenv.cfg` 写死了解释器的绝对路径，不能随安装目录移动，所以安装版不用虚拟环境，而由启动器设定模块搜索路径。
 
 主进程依赖用 `PySide6-Essentials` 代替 `PySide6`。后者会连带安装 WebEngine 等本程序用不到的模块；换用后 PySide6 部分从数百 MB 降到 214 MB。
 
 ### 15.2 启动方式
 
 - 开始菜单快捷方式运行 `runtime\pythonw.exe -I -X utf8 launcher\lst_main.pyw`。`-I` 隔离模式忽略用户机器上的 `PYTHONPATH` 和用户级 site-packages，启动器把 `app\` 与 `site\main\` 放到模块搜索路径的最前面，再调用 `lst.__main__.main()`。
-- 推理进程由监管器以 `runtime\python.exe -I -X utf8 launcher\worker.py nmt|ocr` 启动，启动器按进程类型选用 `site\main` 或 `site\ocr`。组合根的 `worker_command()` 按运行方式给出命令：安装版用上面的形式，源码版用 `.venv` 与 `.venv-ocr` 的解释器。
+- 推理进程由监管器以 `runtime\python.exe -I -X utf8 launcher\worker.py nmt|ocr …` 启动。`ocr` 子命令带 `--ocr-site <目录>|main`：Windows 引擎用 `main`（即 `site\main`）并透传 `--backend`，PaddleOCR 用数据目录里的运行环境；没有可用目录时以依赖错误（65）退出。组合根的 `worker_command()`（NMT）与 `ocr_worker_command()`（OCR，按引擎）给出命令，源码版用 `.venv` 与 `.venv-ocr` 的解释器。
 - 程序判断自己是否是安装版的依据是 `app\installed.json` 是否存在（`lst/app/paths.py`）。
 
 ### 15.3 数据目录
@@ -1306,7 +1369,9 @@ unins000.exe    卸载程序（Inno Setup 生成）
 - `PrivilegesRequired=lowest`：当前用户安装，不弹管理员确认（`INS-01`）。
 - 程序运行期间持有命名互斥体 `LSTtranslate.Running`，安装脚本的 `AppMutex` 指向它；安装、升级、卸载时检测到程序正在运行，提示用户关闭（`INS-05`）。
 - 可选任务：桌面快捷方式、登录时自动启动（写 `HKCU\...\Run`，卸载时删除）（`INS-02`）。
-- 升级时先删除旧版本的 `app\`、`site\`、`runtime\`、`launcher\`，避免残留已经移除的模块；用户数据不在安装目录里，不受影响（`INS-07`）。
+- 升级时先删除旧版本的 `app\`、`site\`、`runtime\`、`launcher\`、`tools\`，避免残留已经移除的模块；用户数据（包括已下载的 PaddleOCR）不在安装目录里，不受影响（`INS-07`）。
+- 应用内更新（15.9 节）以 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=yes` 运行新安装包。带 `/RELAUNCH=yes` 时，`InitializeSetup` 每 250 毫秒检查一次互斥体，最多等 120 秒，等程序退出后再继续；装完由 `[Run]` 里只在这种情况下执行的条目重新启动程序。用最小脚本实测确认 `InitializeSetup` 在 AppMutex 检查之前执行：不带该参数时静默安装检测到程序运行即退出（退出码 1）；带该参数、互斥体被持有 6 秒时，等待 5 秒后通过检查并完成安装（退出码 0）。
+  程序这一侧，入口收到退出请求后先释放运行互斥体，再停止各模块与推理进程，安装程序不必等关停完成。超过 120 秒仍未释放时安装程序放弃这次更新；带 `/RELAUNCH=yes` 而没有装完时，`DeinitializeSetup` 从卸载登记项的 `Inno Setup: App Path` 找到安装目录，重新启动旧程序，用户不会看到程序消失且没有升级。这段 `[Code]` 只编译检查过，没有运行验证。
 - `AppId` 固定为 `{435CC09B-5F36-4944-9918-62F7215D2057}`，升级据此识别同一个软件，发布后不能更改。
 
 安装向导目前是英文。Inno Setup 的简体中文语言文件属于非官方翻译，没有随 Inno Setup 一起安装；需要下载后加入 `[Languages]`。卸载时询问是否删除数据的提示已经同时写了中英文。
@@ -1316,9 +1381,12 @@ unins000.exe    卸载程序（Inno Setup 生成）
 卸载程序删除程序文件、快捷方式和登录自启项，然后询问是否删除用户数据（`INS-06`）：
 
 1. 选“是”时，先用安装目录里的解释器运行 `launcher\worker.py purge-secrets`，删除凭据管理器中本程序的全部通用凭据。keyring 保存凭据时，目标名是服务名 `LSTtranslate`，同一服务有第二个条目时改用 `条目名@LSTtranslate`，清理按这两种目标名枚举并删除（`lst/app/uninstall.py`）。这一步必须在删除程序文件之前做。
+   枚举凭据时不能用 `*@LSTtranslate` 这样带前导星号的过滤器（Win32 的 `CredEnumerateW` 只支持“前缀加星号”），所以先枚举全部通用凭据，再在程序里按“等于服务名，或以 `@服务名` 结尾”筛选，不区分大小写。keyring 的行为是：每写入一个新条目，原来占用服务名的条目改存到 `条目名@服务名`。清理失败时 `purge-secrets` 以非 0 退出，卸载脚本记日志，不阻止卸载。
 2. 程序文件删除之后，再删除数据目录 `%LOCALAPPDATA%\LSTtranslate`。
 
 静默卸载默认保留用户数据，命令行加 `/DELETEUSERDATA=yes` 时删除，供自动化测试使用。Inno Setup 不记录 `[Code]` 段里 `Exec` 的执行情况，安装脚本因此把 `purge-secrets` 的退出码写进卸载日志（`/LOG=文件` 时可见）。
+
+用 `LST_DATA_DIR` 改过数据目录的用户，卸载脚本读取这个环境变量，同时满足三个条件才删除该目录：是绝对路径，不是驱动器根目录，目录里有 `config\settings.toml`。条件是为了避免变量指错时删掉别的东西。
 
 源码版和安装版用同一个 keyring 服务名，凭据管理器里的条目两者共用。在同一台机器上同时使用两种运行方式时，删除数据的卸载也会删掉源码版保存的 API key。
 
@@ -1328,12 +1396,17 @@ unins000.exe    卸载程序（Inno Setup 生成）
 
 1. 复制 uv 管理的独立版 CPython 3.13 到暂存目录，去掉用不到的部分；
 2. `uv export` 按 `uv.lock` 导出主进程依赖，`uv pip install --target` 安装到 `site\main`；
-3. `uv pip freeze` 冻结 `.venv-ocr` 的精确版本，同样安装到 `site\ocr`；冻结结果里有不止一个 OpenCV 发行包时中止（见下文）；
-4. 复制程序代码、图标和启动器，预编译 `.pyc`，写入 `installed.json`；
-5. 用安装布局实际导入主进程的关键模块和 OCR 进程的第三方包，失败则中止构建；
-6. 调用 Inno Setup 编译，输出 `dist\LSTtranslate-<版本>-setup.exe`。
+3. `uv pip freeze` 冻结 `.venv-ocr` 的精确版本，校验为纯“名==版”并排序（冻结结果里有不止一个 OpenCV 发行包时中止，见下文），再用 `uv pip compile --generate-hashes` 补哈希，写入 `app\ocr-paddle-requirements.txt`；不能联网时加 `--allow-unhashed` 写入不带哈希的清单；
+4. 复制本机 `uv.exe` 与许可证到 `tools\`；
+5. 复制程序代码、图标和启动器，预编译 `.pyc`，写入 `installed.json`；
+6. 用安装布局实际导入主进程的关键模块，并运行 `tools\uv.exe --version`，失败则中止构建；
+7. 调用 Inno Setup 编译，输出 `dist\LSTtranslate-<版本>-setup.exe`，并在旁边生成 `.sha256` 校验文件（sha256sum 格式），供应用内更新校验。
 
-`--skip-ocr` 跳过 OCR 环境，用于快速验证打包流程。暂存目录 `build\` 与输出目录 `dist\` 不纳入版本库。
+构建开头用更新服务的 `parse_version` 校验版本号，不是规范的语义化版本就中止。PEP 440 的写法（`0.2.0b1`）更新服务解析不了，用了会让更新功能整体失效，所以预发布版本要写成 `0.2.0-beta.1`；运行时读到包元数据里归一化后的 PEP 440 写法，由 `semver_text` 换算回来。生成哈希清单的 `uv pip compile` 带 `--no-config --only-binary :all:`，只发布源码包的依赖在构建阶段就会失败。
+
+第 6 步的自检还检查：主环境能导入 Windows OCR 后端与 pywinrt；keyring 的后端是 Windows 凭据管理器；通过真实的 `launcher\worker.py` 分别启动 NMT 与 OCR 进程入口（不带地址参数，期望以配置错误退出，证明按安装布局导入成功，全程不联网）；清单是否带哈希与构建参数一致。
+
+暂存目录 `build\` 与输出目录 `dist\` 不纳入版本库。
 
 构建脚本在 Git Bash 里调用 ISCC 没有问题；手动在 Git Bash 里运行 ISCC 或安装程序时，要设置 `MSYS_NO_PATHCONV=1`。否则 MSYS 会把 `/DAppVersion=…`、`/DIR=…` 这类以斜杠开头的参数当成路径改写，ISCC 报“只能指定一个脚本文件”。
 
@@ -1380,3 +1453,15 @@ GPU 加速列入后续版本，做法与模型相同：把 `nvidia-cublas-cu12` 
 5. 静默卸载并删除数据：`unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DELETEUSERDATA=yes`，退出码 0。程序目录、开始菜单快捷方式、卸载条目、数据目录全部删除，卸载日志记录 `purge-secrets exit code: 0`（`INS-06`）。
 
 完整包在本机重复了上面的步骤，结果相同。安装版首次启动时弹出首次运行引导，取到模型索引（100 个可下载的翻译模型）；数据目录里没有 OCR 模型，组合根不启动 OCR 进程，只记一条 WARNING（8.4 节）。
+
+### 15.9 应用内更新
+
+`services.updates` 发布 `UpdateStatus`（契约见 `lst/contracts/updates.py`），处理 `CheckForUpdates`、`DownloadUpdate`、`InstallUpdate`（`UPD-01` 至 `UPD-06`）：
+
+- 版本来源：`GET https://api.github.com/repos/willlllliams/LSTtranslate/releases`（`/releases/latest` 不返回预发布版本）。只考虑同时带安装包与 `.sha256` 附件的版本，按语义化版本比较（含预发布后缀），`[updates].include_prerelease` 为假时跳过预发布。不需要任何认证，日志里的地址去掉查询参数。
+- 自动检查：启动 30 秒后检查一次，之后按 `[updates].check_interval_hours`（默认 24）检查；最近一次检查与已通知的版本写在数据目录的 `updates.json`，重启后不重复检查，同一版本只通知一次。自动检查失败只记日志；手动检查失败进入 ERROR，托盘给出原因。
+- 下载：先取 `.sha256` 文件，要求文件名与安装包一致；安装包流式写入 `tmp\updates\` 的 `.part`，在线程里边写边算 SHA-256，一致才改名并进入 READY。启动时清理 `.part` 与不高于当前版本的旧安装包。
+- 安装：以分离进程运行安装包（`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`，不继承句柄），参数见 15.4 节，成功后发布 `QuitRequested`。源码运行时只检查，下载与安装命令进入 `update.not_installed`。
+- 托盘菜单有“检查更新”；发现新版本后变为“安装更新 x.y.z”，先下载、再安装，下载中显示进度。
+- 命令只生效一次：下载命令在第一次等待之前就进入 DOWNLOADING，安装命令同样先置标志，双击按钮或托盘与设置窗口同时发命令时不会并发下载、不会启动两个安装程序。DOWNLOADING、READY、INSTALLING 状态下的检查命令被忽略，但会重新发布一次当前状态，界面不会停在“正在检查”。
+- 下载目录只保留当前可用版本的安装包：启动时删除不高于当前版本的，每次检查成功后删除已被更新版本取代的。

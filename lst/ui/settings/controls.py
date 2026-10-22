@@ -6,6 +6,8 @@
 - ``edited``：用户修改了控件，每次修改都发出，展示器据此让这个设置项旁边的错误提示消失；
 - ``committed``：该提交了。开关、下拉框在操作完成时立即发出；文本框与数值框在停止输入
   ``debounce_ms`` 毫秒后发出，按 Enter 或离开控件时立即发出（需求 UI-06，架构文档 11.7 节）；
+  ``finish_only`` 的编辑器（API key 输入框）不按停顿提交，只在按 Enter、离开控件或窗口隐藏时提交，
+  输入中途的停顿不会把半截内容提交出去；
 - ``flush``：窗口隐藏时调用，把还没发出的修改立即提交，不丢用户的输入。
 
 用户修改过、配置里的值还没有变成这个值时，控件保持用户输入的样子，不被别的设置项触发的配置刷新覆盖：
@@ -23,6 +25,7 @@ from PySide6.QtGui import (
     QDoubleValidator,
     QEnterEvent,
     QFocusEvent,
+    QHideEvent,
     QKeyEvent,
     QPainter,
     QPainterPath,
@@ -46,9 +49,9 @@ from PySide6.QtWidgets import (
 )
 
 from lst.contracts.worker_protocol import JsonValue
+from lst.ui.common.text import LANGUAGES, language_name
 from lst.ui.i18n import tr
 from lst.ui.settings.dialogs import Dialogs
-from lst.ui.settings.strings import LANGUAGES, language_name
 from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, theme_colors, ui_font
 
 DEFAULT_DEBOUNCE_MS: Final = 500
@@ -79,7 +82,8 @@ def make_transparent(view: QAbstractItemView) -> None:
 class ThemedLabel(QLabel):
     """文字颜色和字号取自 ui.theme 的标签。
 
-    role 取 primary（正文色）、secondary（次要色，说明文字）或 critical（错误色）。
+    role 取 primary（正文色）、secondary（次要色，说明文字）、critical（错误色）或 accent（用作文字的强调色，
+    例如“当前引擎”标识）。
     深浅色或强调色变化时（调色板变化事件）重新取色，页面不需要自己刷新。
     """
 
@@ -110,9 +114,14 @@ class ThemedLabel(QLabel):
         color = {
             "secondary": colors.text_secondary,
             "critical": colors.critical,
+            "accent": colors.accent_strong,
         }.get(self._role, colors.text)
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, color)
+        # 不可用的卡片（例如当前引擎不支持的设置项）文字变淡，与系统控件的禁用样式一致。
+        faded = QColor(color)
+        faded.setAlphaF(color.alphaF() * 0.45)
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, faded)
         self._applying = True
         try:
             self.setPalette(palette)
@@ -138,9 +147,13 @@ class ValueEditor(QWidget):
     committed = Signal(object)
     edited = Signal()
 
-    def __init__(self, *, debounce_ms: int | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, *, debounce_ms: int | None = None, finish_only: bool = False, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._debounce_ms = debounce_ms
+        self._finish_only = finish_only
+        self._held = False
         self._dirty = False
         self._loading = False
         self._timer = QTimer(self)
@@ -168,8 +181,8 @@ class ValueEditor(QWidget):
 
     @property
     def pending(self) -> bool:
-        """有一次防抖提交还没有发出。"""
-        return self._timer.isActive()
+        """有一次提交还没有发出（防抖计时中，或 finish_only 的编辑器等待编辑结束）。"""
+        return self._timer.isActive() or self._held
 
     def set_json(self, value: JsonValue) -> None:
         """显示配置里的值。用户修改过且配置里还不是这个值时保持用户的输入。"""
@@ -182,12 +195,13 @@ class ValueEditor(QWidget):
     def reload(self, value: JsonValue) -> None:
         """无条件显示这个值，丢弃用户的未提交输入。"""
         self._timer.stop()
+        self._held = False
         self._dirty = False
         self._load(value)
 
     def flush(self) -> None:
-        """还有没发出的防抖提交时立即发出。"""
-        if self._timer.isActive():
+        """还有没发出的提交时立即发出。"""
+        if self.pending:
             self._commit()
 
     # ---- 内部
@@ -204,13 +218,16 @@ class ValueEditor(QWidget):
             return
         self._dirty = True
         self.edited.emit()
-        if self._debounce_ms is None:
+        if self._finish_only:
+            self._held = True  # 只在编辑结束（Enter、离开控件、窗口隐藏）时由 flush 提交
+        elif self._debounce_ms is None:
             self._commit()
         else:
             self._timer.start(self._debounce_ms)
 
     def _commit(self) -> None:
         self._timer.stop()
+        self._held = False
         self.committed.emit(self.json_value())
 
 
@@ -494,7 +511,8 @@ class TextEditor(ValueEditor):
     - optional：空文本表示 None（配置里没有这个值）；
     - as_list：用逗号分隔的列表，空文本表示 None；
     - number：可选的小数，空文本表示 None；
-    - password：输入时显示圆点（API key）。
+    - password：输入时显示圆点（API key）；
+    - finish_only：不按停顿提交，只在按 Enter、离开控件或 flush 时提交（API key 输入框）。
     """
 
     def __init__(
@@ -504,11 +522,12 @@ class TextEditor(ValueEditor):
         as_list: bool = False,
         number: bool = False,
         password: bool = False,
+        finish_only: bool = False,
         placeholder: str = "",
         debounce_ms: int = DEFAULT_DEBOUNCE_MS,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(debounce_ms=debounce_ms, parent=parent)
+        super().__init__(debounce_ms=debounce_ms, finish_only=finish_only, parent=parent)
         self._optional = optional or as_list or number
         self._as_list = as_list
         self._number = number
@@ -650,11 +669,42 @@ _NAMED_KEYS: Final = {
 }
 
 
-def hotkey_text(key: int, modifiers: Qt.KeyboardModifier) -> str | None:
+_VIRTUAL_KEY_NAMES: Final = {
+    0x20: "Space",
+    0x09: "Tab",
+    0x0D: "Enter",
+    0x1B: "Esc",
+    0x2C: "PrintScreen",
+    0x2D: "Insert",
+    0x2E: "Delete",
+    0x24: "Home",
+    0x23: "End",
+    0x21: "PageUp",
+    0x22: "PageDown",
+    0xC0: "`",
+}
+"""Windows 虚拟键码 → 热键写法里的键名（与 ``[hotkeys]`` 节的规范写法一致）。"""
+
+
+def virtual_key_name(virtual_key: int) -> str | None:
+    """Windows 虚拟键码对应的键名：字母、数字、F1 至 F24 与几个命名键；其他键码返回 None。
+
+    全局热键按虚拟键码注册，键名也按虚拟键码取：按住 Shift 时 Qt 给出的是 Shift 之后的字符
+    （Shift+1 是 Key_Exclam），而热键要的是键位本身。
+    """
+    if 0x30 <= virtual_key <= 0x39 or 0x41 <= virtual_key <= 0x5A:
+        return chr(virtual_key)
+    if 0x70 <= virtual_key <= 0x87:
+        return f"F{virtual_key - 0x70 + 1}"
+    return _VIRTUAL_KEY_NAMES.get(virtual_key)
+
+
+def hotkey_text(key: int, modifiers: Qt.KeyboardModifier, virtual_key: int = 0) -> str | None:
     """一次按键 → 热键的规范写法，例如 Ctrl+Alt+Q；只按了修饰键时返回 None。
 
-    修饰键的顺序与 ``[hotkeys]`` 节的规范写法一致：Ctrl、Alt、Shift、Win。
-    按键的名称不在热键支持的范围内时仍然给出 Qt 的名称，由配置服务拒绝并说明原因。
+    修饰键的顺序与 ``[hotkeys]`` 节的规范写法一致：Ctrl、Alt、Shift、Win。virtual_key 是按键事件的
+    Windows 虚拟键码（``QKeyEvent.nativeVirtualKey``），能识别时按它取键名；没有虚拟键码的平台（offscreen）
+    按 Qt 的键取名。按键的名称不在热键支持的范围内时仍然给出 Qt 的名称，由配置服务拒绝并说明原因。
     """
     if key in {int(k.value) for k in _MODIFIER_KEYS} or key == 0:
         return None
@@ -667,7 +717,9 @@ def hotkey_text(key: int, modifiers: Qt.KeyboardModifier) -> str | None:
     ):
         if modifiers & flag:
             parts.append(name)
-    named = next((name for known, name in _NAMED_KEYS.items() if int(known.value) == key), None)
+    named = virtual_key_name(virtual_key) if virtual_key else None
+    if named is None:
+        named = next((name for known, name in _NAMED_KEYS.items() if int(known.value) == key), None)
     if named is not None:
         key_name = named
     elif int(Qt.Key.Key_A.value) <= key <= int(Qt.Key.Key_Z.value) or int(Qt.Key.Key_0.value) <= key <= int(
@@ -686,9 +738,12 @@ class HotkeyButton(QPushButton):
 
     录入状态下按键都被它接管，包括 Tab 和带 Alt 的组合（不会触发助记键）。
     只有不在录入状态时 Tab 才移动焦点，所以键盘用户不会被困在这个控件里。
+    进入和退出录入状态时发出 ``recording_changed``：已经注册的全局热键会先于窗口收到按键，
+    展示器据此请热键模块在录入期间暂停全局热键。
     """
 
     hotkey_chosen = Signal(str)
+    recording_changed = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -718,11 +773,13 @@ class HotkeyButton(QPushButton):
         if not self._recording:
             self._recording = True
             self.refresh_text()
+            self.recording_changed.emit(True)
 
     def stop_recording(self) -> None:
         if self._recording:
             self._recording = False
             self.refresh_text()
+            self.recording_changed.emit(False)
 
     def event(self, event: QEvent) -> bool:
         if self._recording:
@@ -749,7 +806,7 @@ class HotkeyButton(QPushButton):
         if event.key() == Qt.Key.Key_Escape and modifiers == Qt.KeyboardModifier.NoModifier:
             self.stop_recording()
             return
-        text = hotkey_text(event.key(), modifiers)
+        text = hotkey_text(event.key(), modifiers, event.nativeVirtualKey())
         if text is None:
             return  # 只按了修饰键，等待主键
         self.stop_recording()
@@ -758,6 +815,11 @@ class HotkeyButton(QPushButton):
     def focusOutEvent(self, event: QFocusEvent) -> None:
         self.stop_recording()
         super().focusOutEvent(event)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        # 窗口隐藏时不一定先发失去焦点的事件；录入状态随之结束，全局热键恢复。
+        self.stop_recording()
+        super().hideEvent(event)
 
 
 class HotkeyEditor(ValueEditor):

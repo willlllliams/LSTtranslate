@@ -18,14 +18,21 @@ from types import MappingProxyType
 from typing import Literal
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from lst.contracts.errors import ErrorCode
 from lst.contracts.ids import Lang
 from lst.contracts.ports import SecretReader
-from lst.contracts.translation import Engine, EngineInfo, EngineKind, Job, Segment, SegmentOutcome
+from lst.contracts.translation import Engine, EngineInfo, EngineKind, Job, SegmentOutcome
 from lst.services.engines.baidu.languages import source_code, supports_pair, target_code
-from lst.services.engines.common import EngineSettings, build_info
+from lst.services.engines.common import (
+    EngineSettings,
+    build_info,
+    check_count,
+    failures,
+    parse_json,
+    split_blank,
+)
 from lst.services.engines.http import EngineError, RateLimiter, RetryPolicy, Sleep, send_with_retry
 
 logger = logging.getLogger(__name__)
@@ -139,25 +146,14 @@ def random_salt() -> str:
     return str(random.randint(32768, 65536))
 
 
-def _failures(segments: Sequence[Segment], code: ErrorCode, detail: str) -> list[SegmentOutcome]:
-    return [SegmentOutcome(segment.id, error=detail, code=code) for segment in segments]
-
-
 def _parse(response: httpx.Response, expected: int) -> list[str]:
     """取出与各行同序的译文。业务错误抛出 BaiduApiError，结构不对或条数不符抛出 BAD_RESPONSE。"""
-    try:
-        parsed = _Response.model_validate_json(response.content)
-    except ValidationError as exc:
-        where = ", ".join(".".join(str(part) for part in error["loc"]) or "<root>" for error in exc.errors())
-        raise EngineError(ErrorCode.BAD_RESPONSE, f"响应结构不符合预期（{where}）") from None
+    parsed = parse_json(response.content, _Response)
     if parsed.error_code is not None and str(parsed.error_code) not in _SUCCESS_CODES:
         raise BaiduApiError(str(parsed.error_code), parsed.error_msg or "")
     if parsed.trans_result is None:
         raise EngineError(ErrorCode.BAD_RESPONSE, "响应缺少 trans_result")
-    if len(parsed.trans_result) != expected:
-        raise EngineError(
-            ErrorCode.BAD_RESPONSE, f"返回 {len(parsed.trans_result)} 条译文，请求了 {expected} 条"
-        )
+    check_count(len(parsed.trans_result), expected)
     return [item.dst for item in parsed.trans_result]
 
 
@@ -202,31 +198,28 @@ class BaiduEngine:
 
     async def translate(self, job: Job) -> AsyncIterator[SegmentOutcome]:
         # 换行替换后为空白的段不发给接口（百度会跳过空行，条数就对不上了），原样作为译文返回。
-        flattened = [(segment, flatten(segment.text)) for segment in job.segments]
-        pending = [(segment, text) for segment, text in flattened if text.strip()]
-        for segment, text in flattened:
-            if not text.strip():
-                yield SegmentOutcome(segment.id, text=segment.text)
-        if not pending:
+        blank, segments = split_blank(job.segments, [flatten(segment.text) for segment in job.segments])
+        for outcome in blank:
+            yield outcome
+        if not segments:
             return
-
-        segments = [segment for segment, _ in pending]
+        lines = [flatten(segment.text) for segment in segments]
         secret = self._secret
         target = target_code(job.target_lang)
         if secret is None:
-            for outcome in _failures(segments, ErrorCode.AUTH, "未配置百度翻译密钥"):
+            for outcome in failures(segments, ErrorCode.AUTH, "未配置百度翻译密钥"):
                 yield outcome
             return
         if target is None:
             detail = f"百度不支持目标语言 {job.target_lang}"
-            for outcome in _failures(segments, ErrorCode.UNSUPPORTED_LANGUAGE, detail):
+            for outcome in failures(segments, ErrorCode.UNSUPPORTED_LANGUAGE, detail):
                 yield outcome
             return
         source = source_code(job.source_lang)
 
-        groups = split_by_bytes([text for _, text in pending])
+        groups = split_by_bytes(lines)
         for number, group in enumerate(groups, start=1):
-            query = "\n".join(pending[index][1] for index in group)
+            query = "\n".join(lines[index] for index in group)
             logger.debug(
                 "百度实例 %s 发送第 %d/%d 组：%d 段，q 共 %d 字节",
                 self._info.id,
@@ -245,7 +238,7 @@ class BaiduEngine:
                 continue
             # 本组及之后各组都记为失败，不再发送：认证、配额、限流类错误下继续发送没有意义。
             logger.info("百度实例 %s 请求失败：%s", self._info.id, error.detail)
-            for outcome in _failures(segments[group.start :], error.code, error.detail):
+            for outcome in failures(segments[group.start :], error.code, error.detail):
                 yield outcome
             return
 

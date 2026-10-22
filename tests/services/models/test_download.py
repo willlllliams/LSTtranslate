@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import BinaryIO, cast
@@ -362,7 +363,7 @@ async def test_download_does_not_block_event_loop(
     body = package_bytes("en", "de", payload=payload)
     server.add(package_url("en", "de"), Route(body=body, chunk_size=64 * 1024))
     sinks: list[SlowSink] = []
-    real_open, real_verify = models_module._open_for_write, models_module.verify_download
+    real_open, real_verify = models_module.open_for_write, models_module.verify_download
 
     def slow_open(path: Path) -> BinaryIO:
         sink = SlowSink(real_open(path))
@@ -373,7 +374,7 @@ async def test_download_does_not_block_event_loop(
         time.sleep(SLOW_VERIFY_S)
         return real_verify(path, expected)
 
-    monkeypatch.setattr(models_module, "_open_for_write", slow_open)
+    monkeypatch.setattr(models_module, "open_for_write", slow_open)
     monkeypatch.setattr(models_module, "verify_download", slow_verify)
     await start_with_index(bus, start_module, server, [index_item("en", "de")])
 
@@ -446,3 +447,38 @@ async def test_logs_and_errors_never_contain_url_query(
     assert not [text for text in messages if secret in text]
     # 记录里的异常文本同样不含查询参数。
     assert not [r for r in caplog.records if r.exc_text and secret in r.exc_text]
+
+
+async def test_cancel_during_rescan_after_install_completes(
+    bus: EventBus,
+    start_module: StartModule,
+    published: Published,
+    server: FakeServer,
+    models_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server.add_package("en", "zh")
+    await start_with_index(bus, start_module, server, [index_item("en", "zh")])
+    real_scan = models_module.scan_installed
+    started, release = threading.Event(), threading.Event()
+
+    def slow_scan(path: Path, logger: logging.Logger) -> dict[tuple[Lang, Lang], list[PackageMeta]]:
+        # 模块启动时的扫描已经结束，这里拦住的是模型包改名就位之后的重新扫描。
+        started.set()
+        release.wait(5)
+        return real_scan(path, logger)
+
+    monkeypatch.setattr(models_module, "scan_installed", slow_scan)
+    bus.send(DownloadModels((EN_ZH,)))
+    await asyncio.to_thread(started.wait, 5)
+    bus.send(CancelModelDownload(EN_ZH))
+    await asyncio.sleep(0.05)
+    release.set()
+    await bus.drain()
+
+    # 模型包已经装好：取消被忽略，状态照常变为完成，目录更新并发布 ModelsInstalled。
+    assert files(models_dir) == ["translate-en_zh-1_9.argosmodel"]
+    assert published.states(EN_ZH)[-1] is D.DONE
+    model = published.catalog.model(EN_ZH)
+    assert model is not None and model.installed
+    assert published.installed == [ModelsInstalled((EN_ZH,))]

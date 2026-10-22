@@ -24,7 +24,7 @@ from lst.ui.settings.controls import (
     ValueEditor,
     hotkey_text,
 )
-from tests.ui.settings.conftest import wait_until
+from tests.ui.conftest import wait_until
 from tests.ui.settings.support import FakeDialogs
 
 SHORT = 30

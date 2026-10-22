@@ -1,12 +1,11 @@
 """设置窗口测试的公共夹具。
 
-平台：默认使用 offscreen 平台，窗口不会真的弹出来。用 QT_QPA_PLATFORM=windows 在原生平台上运行时，
-窗口带上 WA_DontShowOnScreen：isVisible 照常为真，但窗口不出现在屏幕上，也不抢前台，
+平台：用 QT_QPA_PLATFORM=windows 在原生平台上运行时，窗口带上 WA_DontShowOnScreen，
 设置窗口弹出的对话框也带同一个属性。
 
-事件循环：每个异步测试都运行在 qasync 的 QEventLoop 上（pytest_asyncio_loop_factories 钩子），与正式程序相同，
-asyncio 回调和 Qt 的计时器、信号槽由同一个 Qt 事件循环驱动。文本框的 500 毫秒防抖是 Qt 计时器，
-测试用 ``await asyncio.sleep`` 让时间流逝；用 ``await bus.drain()`` 等总线把排队的消息分发完。
+事件循环、QApplication、事件总线与界面语言的夹具在 tests/ui/conftest.py 里，四类界面测试共用。
+文本框的 500 毫秒防抖是 Qt 计时器，测试用 ``await asyncio.sleep`` 让时间流逝；用 ``await bus.drain()``
+等总线把排队的消息分发完。
 
 两种装配：
 - ``start_settings``：只启动设置窗口模块，配置由测试直接发布，设置窗口发出的命令由记录器接收；
@@ -17,17 +16,14 @@ asyncio 回调和 Qt 的计时器、信号槽由同一个 Qt 事件循环驱动�
 
 import asyncio
 import logging
-import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 import pytest
-import qasync  # pyright: ignore[reportMissingTypeStubs]
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
 
 from lst.contracts.config import AppConfig, UpdateConfig, UpdateSecret
 from lst.contracts.events import (
@@ -36,6 +32,7 @@ from lst.contracts.events import (
     EngineStatuses,
     OpenSettings,
     ResetStats,
+    RestartWorker,
     WorkerStatuses,
 )
 from lst.contracts.messages import Command, Message
@@ -46,23 +43,23 @@ from lst.contracts.models import (
     ModelCatalog,
     RefreshModelCatalog,
 )
+from lst.contracts.ocr_engines import CancelOcrEngineInstall, InstallOcrEngine, UninstallOcrEngine
+from lst.contracts.updates import CheckForUpdates, DownloadUpdate, InstallUpdate
 from lst.kernel import EventBus, ModuleContext
 from lst.services.cache import CacheModule, SqliteTranslationCache
 from lst.services.config import ConfigService, MemorySecretStore
 from lst.services.engines import EngineDeps, EngineListSchema, EnginesModule
 from lst.services.stats import SqliteStatsStore, StatsModule
-from lst.ui import i18n
 from lst.ui.settings import SettingsModule
 from lst.ui.settings.presenter import SettingsPresenter
 from lst.ui.settings.window import SettingsWindow
+from tests.ui.conftest import on_native_platform
 from tests.ui.settings.support import (
     FakeDialogs,
     all_models,
     default_config,
     engine_kinds,
 )
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 TEST_DEBOUNCE_MS = 40
 """多数测试使用的文本框防抖时间，比默认的 500 毫秒短，测试跑得快；默认值本身由单独的测试检查。"""
@@ -77,64 +74,14 @@ COMMAND_TYPES: tuple[type[Command], ...] = (
     DownloadModels,
     CancelModelDownload,
     DeleteModel,
+    InstallOcrEngine,
+    CancelOcrEngineInstall,
+    UninstallOcrEngine,
+    CheckForUpdates,
+    DownloadUpdate,
+    InstallUpdate,
+    RestartWorker,
 )
-
-
-def _qasync_loop() -> asyncio.AbstractEventLoop:
-    app = QApplication.instance()
-    if app is None:
-        raise RuntimeError("创建 qasync 事件循环之前需要 QApplication，见 _qt_app 夹具")
-    loop: asyncio.AbstractEventLoop = qasync.QEventLoop(app)  # pyright: ignore[reportUnknownMemberType]
-    return loop
-
-
-def pytest_asyncio_loop_factories(
-    config: pytest.Config, item: pytest.Item
-) -> Mapping[str, Callable[[], asyncio.AbstractEventLoop]]:
-    """本目录下的异步测试都运行在 qasync 事件循环上。"""
-    del config, item
-    return {"qasync": _qasync_loop}
-
-
-@pytest.fixture(autouse=True)
-def _qt_app(qapp: QApplication) -> QApplication:
-    """保证 QApplication 先于事件循环创建：qapp 是会话级夹具，先于函数级的事件循环夹具建立。"""
-    return qapp
-
-
-@pytest.fixture(autouse=True)
-def zh_language() -> Iterator[None]:
-    previous = i18n.current_language()
-    i18n.set_language("zh-Hans")
-    yield
-    i18n.set_language(previous)
-
-
-def on_native_platform() -> bool:
-    return QApplication.platformName() != "offscreen"
-
-
-async def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    """让事件循环运转，直到条件成立。超时说明被测行为没有发生。"""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("等待的条件在时限内没有成立")
-        await asyncio.sleep(0.01)
-
-
-@pytest.fixture
-async def bus() -> AsyncIterator[EventBus]:
-    """真实的事件总线（raise_errors=True）。同步处理函数的异常被收集起来，测试结束时断言为空。"""
-    loop = asyncio.get_running_loop()
-    errors: list[dict[str, Any]] = []
-    loop.set_exception_handler(lambda _loop, context: errors.append(context))
-    instance = EventBus(loop, logger=logging.getLogger("tests.ui.settings.bus"), raise_errors=True)
-    yield instance
-    await instance.drain()
-    await instance.aclose()
-    loop.set_exception_handler(None)
-    assert not errors, [context.get("exception") or context.get("message") for context in errors]
 
 
 @dataclass

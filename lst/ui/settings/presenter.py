@@ -4,7 +4,12 @@
 
 - ``UpdateConfig``：按字段合并（数组节整体替换）；
 - ``UpdateSecret``：API key 只经由它提交，不进入配置、日志和界面；
-- ``ResetStats``、``ClearCache``、``CheckEngineConnection`` 与四个模型命令。
+- ``ResetStats``、``ClearCache``、``CheckEngineConnection`` 与四个模型命令；
+- OCR 引擎的 ``InstallOcrEngine``、``CancelOcrEngineInstall``、``UninstallOcrEngine``，当前引擎经由
+  ``UpdateConfig {"ocr": {"engine": ...}}`` 修改（需求 OCRE-01 至 OCRE-06）；
+- 应用更新的 ``CheckForUpdates``、``DownloadUpdate``、``InstallUpdate``（需求 UPD-01 至 UPD-06）；
+- 出错的推理进程的 ``RestartWorker``（架构文档 8.2 节）；
+- 热键录入开始和结束时发布 ``HotkeyRecordingChanged``，热键模块在录入期间暂停全局热键。
 
 视图（pages、window）只负责绘制和收集输入：它们读展示器的属性，调用展示器的方法，
 并通过 ``subscribe`` 登记回调，在 ``Topic`` 指明的数据变化时刷新自己。本模块不依赖 Qt，
@@ -12,7 +17,8 @@
 
 ``ConfigRejected`` 记在 ``rejections`` 里，位置是配置里的位置，例如 ("race", "mode")；
 引擎的位置 ("engines", 下标, 字段) 在这里换算成实例号，("engines", "deepseek", "base_url")，
-因为下标会随排序变化。用户再次修改同一个设置项时（``clear_rejection``）提示消失。
+因为下标会随排序变化。换算按尚未确认的各次发送进行，无法确定属于哪一次时保持下标
+（见 ``SentEngineOrders``）。用户再次修改同一个设置项时（``clear_rejection``）提示消失。
 """
 
 import logging
@@ -34,6 +40,7 @@ from lst.contracts.events import (
     EngineStatsRow,
     EngineStatuses,
     ResetStats,
+    RestartWorker,
     StatsSnapshot,
     WorkerStatuses,
 )
@@ -45,15 +52,32 @@ from lst.contracts.models import (
     ModelCatalog,
     RefreshModelCatalog,
 )
+from lst.contracts.ocr_engines import (
+    CancelOcrEngineInstall,
+    InstallOcrEngine,
+    OcrEngineCatalog,
+    OcrEngineInfo,
+    OcrEngineKind,
+    UninstallOcrEngine,
+)
+from lst.contracts.updates import (
+    CheckForUpdates,
+    DownloadUpdate,
+    InstallUpdate,
+    UpdateState,
+    UpdateStatus,
+)
 from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus
 from lst.ui import i18n
+from lst.ui.common.messages import HotkeyRecordingChanged
 from lst.ui.settings.entries import (
     KEYLESS_KINDS,
     OPTIONAL_KEY_PROVIDERS,
     EngineDraft,
     EngineEntry,
     Entry,
+    SentEngineOrders,
     engine_entries,
     new_entry,
     raw_entries,
@@ -68,7 +92,6 @@ from lst.ui.settings.schema import (
     FieldSpec,
     field_spec,
     nested_patch,
-    read_path,
     read_value,
 )
 
@@ -92,6 +115,10 @@ class Topic(StrEnum):
     LANGUAGE = "language"
     CONNECTION = "connection"
     CACHE = "cache"
+    OCR_ENGINES = "ocr_engines"
+    """OCR 引擎目录（OcrEngineCatalog）有变化。"""
+    UPDATES = "updates"
+    """更新状态（UpdateStatus）或手动检查的反馈有变化。"""
     OPEN = "open"
     """收到 OpenSettings：视图应当显示并激活窗口。"""
 
@@ -110,6 +137,29 @@ class CheckState(StrEnum):
     CHECKING = "checking"
     OK = "ok"
     FAILED = "failed"
+
+
+class CheckFeedback(StrEnum):
+    """用户点“检查更新”之后，更新卡片上给出的反馈。"""
+
+    CHECKING = "checking"
+    UP_TO_DATE = "up_to_date"
+    AVAILABLE = "available"
+    FAILED = "failed"
+
+
+_CHECK_RESULTS: Final = {
+    UpdateState.UP_TO_DATE: CheckFeedback.UP_TO_DATE,
+    UpdateState.AVAILABLE: CheckFeedback.AVAILABLE,
+    UpdateState.READY: CheckFeedback.AVAILABLE,
+    UpdateState.ERROR: CheckFeedback.FAILED,
+}
+"""手动检查结束后的状态 → 反馈。IDLE、DOWNLOADING、INSTALLING 不是检查的结果，反馈清除。"""
+
+_NO_CHECK_STATES: Final = frozenset(
+    {UpdateState.CHECKING, UpdateState.DOWNLOADING, UpdateState.INSTALLING, UpdateState.READY}
+)
+"""不能手动检查更新的状态。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,16 +203,21 @@ class SettingsPresenter:
         self.worker_statuses: WorkerStatuses | None = None
         self.catalog: ModelCatalog | None = None
         self.stats: tuple[EngineStatsRow, ...] = ()
-        self.stats_loaded = False
         self.last_cache_cleared: int | None = None
+        self.ocr_engines: OcrEngineCatalog | None = None
+        self.update_status: UpdateStatus | None = None
+        self.check_feedback: CheckFeedback | None = None
+        """最近一次手动检查更新的反馈；没有手动检查过、或状态已经离开检查结果时为 None。"""
+        self._feedback_state: UpdateState | None = None
         self._rejections: dict[Location, str] = {}
         self._draft = EngineDraft()
-        self._sent_ids: list[str] = []
+        self._sent_orders = SentEngineOrders()
         self._connections: dict[str, ConnectionResult] = {}
         self._keys_set: set[str] = set()
         self._keys_cleared: set[str] = set()
         self._language: str | None = None
         self._models_requested = False
+        self._hotkey_recording = False
         self.pending_select: str | None = None
         """刚添加的实例号：引擎列表出现它之后，视图选中它。"""
 
@@ -174,13 +229,18 @@ class SettingsPresenter:
         self.engine_statuses = self._bus.latest(EngineStatuses)
         self.worker_statuses = self._bus.latest(WorkerStatuses)
         self.catalog = self._bus.latest(ModelCatalog)
+        self.ocr_engines = self._bus.latest(OcrEngineCatalog)
+        self.update_status = self._bus.latest(UpdateStatus)
         snapshot = self._bus.latest(StatsSnapshot)
         if snapshot is not None:
-            self.stats, self.stats_loaded = snapshot.engines, True
+            self.stats = snapshot.engines
         self._apply_language()
 
     def close(self) -> None:
-        """之后不再响应任何消息和操作。重复调用没有效果。"""
+        """之后不再响应任何消息和操作。重复调用没有效果。正在录入热键时先请热键模块恢复全局热键。"""
+        if self._closed:
+            return
+        self.set_hotkey_recording(False)
         self._closed = True
         self._listeners.clear()
 
@@ -233,15 +293,14 @@ class SettingsPresenter:
             return
         self.config = config
         self._draft.confirm(config)
+        self._sent_orders.confirm(config)
         self._apply_language()
-        self._notify(Topic.CONFIG, Topic.ENGINES)
+        # 只通知 CONFIG：引擎列表、统计表等依赖配置的视图都按 CONFIG 刷新，再通知 ENGINES 会让它们刷新两遍。
+        self._notify(Topic.CONFIG)
 
     def _apply_language(self) -> None:
         """界面语言。组合根也会设置它，但两个处理函数谁先执行没有保证，所以这里自己设置，保证文案即时刷新。"""
-        raw = read_path(self.config, "ui", ("language",))
-        if not isinstance(raw, str):
-            return
-        applied = i18n.set_language(raw)
+        applied = i18n.apply_config_language(self.config)
         if applied != self._language:
             first = self._language is None
             self._language = applied
@@ -284,9 +343,9 @@ class SettingsPresenter:
     def _translate_location(self, location: tuple[str | int, ...]) -> Location:
         """引擎的下标换成实例号；密钥条目换成对应实例的 API key 卡片。"""
         if len(location) >= 2 and location[0] == "engines" and isinstance(location[1], int):
-            index = location[1]
-            if 0 <= index < len(self._sent_ids):
-                return ("engines", self._sent_ids[index], *location[2:])
+            engine_id = self._sent_orders.resolve(location[1])
+            if engine_id is not None:
+                return ("engines", engine_id, *location[2:])
             return location
         if len(location) == 2 and location[0] == "secrets" and isinstance(location[1], str):
             for entry in engine_entries(self.config):
@@ -353,7 +412,7 @@ class SettingsPresenter:
 
     def _send_engines(self, entries: list[Entry]) -> None:
         self._draft.sent(entries)
-        self._sent_ids = [str(entry.get("id")) for entry in entries]
+        self._sent_orders.add(entries)
         self._bus.send(UpdateConfig({"engines": cast(JsonValue, entries)}))
 
     def _ordered_working(self) -> list[Entry]:
@@ -409,8 +468,11 @@ class SettingsPresenter:
         """添加一个实例，放在列表最后。返回 {字段名: 说明}；为空表示已发出。
 
         实例号由名称生成；需要 API key 的类别同时分配 keyring 条目名（与实例号相同）。
-        api_key 不为空时先发 UpdateSecret，再发 UpdateConfig。
+        api_key 去掉首尾空白后不为空时先发 UpdateSecret，再发 UpdateConfig；只有空白时当作没有填写。
         """
+        if self._closed:
+            return {}
+        key = api_key.strip() if api_key is not None else ""
         entries = self._ordered_working()
         taken = {str(entry.get("id")) for entry in entries}
         entry, errors = new_entry(
@@ -425,10 +487,12 @@ class SettingsPresenter:
             entry["secret"] = secret
         entries.append(entry)
         self.pending_select = engine_id
-        if api_key and secret is not None:
+        if secret is not None and not key:
+            self._keys_cleared.add(engine_id)  # 新实例的条目名是新分配的，还没有保存过 key
+        if key and secret is not None:
             self._keys_set.add(engine_id)
             self._logger.info("设置窗口：为新实例 %s 提交 API key", engine_id)
-            self._bus.send(UpdateSecret(secret, api_key))
+            self._bus.send(UpdateSecret(secret, key))
         self._logger.info("设置窗口：添加引擎实例 %s（%s）", engine_id, kind)
         self._send_engines(entries)
         return {}
@@ -480,8 +544,12 @@ class SettingsPresenter:
         return entry is not None and entry.provider in OPTIONAL_KEY_PROVIDERS
 
     def set_api_key(self, engine_id: str, key: str) -> bool:
-        """提交一个实例的 API key。key 只经由 UpdateSecret 发送，不写日志，不进配置。返回是否发出。"""
-        if self._closed or not key.strip():
+        """提交一个实例的 API key。key 只经由 UpdateSecret 发送，不写日志，不进配置。返回是否发出。
+
+        粘贴的 key 常带首尾空格或换行，发送前去掉。只有空白时不发送，状态也不变（删除走 ``clear_api_key``）。
+        """
+        key = key.strip()
+        if self._closed or not key:
             return False
         entry = self.engine(engine_id)
         if entry is None or entry.kind in self._keyless_kinds:
@@ -540,7 +608,7 @@ class SettingsPresenter:
     def on_stats(self, snapshot: StatsSnapshot) -> None:
         if self._closed:
             return
-        self.stats, self.stats_loaded = snapshot.engines, True
+        self.stats = snapshot.engines
         self._notify(Topic.STATS)
 
     def reset_stats(self) -> None:
@@ -594,6 +662,100 @@ class SettingsPresenter:
             self._logger.info("设置窗口：删除本地翻译模型 %s", model_id)
             self._bus.send(DeleteModel(model_id))
 
+    # ------------------------------------------------------------------ OCR 引擎
+
+    def on_ocr_engines(self, catalog: OcrEngineCatalog) -> None:
+        if self._closed:
+            return
+        self.ocr_engines = catalog
+        self._notify(Topic.OCR_ENGINES)
+
+    def ocr_engine(self, kind: OcrEngineKind) -> OcrEngineInfo | None:
+        return self.ocr_engines.engine(kind) if self.ocr_engines is not None else None
+
+    @property
+    def current_ocr_engine(self) -> OcrEngineKind | None:
+        """配置里当前使用的 OCR 引擎（[ocr].engine）。组合根没有注入 [ocr] 节时取引擎目录里的 active。"""
+        raw = self.value("ocr", ("engine",))
+        if isinstance(raw, str):
+            try:
+                return OcrEngineKind(raw)
+            except ValueError:
+                return None
+        return self.ocr_engines.active if self.ocr_engines is not None else None
+
+    def set_ocr_engine(self, kind: OcrEngineKind) -> None:
+        """设为当前引擎：发送 UpdateConfig {"ocr": {"engine": ...}}。"""
+        if self._closed or kind is self.current_ocr_engine:
+            return
+        self.set_value("ocr", ("engine",), kind.value)
+
+    def install_ocr_engine(self, kind: OcrEngineKind) -> None:
+        """下载并安装（也用于出错后的重试）。需要联网，只在用户点按钮时发生（需求 PRV-01）。"""
+        if not self._closed:
+            self._logger.info("设置窗口：安装 OCR 引擎 %s", kind.value)
+            self._bus.send(InstallOcrEngine(kind))
+
+    def cancel_ocr_engine_install(self, kind: OcrEngineKind) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：取消安装 OCR 引擎 %s", kind.value)
+            self._bus.send(CancelOcrEngineInstall(kind))
+
+    def uninstall_ocr_engine(self, kind: OcrEngineKind) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：卸载 OCR 引擎 %s", kind.value)
+            self._bus.send(UninstallOcrEngine(kind))
+
+    # ------------------------------------------------------------------ 应用更新
+
+    def on_update_status(self, status: UpdateStatus) -> None:
+        """记下更新状态，维护手动检查的反馈。
+
+        反馈只描述“这次检查的结果”：检查中收到的第一个非 CHECKING 状态决定反馈，之后状态一旦变化
+        （例如自动检查又开始了，或者开始下载），反馈就清除。否则一次检查失败的反馈会一直留着，
+        之后的下载失败也会被写成“检查失败”。
+        """
+        if self._closed:
+            return
+        self.update_status = status
+        if self.check_feedback is CheckFeedback.CHECKING:
+            if status.state is not UpdateState.CHECKING:
+                self.check_feedback = _CHECK_RESULTS.get(status.state)
+                self._feedback_state = status.state if self.check_feedback is not None else None
+        elif self.check_feedback is not None and status.state is not self._feedback_state:
+            self.check_feedback = None
+            self._feedback_state = None
+        self._notify(Topic.UPDATES)
+
+    @property
+    def can_check_updates(self) -> bool:
+        """现在能否手动检查：更新服务已启动，没有在检查、下载或启动安装程序，安装包也没有下载好。
+
+        安装包已下载（READY）时更新服务不再检查，按钮因此不可用，用户应当安装或等下一次启动。
+        """
+        status = self.update_status
+        return status is not None and status.state not in _NO_CHECK_STATES
+
+    def check_updates(self) -> None:
+        """手动检查更新（需要联网，只在用户点按钮时发生）。检查结束后无论结果如何都给出反馈。"""
+        if self._closed or not self.can_check_updates:
+            return
+        self.check_feedback = CheckFeedback.CHECKING
+        self._feedback_state = None
+        self._logger.info("设置窗口：手动检查更新")
+        self._bus.send(CheckForUpdates(manual=True))
+        self._notify(Topic.UPDATES)
+
+    def download_update(self) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：下载更新")
+            self._bus.send(DownloadUpdate())
+
+    def install_update(self) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：安装更新")
+            self._bus.send(InstallUpdate())
+
     # ------------------------------------------------------------------ 推理进程
 
     def on_workers(self, statuses: WorkerStatuses) -> None:
@@ -601,6 +763,21 @@ class SettingsPresenter:
             return
         self.worker_statuses = statuses
         self._notify(Topic.WORKERS)
+
+    # ------------------------------------------------------------------ 热键录入
+
+    def set_hotkey_recording(self, active: bool) -> None:
+        """热键录入开始或结束。状态变化时发布 HotkeyRecordingChanged，热键模块据此暂停或恢复全局热键。"""
+        if self._closed or active == self._hotkey_recording:
+            return
+        self._hotkey_recording = active
+        self._bus.publish(HotkeyRecordingChanged(active))
+
+    def restart_worker(self, worker: str) -> None:
+        """重新启动一个出错的推理进程（"ocr" 或 "nmt"）。组合根处理 RestartWorker。"""
+        if not self._closed:
+            self._logger.info("设置窗口：重新启动推理进程 %s", worker)
+            self._bus.send(RestartWorker(worker))
 
     def on_open_settings(self) -> None:
         if not self._closed:
@@ -614,6 +791,7 @@ def _priority_of(entry: Mapping[str, JsonValue]) -> int:
 
 __all__ = [
     "API_KEY_FIELD",
+    "CheckFeedback",
     "CheckState",
     "ConnectionResult",
     "KeyState",

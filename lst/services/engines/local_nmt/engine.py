@@ -28,8 +28,14 @@ from lst.contracts.worker_protocol import (
     TranslateSegment,
     WorkerReply,
 )
+from lst.services._shared.aio import close_quietly
 from lst.services.engines.common import EngineSettings, build_info
-from lst.services.engines.local_nmt.capabilities import CapabilityError, parse_capabilities, read_fingerprint
+from lst.services.engines.local_nmt.capabilities import (
+    CapabilityError,
+    NmtCapabilities,
+    parse_capabilities,
+    read_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +108,8 @@ class _Pending:
 class LocalNmtEngine:
     """本地 NMT 引擎实例。
 
-    supports 每次都读取通道上能力清单的当前值，NMT 进程重载模型后结果随之改变。模型指纹只在创建时
+    supports 每次都读取通道上能力清单的当前值，NMT 进程重载模型后结果随之改变。解析结果按能力清单对象
+    缓存：通道换上新的清单对象时才重新解析（调度器每个会话对每个语言对都要问一次）。模型指纹只在创建时
     读取一次：指纹变化后由装配方重建实例，EngineInfo 随之改变，调度器据此替换实例（架构文档 6.5 节）。
     """
 
@@ -111,6 +118,8 @@ class LocalNmtEngine:
         self._processing_timeout_s = settings.processing_timeout_s
         # 最近一次警告过的格式不对的能力清单；同一份清单只警告一次。
         self._warned_capabilities: dict[str, JsonValue] | None = None
+        # 最近一次解析的能力清单对象及其结果；结果为 None 表示格式不对。
+        self._parsed: tuple[Mapping[str, JsonValue], NmtCapabilities | None] | None = None
         worker_fingerprint = _worker_fingerprint(channel.capabilities, settings.id)
         self._info = build_info(
             settings,
@@ -136,12 +145,15 @@ class LocalNmtEngine:
         raw = self._channel.capabilities
         if raw is None:
             return False
-        try:
-            capabilities = parse_capabilities(raw)
-        except CapabilityError as exc:
-            self._warn_capabilities(raw, exc)
-            return False
-        return capabilities.supports(source, target)
+        parsed = self._parsed
+        if parsed is None or parsed[0] is not raw:
+            try:
+                capabilities = parse_capabilities(raw)
+            except CapabilityError as exc:
+                self._warn_capabilities(raw, exc)
+                capabilities = None
+            parsed = self._parsed = (raw, capabilities)
+        return parsed[1] is not None and parsed[1].supports(source, target)
 
     async def translate(self, job: Job) -> AsyncGenerator[SegmentOutcome]:
         """把任务作为一个请求交给 NMT 进程，每收到一段的结果就产出一次。
@@ -215,8 +227,8 @@ class LocalNmtEngine:
         finally:
             if not settled:
                 self._cancel(handle, request)
-            if replies is not None:
-                await _close_replies(replies)
+            if replies is not None and await close_quietly(replies):
+                logger.warning("本地 NMT 实例 %s 关闭回复流时出错", self._info.id)
 
     # ---- 请求与回复 ----
 
@@ -369,15 +381,6 @@ def _worker_fingerprint(capabilities: Mapping[str, JsonValue] | None, engine_id:
             "本地 NMT 实例 %s：NMT 进程的能力清单格式不对（%s），模型指纹按空串处理", engine_id, exc
         )
         return ""
-
-
-async def _close_replies(replies: AsyncIterator[WorkerReply]) -> None:
-    """关闭回复流，让它的 finally 及时执行。普通异步迭代器没有 aclose，跳过。"""
-    if isinstance(replies, AsyncGenerator):
-        try:
-            await replies.aclose()
-        except Exception as exc:
-            logger.warning("关闭 NMT 回复流时出错（%s）", type(exc).__name__)
 
 
 def create_local_nmt_engine(settings: LocalNmtSettings, channel: WorkerChannel) -> Engine:

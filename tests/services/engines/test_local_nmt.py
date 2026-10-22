@@ -45,6 +45,8 @@ from lst.contracts.worker_protocol import (
     encode,
 )
 from lst.services.engines.local_nmt import LocalNmtSettings, create_local_nmt_engine
+from lst.services.engines.local_nmt import engine as engine_module
+from lst.services.engines.local_nmt.capabilities import NmtCapabilities
 from lst.services.engines.local_nmt.engine import ERROR_CANCELLED, ERROR_MALFORMED, ERROR_SUBMIT
 from lst.services.race import RaceScheduler
 from tests.services.engines.mt_helpers import assert_private, capture_all, collect, make_job
@@ -351,6 +353,26 @@ class TestSupports:
         channel.capabilities = {"pairs": [["en"]]}
         engine.supports(EN, ZH)
         assert len(engine_warnings(caplog, "能力清单格式不对")) == 2
+
+    def test_capabilities_parsed_once_per_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """同一份能力清单对象只解析一次；通道换上新的清单对象时重新解析。"""
+        calls: list[object] = []
+        real = engine_module.parse_capabilities
+
+        def counting(raw: Mapping[str, JsonValue]) -> NmtCapabilities:
+            calls.append(raw)
+            return real(raw)
+
+        monkeypatch.setattr(engine_module, "parse_capabilities", counting)
+        channel = FakeChannel()
+        engine = engine_for(channel)
+        for _ in range(5):
+            assert engine.supports(EN, ZH)
+            assert engine.supports(JA, ZH)
+        assert len(calls) == 1
+        channel.capabilities = dict(CAPS)
+        assert engine.supports(EN, ZH)
+        assert len(calls) == 2
 
     def test_follows_capability_changes(self) -> None:
         channel = FakeChannel(None)

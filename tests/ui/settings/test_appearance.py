@@ -13,6 +13,7 @@ from lst.ui.settings.controls import SettingCard, SwitchEditor, ThemedLabel
 from lst.ui.settings.window import NavDelegate, SettingsWindow
 from lst.ui.theme import TOKENS, apply_app_style, is_dark, theme_colors
 from tests.ui.settings.conftest import Harness
+from tests.ui.settings.support import default_config
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -192,6 +193,9 @@ async def test_error_text_goes_below_the_control_without_moving_it(harness: Harn
 
 
 async def test_switch_shows_on_off_text_and_is_a_toggle_not_a_checkbox(harness: Harness) -> None:
+    await harness.publish(
+        default_config({"ocr": {"engine": "paddle"}}, revision=2)
+    )  # 表格等开关只对 PaddleOCR 可用
     window = await harness.open()
     editor = next(b.editor for b in window.page("capture").bindings if b.location == ("ocr", "table"))
     assert isinstance(editor, SwitchEditor)

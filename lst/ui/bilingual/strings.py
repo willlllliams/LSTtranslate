@@ -1,68 +1,23 @@
-"""双语窗口的文案表与语言下拉框的语言列表（需求 CFG-05）。导入本模块时登记文案。"""
+"""双语窗口的文案表（需求 CFG-05）。导入本模块时登记文案。语言列表与语言名在 lst.ui.common.text 里。"""
 
 from lst.contracts.ids import Lang
+from lst.ui.common.text import LANGUAGES
+from lst.ui.common.text import language_name as common_language_name
 from lst.ui.i18n import Catalog, register_catalog, tr
 
-# 语言下拉框里“自动”之后的常用语言，按使用频率排列。代码统一用 BCP 47 规范写法。
-LANGUAGES: tuple[Lang, ...] = tuple(
-    Lang(code)
-    for code in (
-        "zh-Hans",
-        "zh-Hant",
-        "en",
-        "ja",
-        "ko",
-        "fr",
-        "de",
-        "es",
-        "ru",
-        "pt",
-        "it",
-        "ar",
-        "vi",
-        "th",
-        "id",
-        "tr",
-        "nl",
-        "pl",
-        "uk",
-    )
-)
-
-_LANGUAGE_NAMES: dict[str, tuple[str, str]] = {
-    "zh-Hans": ("简体中文", "Chinese (Simplified)"),
-    "zh-Hant": ("繁体中文", "Chinese (Traditional)"),
-    "en": ("英语", "English"),
-    "ja": ("日语", "Japanese"),
-    "ko": ("韩语", "Korean"),
-    "fr": ("法语", "French"),
-    "de": ("德语", "German"),
-    "es": ("西班牙语", "Spanish"),
-    "ru": ("俄语", "Russian"),
-    "pt": ("葡萄牙语", "Portuguese"),
-    "it": ("意大利语", "Italian"),
-    "ar": ("阿拉伯语", "Arabic"),
-    "vi": ("越南语", "Vietnamese"),
-    "th": ("泰语", "Thai"),
-    "id": ("印尼语", "Indonesian"),
-    "tr": ("土耳其语", "Turkish"),
-    "nl": ("荷兰语", "Dutch"),
-    "pl": ("波兰语", "Polish"),
-    "uk": ("乌克兰语", "Ukrainian"),
-}
+__all__ = ["CATALOG", "LANGUAGES", "language_name"]
 
 
 def language_name(lang: Lang | None) -> str:
     """语言代码的显示名；None 表示“自动”。"""
     if lang is None:
         return tr("bilingual.lang.auto")
-    return tr(f"bilingual.lang.{lang}")
+    return common_language_name(lang)
 
 
 CATALOG: Catalog = {
     "bilingual.window.title": {"zh-Hans": "双语互译", "en": "Bilingual Translator"},
     "bilingual.lang.auto": {"zh-Hans": "自动", "en": "Auto"},
-    **{f"bilingual.lang.{code}": {"zh-Hans": zh, "en": en} for code, (zh, en) in _LANGUAGE_NAMES.items()},
     "bilingual.source.label": {"zh-Hans": "源语言", "en": "Source language"},
     "bilingual.target.label": {"zh-Hans": "目标语言", "en": "Target language"},
     "bilingual.swap": {"zh-Hans": "交换", "en": "Swap"},

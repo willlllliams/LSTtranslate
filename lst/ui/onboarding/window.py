@@ -6,12 +6,10 @@
 
 from collections.abc import Callable, Sequence
 from itertools import pairwise
-from typing import cast
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QCloseEvent, QFont, QGuiApplication, QScreen
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -21,16 +19,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lst.ui.common.window import SecondaryWindow
 from lst.ui.i18n import tr
 from lst.ui.onboarding.presenter import ModelRow, OnboardingIntents, OnboardingScreen
-from lst.ui.theme import TOKENS, enable_mica, is_dark
+from lst.ui.theme import TOKENS
 
 DEFAULT_SIZE = QSize(600, 520)
-
-
-def _primary_screen() -> QScreen | None:
-    # 类型桩把 primaryScreen 标成非空，没有屏幕时它返回 None。
-    return cast(QScreen | None, QGuiApplication.primaryScreen())
 
 
 class ModelRowWidget(QFrame):
@@ -95,16 +89,12 @@ class ModelRowWidget(QFrame):
         self.retry_button.setVisible(row.can_retry)
 
 
-class OnboardingWindow(QWidget):
+class OnboardingWindow(SecondaryWindow):
     """首次运行引导窗口。控件以公开属性暴露，供测试检查。"""
 
     def __init__(self) -> None:
-        super().__init__(None, Qt.WindowType.Window)
-        # 常驻托盘程序的次要窗口，关闭它不应让程序退出。
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        super().__init__()
         self._intents: OnboardingIntents | None = None
-        self._allow_close = False
-        self._backdrop_tried = False
         self._placed = False
         self._rows: list[ModelRowWidget] = []
 
@@ -230,53 +220,13 @@ class OnboardingWindow(QWidget):
 
     # ------------------------------------------------------------------ 显示与隐藏
 
-    def is_shown(self) -> bool:
-        return self.isVisible() and not self.isMinimized()
-
     def present(self) -> None:
+        """显示并激活窗口。第一次显示时放到主屏中央；焦点给“下载”，不可用时给“完成”。
+
+        标题栏的关闭按钮只隐藏窗口，不记录“已完成”：下次启动时引导会再次出现。
+        """
         if not self._placed:
             self._placed = True
-            primary = _primary_screen()
-            if primary is not None:
-                area = primary.availableGeometry()
-                frame = self.frameGeometry()
-                self.move(area.center() - frame.center() + frame.topLeft())
-        self._apply_backdrop()
-        if self.isMinimized():
-            self.showNormal()
-        else:
-            self.show()
-        # 不显示在屏幕上的窗口（WA_DontShowOnScreen，例如原生平台上的测试）不去抢前台。
-        if not self.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen):
-            self.raise_()
-            self.activateWindow()
+            self.center_on_primary()
         target = self.download_button if self.download_button.isEnabled() else self.finish_button
-        target.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-
-    def conceal(self) -> None:
-        self.hide()
-
-    def _apply_backdrop(self) -> None:
-        """首次显示前尝试 Mica 背景（需求 UI-01）。失败时退回不透明背景，否则窗口会渲染成黑色。"""
-        if self._backdrop_tried:
-            return
-        self._backdrop_tried = True
-        if QGuiApplication.platformName() != "windows":
-            return
-        app = QApplication.instance()
-        dark = is_dark(app) if isinstance(app, QApplication) else False
-        if not enable_mica(self, dark=dark):
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-
-    def close_for_good(self) -> None:
-        """模块停止时真正关闭窗口；其他情况下关闭按钮只隐藏窗口。"""
-        self._allow_close = True
-        self.close()
-
-    def closeEvent(self, event: QCloseEvent) -> None:
-        if self._allow_close:
-            event.accept()
-            return
-        # 标题栏的关闭按钮只隐藏窗口，不记录“已完成”：下次启动时引导会再次出现。
-        event.ignore()
-        self.hide()
+        self.present_window(target)

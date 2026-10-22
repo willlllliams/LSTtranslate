@@ -1,6 +1,7 @@
 """SQLite 译文缓存（需求 RACE-08，架构文档 2.9.3、6.4 节）。
 
-表的主键是缓存键五个字段的 SHA-256，原文只以哈希形式存在；语言、实例号、配置指纹和译文明文保存。
+表的主键是缓存键各字段的 SHA-256，原文只以哈希形式存在；语言、实例号、配置指纹和译文明文保存。
+截图摘要（CacheKey.image_digest）只参与主键，不单独成列。
 last_used 是使用序号：每次写入或命中时取一个递增的整数，淘汰时删除序号最小的条目。
 """
 
@@ -11,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from lst.contracts.ports import CacheKey
-from lst.services.cache._sqlite import SqliteThread, ensure_schema, transaction
+from lst.services._shared.sqlite import SqliteThread, ensure_schema, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,17 @@ CREATE INDEX translations_last_used ON translations (last_used);
 def cache_digest(key: CacheKey) -> bytes:
     """计算缓存键的 SHA-256。
 
-    五个字段依次写成“UTF-8 字节长度（8 字节大端整数）+ UTF-8 字节”再拼接。
+    原文、源语言、目标语言、实例号、配置指纹五个字段，加上非空的截图摘要，依次写成
+    “UTF-8 字节长度（8 字节大端整数）+ UTF-8 字节”再拼接。
     长度前缀让拼接结果与字段一一对应：直接拼接时，原文 "ab" 加源语言 "c" 与原文 "a" 加源语言 "bc"
-    会得到同一个串。
+    会得到同一个串。截图摘要为空时不写入，没有截图的键与加入这个字段之前完全相同，已有的缓存条目继续有效；
+    带摘要的串比不带的多出一个字段，两者不会相同。
     """
     digest = hashlib.sha256()
-    for field in (key.text, key.source, key.target, key.engine_id, key.fingerprint):
+    fields = [key.text, key.source, key.target, key.engine_id, key.fingerprint]
+    if key.image_digest:
+        fields.append(key.image_digest)
+    for field in fields:
         data = field.encode("utf-8", "surrogatepass")
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)

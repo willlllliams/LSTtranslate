@@ -11,7 +11,7 @@
 原子改名为 ``<名>.argosmodel`` → 删除同一语言对的旧版本 → 发布 ``ModelsInstalled``。失败或取消时删除临时文件。
 
 线程：模块的状态只在事件循环线程上读写。扫描、校验、写文件、改名、删除这些磁盘操作都放进
-``asyncio.to_thread``，网络用 httpx 的异步流式接口，下载大文件时事件循环照常运转（需求 REL-04）。
+线程池（_shared.aio.blocking），网络用 httpx 的异步流式接口，下载大文件时事件循环照常运转（需求 REL-04）。
 """
 
 import asyncio
@@ -22,7 +22,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, BinaryIO, Final
+from typing import Any, Final
 
 import httpx
 
@@ -43,6 +43,8 @@ from lst.contracts.models import (
     version_key,
 )
 from lst.kernel import ModuleContext
+from lst.services._shared.aio import blocking
+from lst.services._shared.download import content_length, open_for_write, stream_to_file
 from lst.services.models.argos import (
     PACKAGE_SUFFIX,
     PART_SUFFIX,
@@ -85,37 +87,6 @@ class _Failure(Exception):
         super().__init__(detail)
         self.code = code
         self.detail = detail
-
-
-async def _blocking[**P, T](fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-    """在线程池里执行一个同步调用。
-
-    等待期间被取消时，先等线程里的调用结束，再把取消传出去。线程里的调用无法中断，提前返回的话，
-    随后的清理（关闭、删除临时文件）会与仍在进行的读写同时发生，Windows 上还会因为文件被占用而删不掉。
-    """
-    future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
-    try:
-        return await asyncio.shield(future)
-    except asyncio.CancelledError:
-        await asyncio.wait({future})
-        if not future.cancelled():
-            future.exception()  # 取走结果，避免“异常没有被取回”的警告
-        raise
-
-
-def _open_for_write(path: Path) -> BinaryIO:
-    return path.open("wb")
-
-
-def _content_length(response: httpx.Response) -> int | None:
-    value = response.headers.get("Content-Length")
-    if value is None:
-        return None
-    try:
-        length = int(value)
-    except ValueError:
-        return None
-    return length if length > 0 else None
 
 
 class ModelsModule:
@@ -177,10 +148,10 @@ class ModelsModule:
             raise RuntimeError("模型管理模块已经启动")
         self._ctx = ctx
         self._logger = ctx.logger
-        removed = await _blocking(remove_partial_files, self._models_dir, self._logger)
+        removed = await blocking(remove_partial_files, self._models_dir, self._logger)
         if removed:
             self._logger.info("已删除 %d 个上次下载中断留下的临时文件", removed)
-        self._installed = await _blocking(scan_installed, self._models_dir, self._logger)
+        self._installed = await blocking(scan_installed, self._models_dir, self._logger)
         self._logger.info("模型目录 %s 中有 %d 个可用的本地翻译模型", self._models_dir, len(self._installed))
         ctx.subscribe(RefreshModelCatalog, self._on_refresh)
         ctx.subscribe(DownloadModels, self._on_download)
@@ -433,18 +404,20 @@ class ModelsModule:
         try:
             done, total = await self._fetch_package(model_id, entry, part)
             self._set(model_id, DownloadProgress(DownloadState.VERIFYING, done, total))
-            meta = await _blocking(verify_download, part, entry.pair)
+            meta = await blocking(verify_download, part, entry.pair)
             if meta.version != entry.version:
                 self._logger.warning(
                     "模型包 %s 的版本是 %r，模型索引中是 %r", final.name, meta.version, entry.version
                 )
             obsolete = [package.path for package in self._installed.get(entry.pair, [])]
+            # 从改名开始到重新扫描结束都不接受取消：模型包一旦就位，这次下载就必须以“完成”收尾，
+            # 否则目录不更新、ModelsInstalled 不发布，而磁盘上新包已经装好、旧版本已被删除。
             self._installing = True
             try:
-                await _blocking(install_package, part, final, obsolete, self._logger)
+                await blocking(install_package, part, final, obsolete, self._logger)
+                self._installed = await blocking(scan_installed, self._models_dir, self._logger)
             finally:
                 self._installing = False
-            self._installed = await _blocking(scan_installed, self._models_dir, self._logger)
         except asyncio.CancelledError:
             await self._discard(part)
             self._logger.info("已取消模型 %s 的下载", model_id)
@@ -467,38 +440,30 @@ class ModelsModule:
 
     async def _fetch_package(self, model_id: str, entry: IndexEntry, part: Path) -> tuple[int, int | None]:
         """把模型包流式写入临时文件，返回（收到的字节数，总字节数）。"""
-        await _blocking(self._models_dir.mkdir, parents=True, exist_ok=True)
-        sink = await _blocking(_open_for_write, part)
+        await blocking(self._models_dir.mkdir, parents=True, exist_ok=True)
+        sink = await blocking(open_for_write, part)
         try:
             async with self._client.stream(
                 "GET", entry.url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
             ) as response:
                 if response.status_code != _HTTP_OK:
                     raise _Failure(ModelErrorCode.HTTP, f"HTTP {response.status_code}")
-                total = _content_length(response) or entry.size_bytes
+                total = content_length(response) or entry.size_bytes
                 self._set(model_id, DownloadProgress(DownloadState.DOWNLOADING, 0, total))
-                buffer = bytearray()
                 last = self._clock()
-                async for chunk in response.aiter_bytes():
-                    buffer += chunk
-                    if len(buffer) >= self._write_chunk:
-                        data = bytes(buffer)
-                        buffer.clear()
-                        await _blocking(sink.write, data)
+
+                def report(received: int) -> None:
+                    nonlocal last
                     now = self._clock()
                     if now - last >= self._interval:
                         last = now
-                        self._set(
-                            model_id,
-                            DownloadProgress(DownloadState.DOWNLOADING, response.num_bytes_downloaded, total),
-                        )
-                if buffer:
-                    await _blocking(sink.write, bytes(buffer))
-                done = response.num_bytes_downloaded
+                        self._set(model_id, DownloadProgress(DownloadState.DOWNLOADING, received, total))
+
+                done = await stream_to_file(response, sink, chunk_bytes=self._write_chunk, on_progress=report)
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise _Failure(classify_transport_error(exc), describe_error(exc)) from exc
         finally:
-            await _blocking(sink.close)
+            await blocking(sink.close)
         return done, total if total is not None else done
 
     async def _fail(
@@ -513,7 +478,7 @@ class ModelsModule:
 
     async def _discard(self, part: Path) -> None:
         try:
-            await _blocking(part.unlink, missing_ok=True)
+            await blocking(part.unlink, missing_ok=True)
         except OSError:
             self._logger.warning("无法删除临时文件 %s", part.name, exc_info=True)
 
@@ -528,8 +493,8 @@ class ModelsModule:
         if not packages:
             self._logger.warning("模型 %s 没有安装，忽略删除命令", command.id)
             return
-        deleted = await _blocking(delete_files, [package.path for package in packages], self._logger)
-        self._installed = await _blocking(scan_installed, self._models_dir, self._logger)
+        deleted = await blocking(delete_files, [package.path for package in packages], self._logger)
+        self._installed = await blocking(scan_installed, self._models_dir, self._logger)
         progress = self._downloads.get(command.id)
         if progress is not None and progress.state not in ACTIVE_DOWNLOAD_STATES:
             del self._downloads[command.id]

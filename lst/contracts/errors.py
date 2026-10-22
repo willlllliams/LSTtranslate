@@ -20,6 +20,7 @@ class ErrorCode(StrEnum):
     BAD_REQUEST = "engine.bad_request"  # 请求被拒绝（其他 4xx）
     BAD_RESPONSE = "engine.bad_response"  # 返回内容无法解析
     UNSUPPORTED_LANGUAGE = "engine.unsupported_language"  # 接口不支持该语言对
+    IMAGE_UNSUPPORTED = "engine.image_unsupported"  # 模型不支持图片输入，应关闭该实例的“附带截图”（ENG-07）
     MODEL_MISSING = "engine.model_missing"  # 本地模型未安装
     WORKER_CRASHED = "engine.worker_crashed"  # 推理进程崩溃
     INTERNAL = "engine.internal"  # 引擎实现内部的未预期异常

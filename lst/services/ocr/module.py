@@ -6,12 +6,16 @@
   像素帧是截图的 BGRA 字节，处理时限按模式和子能力分档（config.processing_timeout）。
 - RetryOcr：重新识别最近一次截屏（需求 OCR-08）。只有最近一次截屏的会话、并且上一次识别以失败结束时才
   重新提交；其他情况忽略并记日志。
-- AppConfig：解析 [ocr] 节，之后提交的请求使用新配置。识别模式、推理设备或识别语言变化时调用构造参数
-  ``on_reload_required``，由组合根让监管器重载 OCR 进程（见下文“重载”）。
+- AppConfig：解析 [ocr] 节，之后提交的请求使用新配置。OCR 引擎、识别模式、推理设备或识别语言变化时
+  要重载 OCR 进程，这件事由组合根负责（lst/app/bootstrap.py 按 config.process_key 判断），本模块不参与。
 - WorkerStatuses：只记录 OCR 进程的状态变化。“识别模型加载中”由覆盖窗口订阅同一状态显示（需求 OCR-07）；
   加载期间提交的请求在监管器里排队，就绪后自动发出。
 
-识别结果的处理：OcrResult 依次经过 decode_blocks、blocks_to_segments，发布 OcrCompleted；
+识别结果的处理：OcrResult 依次经过 decode_blocks、blocks_to_segments，发布 OcrCompleted。转换用的模式是
+处理该请求的 OCR 进程实际加载的模式：收到 Started 时从 channel.capabilities 的 mode 取得，取不到时用提交时
+配置的 effective_mode。配置在本模块里同步生效，组合根重载进程却要等旧进程退出、新进程就绪，这段时间里
+提交的请求带着新模式，却由按旧模式加载的进程处理（PaddleOCR 后端以进程设置的模式为准）；按进程的模式转换，
+结果的结构才与转换方式一致。
 RequestFailed 发布 OcrFailed，错误码取自 RequestFailed.code（未知取值按 engine.internal）。
 
 同一时刻只有一个识别任务（需求 OCR-06、CAP-06）：新的截屏到达时，模块取消上一个请求并停止读取它的回复，
@@ -46,7 +50,6 @@ from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed, RawImag
 from lst.contracts.ports import WorkerChannel, WorkerRequestHandle, WorkerState
 from lst.contracts.worker_protocol import (
     CANCELLED,
-    JsonValue,
     OcrRequest,
     OcrResult,
     RequestFailed,
@@ -57,10 +60,10 @@ from lst.kernel import EventBus, ModuleContext
 from lst.services.ocr.blocks import decode_blocks
 from lst.services.ocr.config import (
     OcrConfig,
-    needs_reload,
+    OcrMode,
+    effective_mode,
     processing_timeout,
     request_options,
-    worker_settings,
 )
 from lst.services.ocr.paragraphs import GeometricMerger, ParagraphMerger
 from lst.services.ocr.segments import blocks_to_segments
@@ -77,9 +80,6 @@ ERROR_NO_RESULT: Final = "OCR 进程的回复在给出结果之前就结束了"
 ERROR_CONVERT: Final = "转换识别结果出错"
 ERROR_CANCELLED: Final = "识别请求被取消，OCR 进程可能正在重启"
 
-type ReloadCallback = Callable[[dict[str, JsonValue]], None]
-"""请组合根重载 OCR 进程；参数是新的 Configure 内容（config.worker_settings）。"""
-
 
 @dataclass(slots=True)
 class _Capture:
@@ -91,7 +91,11 @@ class _Capture:
 
 @dataclass(slots=True, eq=False)
 class _Attempt:
-    """一次已提交的识别请求。config 是提交时的配置，结果按其中的模式转换。"""
+    """一次已提交的识别请求。
+
+    config 是提交时的配置；process_mode 是处理它的 OCR 进程实际加载的模式，收到 Started 时记下，
+    结果按它转换（见模块说明）。
+    """
 
     session_id: SessionId
     request: OcrRequest
@@ -100,6 +104,7 @@ class _Attempt:
     resubmits: int
     submitted_at: float
     started_at: float | None = None
+    process_mode: OcrMode | None = None
     task: asyncio.Task[None] | None = field(default=None, repr=False)
 
 
@@ -109,10 +114,6 @@ class OcrModule:
     channel 是 OCR 进程的 WorkerChannel（由组合根注入监管器）；merger 是文本模式的段落合并器，缺省时用默认
     参数的 GeometricMerger；clock 只用于计算日志里的耗时，缺省为 time.monotonic。
 
-    on_reload_required 在识别模式、推理设备或识别语言变化时调用，参数是新的 Configure 内容。重载由组合根执行，
-    通常是 ``lambda s: spawn(supervisor.reload(s))``；模块只判断“需要重载”这件事。模块启动时的配置是基准，
-    不触发回调：组合根启动监管器时用同一份 AppConfig 计算初始设置（config.worker_settings）。
-    回调为 None 时只记日志。
     """
 
     name = "ocr"
@@ -123,12 +124,10 @@ class OcrModule:
         *,
         merger: ParagraphMerger | None = None,
         clock: Callable[[], float] | None = None,
-        on_reload_required: ReloadCallback | None = None,
     ) -> None:
         self._channel = channel
         self._merger: ParagraphMerger = merger if merger is not None else GeometricMerger()
         self._clock = clock if clock is not None else time.monotonic
-        self._on_reload_required = on_reload_required
         self._logger = logging.getLogger(__name__)
         self._bus: EventBus | None = None
         self._running = False
@@ -158,7 +157,7 @@ class OcrModule:
     # ---- 生命周期 ----
 
     async def start(self, ctx: ModuleContext) -> None:
-        """订阅消息。总线上已有的 AppConfig 先同步应用一次，作为判断是否需要重载的基准。"""
+        """订阅消息。总线上已有的 AppConfig 先同步应用一次，之后提交的请求使用它。"""
         if self._bus is not None:
             raise RuntimeError("OCR 模块已经启动过")
         self._bus = ctx.bus
@@ -229,22 +228,13 @@ class OcrModule:
             return
         self._config = new
         self._logger.info(
-            "OCR 配置已更新：模式 %s，设备 %s，语言 %s，处理时限 %g 秒",
-            new.mode.value,
+            "OCR 配置已更新：引擎 %s，模式 %s，设备 %s，语言 %s，处理时限 %g 秒",
+            new.engine.value,
+            effective_mode(new).value,
             new.device.value,
             new.language,
             processing_timeout(new),
         )
-        if not needs_reload(old, new):
-            return
-        callback = self._on_reload_required
-        if callback is None:
-            self._logger.warning("识别模式、设备或语言已变化，但没有提供重载 OCR 进程的回调")
-            return
-        try:
-            callback(worker_settings(new))
-        except Exception:
-            self._logger.exception("请求重载 OCR 进程时出错")
 
     def _on_worker_statuses(self, message: WorkerStatuses) -> None:
         status = message.statuses.get(OCR_WORKER)
@@ -292,12 +282,13 @@ class OcrModule:
         self._attempt = attempt
         state = self._channel.state
         self._logger.info(
-            "会话 %s 提交识别请求 %s：%d×%d，%s 模式，处理时限 %g 秒%s",
+            "会话 %s 提交识别请求 %s：%d×%d，%s 引擎，%s 模式，处理时限 %g 秒%s",
             capture.session_id,
             request.request_id,
             image.width,
             image.height,
-            config.mode.value,
+            config.engine.value,
+            effective_mode(config).value,
             timeout_s,
             ""
             if state in (WorkerState.READY, WorkerState.BUSY)
@@ -331,6 +322,7 @@ class OcrModule:
                     continue
                 if isinstance(reply, Started):
                     attempt.started_at = self._clock()
+                    attempt.process_mode = self._process_mode()
                     self._logger.debug("OCR 进程开始处理请求 %s", request_id)
                     continue
                 self._attempt = None
@@ -363,7 +355,7 @@ class OcrModule:
         request = attempt.request
         try:
             blocks = decode_blocks(result.blocks, width=request.width, height=request.height)
-            segments = blocks_to_segments(blocks, attempt.config.mode, self._merger)
+            segments = blocks_to_segments(blocks, self._result_mode(attempt), self._merger)
         except Exception as exc:
             # 只记异常类型和调用栈，不记异常信息：自定义合并器的异常信息里可能带着文本。
             self._logger.error(
@@ -438,6 +430,31 @@ class OcrModule:
         task = attempt.task
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
+
+    def _process_mode(self) -> OcrMode | None:
+        """当前 OCR 进程实际加载的模式（Ready 能力清单里的 mode）；取不到或取值未知时为 None。"""
+        capabilities = self._channel.capabilities
+        raw = None if capabilities is None else capabilities.get("mode")
+        try:
+            return OcrMode(raw) if isinstance(raw, str) else None
+        except ValueError:
+            return None
+
+    def _result_mode(self, attempt: _Attempt) -> OcrMode:
+        """转换结果用的模式：处理该请求的进程的模式；没有记下时取当前进程的模式，再取不到时用提交时的配置。"""
+        submitted = effective_mode(attempt.config)
+        actual = attempt.process_mode if attempt.process_mode is not None else self._process_mode()
+        if actual is None or actual is submitted:
+            return submitted
+        self._logger.info(
+            "识别请求 %s 按 %s 模式提交，处理它的 OCR 进程加载的是 %s 模式（进程正在按新配置重载），"
+            "按 %s 模式转换",
+            attempt.request.request_id,
+            submitted.value,
+            actual.value,
+            actual.value,
+        )
+        return actual
 
     def _publish(self, message: OcrCompleted | OcrFailed) -> None:
         if self._bus is not None and self._running:

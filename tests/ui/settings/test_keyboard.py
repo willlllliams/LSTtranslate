@@ -95,8 +95,6 @@ def pages_with_selection(window: SettingsWindow) -> Iterator[SettingsPage]:
 async def test_tab_order_follows_the_visual_order_on_every_page(shown: SettingsWindow) -> None:
     for page in pages_with_selection(shown):
         stops = tab_stops(shown, page)
-        if page.page_id == "about":
-            continue  # 关于页只有一个暂时不可用的按钮，没有可以到达的控件
         assert stops, f"{page.page_id} 页没有可以用键盘到达的控件"
         assert_visual_order(shown, stops, page.page_id)
 
@@ -229,6 +227,9 @@ async def test_dropdown_changes_with_arrow_keys(harness: Harness) -> None:
 
 
 async def test_switch_works_with_the_space_key(harness: Harness) -> None:
+    await harness.publish(
+        default_config({"ocr": {"engine": "paddle"}}, revision=2)
+    )  # 表格等开关只对 PaddleOCR 可用
     window = await harness.open()
     window.show_page("capture")
     editor = next(b.editor for b in window.page("capture").bindings if b.location == ("ocr", "formula"))

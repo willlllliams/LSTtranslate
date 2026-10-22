@@ -7,7 +7,9 @@
 - 把段按语言对打包成任务，放进各实例的两级队列，按实例的并发上限执行（6.4 节）；
 - 节省模式下剪掉不可能改变显示的排队尝试：胜出者改变时即时剪枝，任务出队时兜底（RACE-05）；
 - 按入口维护当前会话，新会话开始时取消旧会话；引擎实例集合变化时让受影响的尝试结束（6.5 节）；
-- 把合并器的状态变化按帧合并后交给 sink（6.6 节）。
+- 把合并器的状态变化按帧合并后交给 sink（6.6 节）；
+- 截屏会话附带截图时，把截图交给接收截图的实例（EngineInfo.image_max_side 不为 None），
+  这些尝试的缓存键带上截图摘要（需求 ENG-07）。
 
 全部代码运行在同一个 asyncio 事件循环线程上，内部状态不加锁（架构文档第 3 章）。
 调度器对外只通过注入的 RaceSink 输出，不依赖事件总线，也不依赖 Qt。
@@ -17,7 +19,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
@@ -31,11 +33,13 @@ from lst.contracts.translation import (
     Engine,
     EngineInfo,
     Job,
+    JobImage,
     Segment,
     SegmentOutcome,
     SegmentView,
     SkipReason,
 )
+from lst.services._shared.aio import close_quietly
 from lst.services.race.merger import SegmentRace, SessionRace
 
 logger = logging.getLogger(__name__)
@@ -165,8 +169,12 @@ class _Lane:
 class _Session:
     """调度器内部的会话记录。closed 置位后，属于这个会话的结果和刷新全部丢弃。
 
-    lanes 是会话开始时的实例集合：之后新增或替换的实例不加入这个会话，extend_session 也只在其中选。
+    lanes 是参加这个会话的实例，按实例号索引，初值是会话开始时的实例集合。之后新增的实例不加入这个会话；
+    被替换（EngineInfo 变化）的计费实例由 extend_session 换成同号的新实例，其余被替换或移除的实例
+    仍留在这里，以 retired 标记。一个实例号在会话里的尝试属于 lanes 中该号的实例，
+    _owns 据此判断某个实例产生的结果是否还属于这个会话。
     last_flush 是上一次刷新的事件循环时刻，用来判断会话是否空闲（架构文档 6.6 节）。
+    images 是本会话的截图，按缩小时用的最大边长索引；双语窗口会话为空。
     """
 
     id: SessionId
@@ -175,7 +183,8 @@ class _Session:
     langs: dict[SegmentId, LangPair]
     context: str
     order: dict[SegmentId, int]
-    lanes: tuple[_Lane, ...]
+    lanes: dict[EngineId, _Lane]
+    images: Mapping[int, JobImage] = field(default_factory=lambda: dict[int, JobImage]())
     closed: bool = False
     last_flush: float | None = None
     flush_handle: asyncio.Handle | None = None
@@ -281,6 +290,7 @@ class RaceScheduler:
         *,
         include_billing: bool = True,
         context: str = "",
+        images: Mapping[int, JobImage] | None = None,
     ) -> None:
         """开始一个会话：取消同一入口的旧会话，让各段参赛，查缓存后把任务放进队列。
 
@@ -292,6 +302,8 @@ class RaceScheduler:
 
         include_billing 为 False 时，计费实例只有缓存命中的组合参赛（命中不产生费用），
         其余组合留给 extend_session（BI-04）；只因此暂时没有参赛者的段不标记跳过。
+        images 是截屏会话的截图，键是缩小时用的最大边长。image_max_side 为 n 的实例收到 images[n]，
+        没有对应项的实例不带图；不接收截图的实例总是不带图。
         方法在任务入队后返回，不等待翻译结果。参数非法时抛出 ValueError，旧会话不受影响。
         """
         self._check_open()
@@ -314,7 +326,8 @@ class RaceScheduler:
             langs={s.id: langs[s.id] for s in segments},
             context=context,
             order={s.id: i for i, s in enumerate(segments)},
-            lanes=tuple(self._lanes.values()),
+            lanes=dict(self._lanes),
+            images=dict(images) if images else {},
         )
         self._sessions[session_id] = session
         self._current[entry] = session
@@ -327,7 +340,7 @@ class RaceScheduler:
             if pair[0] == pair[1]:
                 race.skip(segment.id, SkipReason.SAME_LANGUAGE)
                 continue
-            lanes = self._supporting_lanes(session.lanes, pair, memo)
+            lanes = self._supporting_lanes(tuple(session.lanes.values()), pair, memo)
             if not lanes:
                 race.skip(segment.id, SkipReason.NO_ENGINE)
                 continue
@@ -345,8 +358,14 @@ class RaceScheduler:
     async def extend_session(self, session_id: SessionId) -> None:
         """让计费实例加入一个已经开始的会话（需求 BI-04 的 Ctrl+Enter）。
 
-        对每个没有被标记跳过的段，加入会话开始时就存在、仍未被移除、支持该段语言对、
-        但还没参赛的计费实例。已经参赛的组合（包括已被剪枝的）保持原状，不会重新参赛。
+        候选实例是会话实例集合（_Session.lanes）中的计费实例；其中在会话开始后被替换的，换成当前的
+        同号新实例，例如用户补填 API key 之后按 Ctrl+Enter。会话开始后才新增的实例号不参加。
+        对每个没有被标记跳过的段，候选实例中支持该段语言对的按下列规则处理：
+
+        - 还没参赛：加入；
+        - 被替换的实例，且旧实例在这个段上的尝试已经失败：新实例的尝试替换它，重新参赛；
+        - 其余已经参赛的组合（被剪枝的、成功的、新实例自己失败的）保持原状，不会重新参赛。
+
         会话不存在或已取消时什么也不做。
         """
         self._check_open()
@@ -355,7 +374,19 @@ class RaceScheduler:
             logger.debug("会话 %s 不存在或已取消，忽略 extend_session", session_id)
             return
         now = self._clock()
-        live = tuple(lane for lane in session.lanes if not lane.retired)
+        candidates: list[_Lane] = []
+        replaced: set[EngineId] = set()
+        for engine_id, lane in tuple(session.lanes.items()):
+            if lane.retired:
+                successor = self._lanes.get(engine_id)
+                if successor is None or not successor.info.billing:
+                    continue
+                # 旧实例在这个会话里已没有未结束的尝试（_retire 把它们记为失败）。换成新实例之后，
+                # 旧实例迟到的结果被 _owns 挡住；新实例再被移除时，_retire 能找到它在这里的尝试。
+                session.lanes[engine_id] = lane = successor
+                replaced.add(engine_id)
+            if lane.info.billing:
+                candidates.append(lane)
         memo: dict[LangPair, list[_Lane]] = {}
         pairs: list[_Pair] = []
         for race in session.race.segments():
@@ -363,10 +394,13 @@ class RaceScheduler:
                 continue
             segment = race.segment
             participants = set(race.participants())
-            for lane in self._supporting_lanes(live, session.langs[segment.id], memo):
-                if not lane.info.billing or lane.id in participants:
+            for lane in self._supporting_lanes(candidates, session.langs[segment.id], memo):
+                if lane.id not in participants:
+                    session.race.add(segment.id, lane.id, lane.info.priority, now)
+                elif lane.id in replaced and race.attempt(lane.id).state is AttemptState.FAILED:
+                    session.race.rejoin(segment.id, lane.id, lane.info.priority, now)
+                else:
                     continue
-                session.race.add(segment.id, lane.id, lane.info.priority, now)
                 pairs.append(_Pair(segment, lane, joined=True))
         if pairs:
             self._touch(session)
@@ -457,14 +491,24 @@ class RaceScheduler:
     ) -> None:
         """批量查缓存，命中的组合直接以耗时 0 完成（RACE-08）。缓存出错只记日志，按未命中处理。
 
-        未参赛的计费组合命中时先参赛再完成；没命中的保持不参赛。
+        未参赛的计费组合命中时先参赛再完成；没命中的保持不参赛。同一会话里原文相同的段共用一个缓存键，
+        命中时这些组合全部完成。查询期间实例被移除或替换的组合不再处理，它们的尝试已由 _retire 结束。
         """
-        keys: dict[CacheKey, _Pair] = {}
+        keys: dict[CacheKey, list[_Pair]] = {}
         for p in pairs:
             if p.joined and self._state(session, p.segment.id, p.lane.id) is not AttemptState.QUEUED:
                 continue
             source, target = session.langs[p.segment.id]
-            keys[CacheKey(p.segment.text, source, target, p.lane.id, p.lane.info.fingerprint)] = p
+            image = _image_for(session, p.lane)
+            key = CacheKey(
+                p.segment.text,
+                source,
+                target,
+                p.lane.id,
+                p.lane.info.fingerprint,
+                image.sha256 if image is not None else "",
+            )
+            keys.setdefault(key, []).append(p)
         if not keys:
             return
         try:
@@ -476,33 +520,37 @@ class RaceScheduler:
         except Exception:
             logger.exception("会话 %s 查询译文缓存失败，全部按未命中处理", session.id)
             return
-        for key, p in keys.items():
+        for key, group in keys.items():
             text = hits.get(key)
             if text is None:
                 continue
-            if session.closed:
-                return
-            race = session.race.segment(p.segment.id)
-            if p.lane.id not in race.participants():
-                if p.lane.retired:
+            for p in group:
+                if session.closed:
+                    return
+                if not _owns(session, p.lane):
                     continue
-                session.race.add(p.segment.id, p.lane.id, p.lane.info.priority, now)
-            if race.attempt(p.lane.id).state is AttemptState.QUEUED:
-                self._resolve(session, p.lane.id, SegmentOutcome(p.segment.id, text=text), now, cached=True)
+                race = session.race.segment(p.segment.id)
+                if p.lane.id not in race.participants():
+                    session.race.add(p.segment.id, p.lane.id, p.lane.info.priority, now)
+                if race.attempt(p.lane.id).state is AttemptState.QUEUED:
+                    outcome = SegmentOutcome(p.segment.id, text=text)
+                    self._resolve(session, p.lane.id, outcome, now, cached=True)
 
     def _enqueue_pairs(self, session: _Session, pairs: list[_Pair]) -> None:
-        """把仍在排队的组合按实例、语言对分组打包，按首段顺序放进各实例的队列。"""
+        """把仍在排队的组合按实例、语言对分组打包，按首段顺序放进各实例的队列。
+
+        查缓存期间被移除或替换的实例不入队：它的尝试已由 _retire 记为失败，同号的 QUEUED 尝试
+        （如果有）属于 extend_session 换上的新实例。
+        """
         grouped: dict[_Lane, dict[LangPair, list[Segment]]] = {}
         for p in pairs:
+            if not _owns(session, p.lane):
+                continue
             if self._state(session, p.segment.id, p.lane.id) is not AttemptState.QUEUED:
                 continue
             by_pair = grouped.setdefault(p.lane, {})
             by_pair.setdefault(session.langs[p.segment.id], []).append(p.segment)
         for lane, by_pair in grouped.items():
-            if lane.retired:
-                # 实例在查缓存期间被移除：它的尝试已由 _retire 记为失败，这里只是兜底。
-                self._fail_lane_attempts(session, lane, [s for segs in by_pair.values() for s in segs])
-                continue
             jobs = [
                 _QueuedJob(session, pair, batch)
                 for pair, segments in by_pair.items()
@@ -531,9 +579,10 @@ class RaceScheduler:
             try:
                 try:
                     job = self._take(lane, item)
-                except Exception:
+                except Exception as exc:
                     # 出错时丢弃这个任务，但不能让工作协程退出，否则该实例永久少一个并发名额。
                     logger.exception("实例 %s 出队剪枝出错（会话 %s）", lane.id, item.session.id)
+                    self._fail_dropped(lane, item, _describe(exc))
                     continue
                 if job is not None:
                     await self._execute(lane, item.session, job)
@@ -581,6 +630,7 @@ class RaceScheduler:
             source_lang=source,
             target_lang=target,
             context=session.context,
+            image=_image_for(session, lane),
         )
 
     async def _execute(self, lane: _Lane, session: _Session, job: Job) -> None:
@@ -645,10 +695,21 @@ class RaceScheduler:
             self._resolve(session, lane.id, SegmentOutcome(segment_id, error=error, code=code), now)
 
     def _write_cache(self, lane: _Lane, job: Job, segment: Segment, text: str) -> None:
-        """在后台写缓存，不拖慢后续结果的合并。"""
-        if self._cache is None:
+        """在后台写缓存，不拖慢后续结果的合并。
+
+        去掉空白后为空的译文不写。引擎按协议把“原文非空、译文为空”的输出当作失败，这里是兜底；
+        原文本身只有空白时原样返回的结果也没有缓存的价值。
+        """
+        if self._cache is None or not text.strip():
             return
-        key = CacheKey(segment.text, job.source_lang, job.target_lang, job.engine_id, lane.info.fingerprint)
+        key = CacheKey(
+            segment.text,
+            job.source_lang,
+            job.target_lang,
+            job.engine_id,
+            lane.info.fingerprint,
+            job.image.sha256 if job.image is not None else "",
+        )
         task = asyncio.create_task(_put_cache(self._cache, key, text))
         self._cache_writes.add(task)
         task.add_done_callback(self._cache_writes.discard)
@@ -660,8 +721,8 @@ class RaceScheduler:
         lane.retired = True
         now = self._clock()
         for session in tuple(self._sessions.values()):
-            if lane not in session.lanes:
-                continue  # 会话开始时还没有这个实例，同号的尝试属于别的通道
+            if session.lanes.get(lane.id) is not lane:
+                continue  # 这个实例不在会话里，同号的尝试（如果有）属于别的实例
             for race in session.race.segments():
                 if session.closed:
                     break
@@ -677,17 +738,25 @@ class RaceScheduler:
             self._retiring.add(task)
             task.add_done_callback(self._retiring.discard)
 
-    def _fail_lane_attempts(self, session: _Session, lane: _Lane, segments: Sequence[Segment]) -> None:
+    def _fail_dropped(self, lane: _Lane, item: _QueuedJob, error: str) -> None:
+        """出队剪枝出错、任务被丢弃时，把任务里仍未结束的尝试记为内部错误。
+
+        这些尝试可能停在 QUEUED，也可能已被 _take 置为 RUNNING；不结束它们，竞速就永远挂起。
+        一个（段，实例）组合只出现在一个任务里，所以这里结束的都是本任务的尝试。
+        """
+        session = item.session
+        if session.closed or not _owns(session, lane):
+            return
         now = self._clock()
-        for segment in segments:
-            if session.closed:
-                return
-            self._resolve(
-                session,
-                lane.id,
-                SegmentOutcome(segment.id, error=ERROR_REMOVED, code=ErrorCode.ENGINE_REMOVED),
-                now,
-            )
+        try:
+            for segment in item.segments:
+                if session.closed:
+                    return
+                if self._state(session, segment.id, lane.id).pending:
+                    outcome = SegmentOutcome(segment.id, error=error, code=ErrorCode.INTERNAL)
+                    self._resolve(session, lane.id, outcome, now)
+        except Exception:
+            logger.exception("实例 %s 的任务被丢弃后无法结束其中的尝试（会话 %s）", lane.id, session.id)
 
     # ---- 合并器状态变更 ----
 
@@ -812,13 +881,21 @@ class RaceScheduler:
 # ---------------------------------------------------------------- 辅助函数
 
 
+def _owns(session: _Session, lane: _Lane) -> bool:
+    """lane 是否仍是会话里该实例号的实例：没有被移除或替换，也没有被 extend_session 换掉。"""
+    return not lane.retired and session.lanes.get(lane.id) is lane
+
+
+def _image_for(session: _Session, lane: _Lane) -> JobImage | None:
+    """该实例在这个会话里收到的截图：实例接收截图并且会话有对应尺寸的截图时才有。"""
+    side = lane.info.image_max_side
+    return None if side is None else session.images.get(side)
+
+
 async def _close_stream(stream: AsyncIterator[SegmentOutcome]) -> None:
-    """关闭引擎的异步生成器，让它的 finally 及时执行。普通异步迭代器没有 aclose，跳过。"""
-    if isinstance(stream, AsyncGenerator):
-        try:
-            await stream.aclose()
-        except Exception:
-            logger.warning("关闭引擎结果流时出错", exc_info=True)
+    """关闭引擎的异步生成器，让它的 finally 及时执行；出错只记日志。"""
+    if await close_quietly(stream):
+        logger.warning("关闭引擎结果流时出错")
 
 
 async def _put_cache(cache: TranslationCache, key: CacheKey, text: str) -> None:

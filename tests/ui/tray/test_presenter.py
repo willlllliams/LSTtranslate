@@ -110,6 +110,7 @@ def test_menu_layout_and_default_texts() -> None:
         TrayAction.MODELS,
         TrayAction.OPEN_LOGS,
         TrayAction.EXPORT_DIAGNOSTICS,
+        TrayAction.UPDATE,
         None,
         TrayAction.QUIT,
     )
@@ -120,6 +121,8 @@ def test_menu_layout_and_default_texts() -> None:
         MenuEntry(TrayAction.MODELS, "下载翻译模型(&M)…"),
         MenuEntry(TrayAction.OPEN_LOGS, "打开日志目录(&L)"),
         MenuEntry(TrayAction.EXPORT_DIAGNOSTICS, "导出诊断信息(&D)…", enabled=False),
+        # 还没有收到 UpdateStatus（更新服务没有装配）时禁用。
+        MenuEntry(TrayAction.UPDATE, "检查更新(&U)…", enabled=False),
         None,
         MenuEntry(TrayAction.QUIT, "退出(&X)"),
     )
@@ -138,6 +141,7 @@ def test_menu_texts_in_english() -> None:
         "Download translation &models…",
         "Open &log folder",
         "Export &diagnostics…",
+        "Check for &updates…",
         "E&xit",
     ]
     assert [entry.shortcut for entry in menu.entries if entry is not None][:2] == ["Ctrl+1", "Ctrl+2"]

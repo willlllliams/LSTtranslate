@@ -11,7 +11,6 @@
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Final, Protocol
 
 from lst.contracts.config import AppConfig
@@ -21,34 +20,27 @@ from lst.contracts.models import (
     CancelModelDownload,
     DownloadModels,
     DownloadProgress,
-    DownloadState,
     ModelCatalog,
     ModelInfo,
     RefreshModelCatalog,
     default_model_ids,
 )
 from lst.kernel import EventBus
-from lst.ui.i18n import tr
-from lst.ui.onboarding.strings import error_reason, format_size, language_name
+from lst.ui.common.models import (
+    ACTIVE_STATES,
+    CANCELLABLE_STATES,
+    DOWNLOADABLE_STATES,
+    RowState,
+    download_percent,
+    model_status_text,
+    model_title,
+    row_state,
+)
+from lst.ui.common.text import format_size, language_name, model_error_reason
+from lst.ui.i18n import apply_config_language, tr
 
 DEFAULT_PAIR: Final = (Lang("zh-Hans"), Lang("en"))
 """配置里没有互译对时使用的默认值，与 [bilingual] 节的默认值相同。"""
-
-
-class RowState(StrEnum):
-    """模型行的状态。"""
-
-    MISSING = "missing"
-    INSTALLED = "installed"
-    QUEUED = "queued"
-    DOWNLOADING = "downloading"
-    VERIFYING = "verifying"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-_ACTIVE: Final = frozenset({RowState.QUEUED, RowState.DOWNLOADING, RowState.VERIFYING})
-_DOWNLOADABLE: Final = frozenset({RowState.MISSING, RowState.FAILED, RowState.CANCELLED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,77 +151,18 @@ def read_pair(config: AppConfig | None) -> tuple[Lang, Lang]:
     return pair if pair[0] != pair[1] else DEFAULT_PAIR
 
 
-def _row_state(model: ModelInfo, progress: DownloadProgress | None) -> RowState:
-    if progress is not None:
-        match progress.state:
-            case DownloadState.QUEUED:
-                return RowState.QUEUED
-            case DownloadState.DOWNLOADING:
-                return RowState.DOWNLOADING
-            case DownloadState.VERIFYING:
-                return RowState.VERIFYING
-            case _:
-                pass
-    if model.installed:
-        return RowState.INSTALLED
-    if progress is not None and progress.state is DownloadState.FAILED:
-        return RowState.FAILED
-    if progress is not None and progress.state is DownloadState.CANCELLED:
-        return RowState.CANCELLED
-    return RowState.MISSING
-
-
-def _status_text(model: ModelInfo, state: RowState, progress: DownloadProgress | None) -> str:
-    match state:
-        case RowState.INSTALLED:
-            if model.update_available:
-                return tr(
-                    "onboarding.status.update", installed=model.installed_version, version=model.version
-                )
-            return tr("onboarding.status.installed", version=model.installed_version or model.version)
-        case RowState.QUEUED:
-            return tr("onboarding.status.queued")
-        case RowState.DOWNLOADING:
-            fraction = progress.fraction if progress is not None else None
-            done = format_size(progress.done_bytes if progress is not None else 0)
-            if fraction is None:
-                return tr("onboarding.status.downloading_unknown", done=done)
-            return tr(
-                "onboarding.status.downloading",
-                percent=int(fraction * 100),
-                done=done,
-                total=format_size(progress.total_bytes if progress is not None else None),
-            )
-        case RowState.VERIFYING:
-            return tr("onboarding.status.verifying")
-        case RowState.FAILED:
-            code = progress.error_code if progress is not None else None
-            return tr("onboarding.status.failed", reason=error_reason(code))
-        case RowState.CANCELLED:
-            return tr("onboarding.status.cancelled")
-        case RowState.MISSING:
-            return tr("onboarding.status.missing")
-
-
 def build_row(model: ModelInfo, progress: DownloadProgress | None) -> ModelRow:
     """一个模型的显示内容。"""
-    state = _row_state(model, progress)
-    percent: int | None = None
-    if state is RowState.DOWNLOADING and progress is not None and progress.fraction is not None:
-        percent = int(progress.fraction * 100)
-    elif state is RowState.QUEUED:
-        percent = 0
+    state = row_state(model, progress)
     return ModelRow(
         model_id=model.id,
         state=state,
-        title=tr(
-            "onboarding.model.title", source=language_name(model.source), target=language_name(model.target)
-        ),
+        title=model_title(model),
         size=format_size(model.size_bytes),
-        status=_status_text(model, state, progress),
-        show_progress=state in _ACTIVE,
-        progress=percent,
-        can_cancel=state in (RowState.QUEUED, RowState.DOWNLOADING),
+        status=model_status_text(model, state, progress),
+        show_progress=state in ACTIVE_STATES,
+        progress=download_percent(state, progress),
+        can_cancel=state in CANCELLABLE_STATES,
         can_retry=state in (RowState.FAILED, RowState.CANCELLED),
     )
 
@@ -253,7 +186,7 @@ def _notice(catalog: ModelCatalog | None, pair: tuple[Lang, Lang], has_rows: boo
     if catalog.refreshing:
         return tr("onboarding.index.loading"), False
     if catalog.index_error is not None or catalog.index_error_code is not None:
-        reason = error_reason(catalog.index_error_code)
+        reason = model_error_reason(catalog.index_error_code)
         return tr("onboarding.index.failed", reason=reason), True
     if catalog.index_loaded and not has_rows:
         first, second = (language_name(code) for code in pair)
@@ -267,7 +200,7 @@ def build_screen(catalog: ModelCatalog | None, pair: tuple[Lang, Lang]) -> Onboa
     downloads: Mapping[str, DownloadProgress] = catalog.downloads if catalog is not None else {}
     rows = tuple(build_row(model, downloads.get(model.id)) for model in models)
     notice, notice_is_error = _notice(catalog, pair, bool(rows))
-    pending = [model for model, row in zip(models, rows, strict=True) if row.state in _DOWNLOADABLE]
+    pending = [model for model, row in zip(models, rows, strict=True) if row.state in DOWNLOADABLE_STATES]
     sizes = [model.size_bytes for model in pending]
     if pending and all(size is not None for size in sizes):
         download_text = tr("onboarding.download.total", size=format_size(sum(size or 0 for size in sizes)))
@@ -380,7 +313,9 @@ class OnboardingPresenter:
     def on_config(self, config: AppConfig) -> None:
         if self._closed:
             return
-        # 界面语言也可能变了（组合根先于本模块处理 AppConfig），所以总是重新生成画面。
+        # 界面语言也可能变了。组合根与各模块处理 AppConfig 的先后没有保证，所以这里自己设置界面语言，
+        # 再重新生成画面。
+        apply_config_language(config)
         self._pair = read_pair(config)
         self.refresh()
 
@@ -390,7 +325,9 @@ class OnboardingPresenter:
         if self._closed:
             return
         ids = tuple(
-            row.model_id for row in (self._screen.rows if self._screen else ()) if row.state in _DOWNLOADABLE
+            row.model_id
+            for row in (self._screen.rows if self._screen else ())
+            if row.state in DOWNLOADABLE_STATES
         )
         if not ids:
             return

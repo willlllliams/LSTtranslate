@@ -4,11 +4,13 @@
 """
 
 import asyncio
+import base64
 import json
 import logging
+import struct
 from collections.abc import AsyncGenerator, AsyncIterator
 from itertools import pairwise
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import jiter
@@ -20,18 +22,23 @@ from pydantic import ValidationError
 
 from lst.contracts.errors import ErrorCode
 from lst.contracts.ids import Lang
-from lst.contracts.translation import EngineInfo, EngineKind
+from lst.contracts.ocr import RawImage
+from lst.contracts.translation import EngineInfo, EngineKind, JobImage
 from lst.services.engines.http import EngineError
 from lst.services.engines.openai_compat import OpenAICompatSettings, create_openai_compat_engine
 from lst.services.engines.openai_compat import engine as engine_module
+from lst.services.engines.openai_compat import parser as parser_module
 from lst.services.engines.openai_compat.engine import OpenAICompatEngine
 from lst.services.engines.openai_compat.parser import ReplyParser, parse_chunk, stream_error
 from lst.services.engines.openai_compat.prompt import (
     CONTEXT_SEPARATOR,
     DEFAULT_SYSTEM_PROMPT,
+    IMAGE_NOTE,
     build_messages,
     language_name,
+    with_image,
 )
+from lst.services.race.screenshot import encode_screenshot
 from tests.services.engines.openai_compat_fixtures import (
     EN,
     JA,
@@ -216,6 +223,18 @@ class TestSupports:
         assert not engine.supports(JA, ZH)
         assert not engine.supports(ZH, ZH)
 
+    def test_whitelist_codes_are_normalized(self) -> None:
+        """白名单按规范写法比较：zh、zh-CN 都是 zh-Hans，en-US 是 en。"""
+        settings = make_settings("openai", languages=("zh", "en-US", "zh-CN"))
+        assert settings.languages == ("zh-Hans", "en")
+        engine = make_engine(httpx.AsyncClient(), "openai", languages=("zh-CN", "en-US"))
+        assert engine.supports(EN, ZH)
+        assert engine.supports(ZH, EN)
+
+    def test_whitelist_rejects_invalid_code(self) -> None:
+        with pytest.raises(ValidationError):
+            make_settings("openai", languages=("english!",))
+
 
 @pytest.mark.parametrize(
     ("code", "name"),
@@ -236,41 +255,6 @@ def test_language_name(code: str, name: str) -> None:
 
 
 # ---------------------------------------------------------------- 增量解析
-
-
-class TestJiterPartialMode:
-    """固定 jiter partial 模式的实际行为，解析器的判据依赖这些行为。"""
-
-    def test_on_drops_unterminated_string(self) -> None:
-        assert jiter.from_json(b'{"r":[{"i":1,"t":"ab', partial_mode="on") == {"r": [{"i": 1}]}
-
-    def test_trailing_strings_keeps_unterminated_string(self) -> None:
-        value = jiter.from_json(b'{"r":[{"i":1,"t":"ab', partial_mode="trailing-strings")
-        assert value == {"r": [{"i": 1, "t": "ab"}]}
-
-    def test_partial_number_looks_complete(self) -> None:
-        # 段号 12 只收到 1 时，partial 模式给出 1：只看 t 是否出现会产出错误的段号。
-        assert jiter.from_json(b'{"r":[{"t":"x","i":1', partial_mode="on") == {"r": [{"t": "x", "i": 1}]}
-
-    def test_next_item_appears_as_empty_object(self) -> None:
-        value = jiter.from_json(b'{"r":[{"i":1,"t":"x"},{', partial_mode="on")
-        assert value == {"r": [{"i": 1, "t": "x"}, {}]}
-
-    def test_partial_mode_ignores_trailing_characters(self) -> None:
-        assert jiter.from_json(b'{"r":[]}\n```', partial_mode="on") == {"r": []}
-        with pytest.raises(ValueError):
-            jiter.from_json(b'{"r":[]}\n```')
-
-    def test_partial_mode_stops_at_garbage_between_values(self) -> None:
-        # 值与值之间出现乱码时，partial 模式不报错，而是当作输入在这里结束。
-        value = jiter.from_json(b'{"r":[{"i":1,"t":"a"}x,{"i":2,"t":"b"}]}', partial_mode="on")
-        assert value == {"r": [{"i": 1, "t": "a"}]}
-        with pytest.raises(ValueError):
-            jiter.from_json(b'{"r":[{"i":1,"t":"a"},oops', partial_mode="on")
-
-    def test_strict_mode_rejects_unclosed_object(self) -> None:
-        with pytest.raises(ValueError):
-            jiter.from_json(b'{"r":[{"i":1,"t":"x"}]')
 
 
 def feed_all(parser: ReplyParser, *pieces: str) -> list[list[object]]:
@@ -297,11 +281,38 @@ class TestReplyParser:
         assert parser.finish() == []
 
     def test_code_fence_is_tolerated(self) -> None:
+        # 开头标记被跳过；根对象闭合时全部项立即确认，之后的结尾标记被忽略。
         parser = ReplyParser()
         got = parser.feed("```json\n" + reply_json("a", "b") + "\n```")
-        assert got == [{"i": 1, "t": "a"}]
-        assert parser.finish() == [{"i": 2, "t": "b"}]
+        assert got == [{"i": 1, "t": "a"}, {"i": 2, "t": "b"}]
         assert parser.closed
+        assert parser.finish() == []
+
+    def test_unclosed_output_is_not_completed_by_finish(self) -> None:
+        parser = ReplyParser()
+        assert parser.feed('```json\n{"r":[{"i":1,"t":"a"},{"i":2,"t":"b"}]') == [{"i": 1, "t": "a"}]
+        assert parser.finish() == []  # 根对象没有闭合，截到最后一个 } 也解析不了
+        assert not parser.closed
+
+    def test_each_item_is_parsed_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """逐字符喂入 200 项：每项只严格解析一次，根对象闭合时再解析一次全文，不重复解析已扫描的部分。"""
+        calls: list[int] = []
+        real = jiter.from_json
+
+        def counting(data: bytes, **kwargs: Any) -> object:
+            calls.append(len(data))
+            return real(data, **kwargs)
+
+        monkeypatch.setattr(parser_module.jiter, "from_json", counting)
+        texts = [f"译文{n}" for n in range(200)]
+        output = reply_json(*texts)
+        parser = ReplyParser()
+        got: list[object] = []
+        for char in output:
+            got += parser.feed(char)
+        assert [cast(dict[str, object], item)["t"] for item in got] == texts
+        assert len(calls) == len(texts)  # 前 199 项各一次，最后一项随全文解析确认
+        assert sum(calls) < 3 * len(output.encode("utf-8"))
 
     def test_truncated_output_keeps_last_item_unconfirmed(self) -> None:
         parser = ReplyParser()
@@ -585,6 +596,33 @@ class TestFallback:
         assert codes_of(outcomes) == {"s1": ErrorCode.BAD_RESPONSE}
         assert len(server.requests) == 1
 
+    async def test_blank_translation_counts_as_missing(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        """原文非空而译文只有空白：按缺段处理，逐段重新请求。"""
+        batch_output = json.dumps({"r": [{"i": 1, "t": "  "}, {"i": 2, "t": "乙"}]}, ensure_ascii=False)
+        server.queue(sse_response(batch_output), reply_response("甲"))
+        outcomes = await collect(make_engine(client).translate(make_job("a", "b")))
+        assert texts_of(outcomes) == {"s1": "甲", "s2": "乙"}
+        assert server.segments(1) == [{"i": 1, "t": "a"}]
+
+    async def test_blank_translation_of_single_segment_fails(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        server.queue(reply_response(" "))
+        outcomes = await collect(make_engine(client).translate(make_job("a")))
+        assert codes_of(outcomes) == {"s1": ErrorCode.BAD_RESPONSE}
+        assert len(server.requests) == 1
+
+    async def test_blank_source_accepts_blank_translation(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        batch_output = json.dumps({"r": [{"i": 1, "t": ""}, {"i": 2, "t": "乙"}]}, ensure_ascii=False)
+        server.queue(sse_response(batch_output))
+        outcomes = await collect(make_engine(client).translate(make_job(" ", "b")))
+        assert texts_of(outcomes) == {"s1": "", "s2": "乙"}
+        assert len(server.requests) == 1
+
 
 # ---------------------------------------------------------------- 请求失败与断流
 
@@ -682,6 +720,26 @@ class TestErrors:
         assert codes_of(outcomes) == {"s1": ErrorCode.NETWORK, "s2": ErrorCode.NETWORK}
         assert len(server.requests) == 3
         assert all(stream.closed for stream in streams)
+
+    async def test_http_retry_and_resend_share_one_budget(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        """整批阶段的 HTTP 重试与断流重发共用 max_retries：503 重试一次之后再断流，不再重发。"""
+        broken = ContentStream(['{"r":[{"i":1,"t":"甲"},{'], error=httpx.ReadError("reset"))
+        server.queue(httpx.Response(503), stream_response(broken))
+        outcomes = await collect(make_engine(client).translate(make_job("a", "b")))
+        assert codes_of(outcomes) == {"s1": None, "s2": ErrorCode.NETWORK}
+        assert len(server.requests) == 2
+
+    async def test_resend_gets_remaining_http_retries(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        """max_retries 为 2：断流重发一次后遇到 503，还剩一次重试可用。"""
+        broken = ContentStream(['{"r":[{"i":1,"t":"甲"},{'], error=httpx.ReadError("reset"))
+        server.queue(stream_response(broken), httpx.Response(503), reply_response("乙"))
+        outcomes = await collect(make_engine(client, max_retries=2).translate(make_job("a", "b")))
+        assert texts_of(outcomes) == {"s1": "甲", "s2": "乙"}
+        assert len(server.requests) == 3
 
     async def test_http_retry_disabled_when_max_retries_is_zero(
         self, client: httpx.AsyncClient, server: FakeServer
@@ -846,6 +904,21 @@ class TestTimeouts:
         await collect(engine.translate(make_job("a")))
         assert engine.first_token_timeout_s == 5.0
         assert server.requests[0].extensions["timeout"]["read"] == 10.0
+
+    async def test_backoff_wait_is_not_counted_in_first_token_limit(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        """重试前的退避等待比首 token 时限长：重试照常发出，时限从重试发出时重新计算。"""
+
+        async def slow_sleep(delay: float) -> None:
+            await asyncio.sleep(0.1)
+
+        server.queue(httpx.Response(503), reply_response("甲"))
+        settings = make_settings("deepseek", first_token_timeout_s=0.05)
+        engine = OpenAICompatEngine(settings, Secrets({"deepseek": KEY}), client, sleep=slow_sleep)
+        outcomes = await collect(engine.translate(make_job("a")))
+        assert texts_of(outcomes) == {"s1": "甲"}
+        assert len(server.requests) == 2
 
 
 # ---------------------------------------------------------------- 请求内容
@@ -1074,3 +1147,223 @@ async def test_factory_returns_engine(client: httpx.AsyncClient, server: FakeSer
     outcomes = await collect(engine.translate(make_job("a")))
     assert texts_of(outcomes) == {"s1": "甲"}
     assert len(sleeps.delays) == 1  # 注入的 sleep 被重试使用
+
+
+# ---------------------------------------------------------------- 附带截图（ENG-07）
+
+
+def screenshot(width: int = 30, height: int = 12) -> JobImage:
+    """真实编码的 PNG 截图：在 2 倍尺寸上生成像素，由竞速模块的编码函数缩小到 width×height。"""
+    size = width * height * 16
+    pixels = (bytes(range(256)) * (size // 256 + 1))[:size]
+    raw = RawImage(width * 2, height * 2, width * 8, pixels)
+    return encode_screenshot(raw, max(width, height))
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR"
+    width, height = struct.unpack(">II", data[16:24])
+    return int(width), int(height)
+
+
+def image_part(server: FakeServer, index: int) -> dict[str, Any]:
+    content = server.body(index)["messages"][1]["content"]
+    assert isinstance(content, list)
+    parts = cast(list[dict[str, Any]], content)
+    assert [part["type"] for part in parts] == ["text", "image_url"]
+    return parts[1]
+
+
+class TestImageSettings:
+    def test_defaults_off(self) -> None:
+        settings = make_settings("openai")
+        assert (settings.send_image, settings.image_max_side) == (False, 1568)
+        assert info_of("openai").image_max_side is None
+
+    def test_enabled_sets_image_max_side(self) -> None:
+        assert info_of("openai", send_image=True).image_max_side == 1568
+        assert info_of("ollama", send_image=True, image_max_side=1024).image_max_side == 1024
+        assert info_of("openai", send_image=False, image_max_side=1024).image_max_side is None
+
+    @pytest.mark.parametrize("side", [0, 255, 8193])
+    def test_rejects_bad_image_max_side(self, side: int) -> None:
+        with pytest.raises(ValidationError):
+            make_settings("openai", send_image=True, image_max_side=side)
+
+    def test_description_warns_about_sending(self) -> None:
+        description = OpenAICompatSettings.model_fields["send_image"].description or ""
+        assert "截图会发送给该服务" in description
+
+    def test_fingerprint_ignores_image_options_but_revision_follows(self) -> None:
+        # 带图的尝试在缓存键里另有截图摘要；不带图的请求与关闭选项时完全相同，译文缓存可以共用。
+        off, on = info_of("openai"), info_of("openai", send_image=True)
+        assert off.fingerprint == on.fingerprint
+        assert off.revision != on.revision
+        assert off != on  # 调度器据此替换实例
+
+
+class TestImageRequest:
+    async def test_body_has_text_then_image(self, client: httpx.AsyncClient, server: FakeServer) -> None:
+        image = screenshot()
+        server.queue(reply_response("甲", "乙"), reply_response("甲", "乙"))
+        engine = make_engine(client, "openai", send_image=True)
+        context = "Hello\nWorld\nBye"
+        await collect(engine.translate(make_job("Hello", "World", context=context)))
+        await collect(engine.translate(make_job("Hello", "World", context=context, image=image)))
+
+        plain, with_img = server.body(0)["messages"], server.body(1)["messages"]
+        assert isinstance(plain[1]["content"], str)
+        content = with_img[1]["content"]
+        assert content[0] == {"type": "text", "text": plain[1]["content"]}  # 文本逐字相同
+        url = image_part(server, 1)["image_url"]["url"]
+        prefix = "data:image/png;base64,"
+        assert url.startswith(prefix)
+        data = base64.b64decode(url[len(prefix) :], validate=True)
+        assert data == image.data
+        assert png_size(data) == (30, 12)  # 60×24 的截图按最大边长 30 缩小
+        # system 消息保留原提示词，末尾加一句截图的用途说明。
+        assert plain[0]["content"] == DEFAULT_SYSTEM_PROMPT
+        assert with_img[0]["content"] == f"{DEFAULT_SYSTEM_PROMPT}\n{IMAGE_NOTE}"
+        # 其余字段与不带图时相同。
+        rest = [{k: v for k, v in server.body(i).items() if k != "messages"} for i in (0, 1)]
+        assert rest[0] == rest[1]
+
+    async def test_image_note_follows_custom_prompt(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        server.queue(reply_response("甲"))
+        engine = make_engine(client, "openai", send_image=True, system_prompt="You translate menus.")
+        await collect(engine.translate(make_job("Hello", image=screenshot())))
+        assert server.body(0)["messages"][0]["content"] == f"You translate menus.\n{IMAGE_NOTE}"
+
+    async def test_disabled_instance_ignores_image(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        server.queue(reply_response("甲"))
+        await collect(make_engine(client, "openai").translate(make_job("Hello", image=screenshot())))
+        messages = server.body(0)["messages"]
+        assert isinstance(messages[1]["content"], str)
+        assert messages[0]["content"] == DEFAULT_SYSTEM_PROMPT
+        assert "base64" not in server.requests[0].content.decode()
+
+    async def test_resend_and_fallback_keep_image(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        broken = ContentStream(['{"r":[{"i":1,"t":"甲"},{"i":2'], error=httpx.ReadError("reset"))
+        server.queue(stream_response(broken), sse_response('{"r":[{"i":1,"t":"乙"}]}'), reply_response("丙"))
+        engine = make_engine(client, "openai", send_image=True)
+        outcomes = await collect(engine.translate(make_job("a", "b", "c", image=screenshot())))
+        assert texts_of(outcomes) == {"s1": "甲", "s2": "乙", "s3": "丙"}
+        assert len({image_part(server, i)["image_url"]["url"] for i in range(3)}) == 1
+        # 前缀缓存：三次请求的 system 消息与会话全文前缀都相同。
+        assert len({json.dumps(server.body(i)["messages"][0]) for i in range(3)}) == 1
+        assert len({server.context_part(i) for i in range(3)}) == 1
+
+    def test_with_image_keeps_text_verbatim(self) -> None:
+        messages = build_messages("sys", "ctx", ["a", "b"], "en", "ja")
+        result = with_image(messages, "data:image/png;base64,AAAA")
+        assert result[0] == {"role": "system", "content": f"sys\n{IMAGE_NOTE}"}
+        assert result[1] == {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": messages[1]["content"]},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        }
+
+
+_TICK = chr(96)  # 反引号
+
+
+class TestImageErrors:
+    @pytest.mark.parametrize(
+        ("provider", "status", "message"),
+        [
+            (
+                "deepseek",
+                400,
+                f"Failed to deserialize the JSON body: unknown variant {_TICK}image_url{_TICK}, "
+                f"expected {_TICK}text{_TICK}",
+            ),
+            ("openai", 400, "Invalid content type. image_url is only supported by certain models."),
+            ("generic", 422, "This model does not support vision input"),
+            ("generic", 400, "Multimodal input is not enabled for this deployment"),
+            ("ollama", 500, "this model is missing data required for image input"),
+            ("llamacpp", 500, "image input is not supported - hint: you may need to provide the mmproj"),
+        ],
+    )
+    async def test_maps_to_image_unsupported(
+        self, client: httpx.AsyncClient, server: FakeServer, provider: str, status: int, message: str
+    ) -> None:
+        server.queue(httpx.Response(status, json={"error": {"message": message}}))
+        engine = make_engine(client, provider, send_image=True)
+        outcomes = await collect(engine.translate(make_job("a", "b", image=screenshot())))
+        assert set(codes_of(outcomes).values()) == {ErrorCode.IMAGE_UNSUPPORTED}
+        assert len(server.requests) == 1  # 不逐段退回
+
+    async def test_stream_error_object_maps_too(self, client: httpx.AsyncClient, server: FakeServer) -> None:
+        body = b'data: {"error":{"message":"image input is not supported","code":400}}\n\n'
+        server.queue(httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body))
+        engine = make_engine(client, "llamacpp", send_image=True)
+        outcomes = await collect(engine.translate(make_job("a", image=screenshot())))
+        assert codes_of(outcomes) == {"s1": ErrorCode.IMAGE_UNSUPPORTED}
+
+    @pytest.mark.parametrize(
+        ("provider", "status", "message", "code"),
+        [
+            ("openai", 401, "image access denied", ErrorCode.AUTH),
+            ("openai", 429, "too many image requests", ErrorCode.RATE_LIMITED),
+            ("openai", 400, "temperature must be <= 2", ErrorCode.BAD_REQUEST),
+            ("generic", 500, "vision backend crashed", ErrorCode.SERVER),  # 在线服务的 5xx 不改判
+        ],
+    )
+    async def test_other_errors_keep_their_code(
+        self,
+        client: httpx.AsyncClient,
+        server: FakeServer,
+        provider: str,
+        status: int,
+        message: str,
+        code: ErrorCode,
+    ) -> None:
+        server.queue(httpx.Response(status, json={"error": {"message": message}}))
+        engine = make_engine(client, provider, send_image=True, max_retries=0)
+        outcomes = await collect(engine.translate(make_job("a", image=screenshot())))
+        assert codes_of(outcomes) == {"s1": code}
+
+    async def test_without_image_message_is_not_reinterpreted(
+        self, client: httpx.AsyncClient, server: FakeServer
+    ) -> None:
+        message = f"unknown variant {_TICK}image_url{_TICK}"
+        server.queue(httpx.Response(400, json={"error": {"message": message}}))
+        engine = make_engine(client, "deepseek", send_image=True)
+        outcomes = await collect(engine.translate(make_job("a")))  # 双语会话，没有截图
+        assert codes_of(outcomes) == {"s1": ErrorCode.BAD_REQUEST}
+
+
+class TestImagePrivacy:
+    async def test_logs_and_errors_contain_no_image_data(
+        self, client: httpx.AsyncClient, server: FakeServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        image = screenshot(64, 32)
+        payload = base64.b64encode(image.data).decode()
+        echoed = f"invalid image: data:image/png;base64,{payload[:150]}"
+        server.queue(
+            reply_response("甲"),
+            httpx.Response(400, json={"error": {"message": echoed}}),
+            httpx.Response(400, json={"error": {"message": f"bad request near {payload[:120]}"}}),
+        )
+        engine = make_engine(client, "openai", send_image=True)
+        outcomes = await collect(engine.translate(make_job("a", image=image)))
+        outcomes += await collect(engine.translate(make_job("a", image=image, prefix="t")))
+        outcomes += await collect(engine.translate(make_job("a", image=image, prefix="u")))
+
+        assert "附带截图 64×32" in caplog.text
+        assert [o.code for o in outcomes] == [None, ErrorCode.IMAGE_UNSUPPORTED, ErrorCode.BAD_REQUEST]
+        errors = [o.error or "" for o in outcomes]
+        assert all("图片数据已省略" in e for e in errors[1:])
+        for text in (caplog.text, *errors):
+            assert payload[:40] not in text
+            assert payload[60:100] not in text
+            assert "base64," not in text

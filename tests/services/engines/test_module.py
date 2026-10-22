@@ -7,6 +7,7 @@ API key 由内存里的 SecretReader 提供，它记录每次读取；网络引�
 
 import asyncio
 import logging
+import threading
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -133,9 +134,11 @@ class CountingSecrets:
     def __init__(self, entries: Mapping[str, str]) -> None:
         self.entries = dict(entries)
         self.reads: list[str] = []
+        self.threads: set[int] = set()
 
     def get_secret(self, name: str) -> str | None:
         self.reads.append(name)
+        self.threads.add(threading.get_ident())
         return self.entries.get(name)
 
 
@@ -442,6 +445,17 @@ async def test_secrets_revision_change_without_key_change_keeps_roster(
     assert len(secrets.reads) > reads  # 重新读取了 key
     assert len(published.rosters) == 1
     assert len(published.statuses) == 1
+
+
+async def test_each_key_is_read_once_off_the_event_loop(
+    bus: EventBus, deps: EngineDeps, published: Published, secrets: CountingSecrets
+) -> None:
+    """创建网络引擎实例时每个 keyring 条目只读一次，并且在线程池里读，不阻塞事件循环。"""
+    await start_module(bus, deps)
+    await publish(bus, config(argos(1), deepl(2), google(3), deepseek(4)))
+    assert published.ids() == ["argos", "deepl", "google", "deepseek"]
+    assert sorted(secrets.reads) == ["deepl", "deepseek", "google"]
+    assert threading.get_ident() not in secrets.threads
 
 
 async def test_added_key_clears_error(

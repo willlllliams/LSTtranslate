@@ -1,5 +1,6 @@
 """翻译引擎页的测试：列表、拖拽排序后的优先级重新编号、增删实例、参数编辑、API key、测试连接。"""
 
+import asyncio
 import logging
 
 import pytest
@@ -19,7 +20,8 @@ from lst.contracts.ids import EngineId
 from lst.contracts.worker_protocol import JsonValue
 from lst.ui.settings.controls import IntEditor, SwitchEditor, TextEditor
 from lst.ui.settings.page_engines import AddEngineDialog, EnginesPage
-from tests.ui.settings.conftest import Harness, StartSettings, wait_until
+from tests.ui.conftest import wait_until
+from tests.ui.settings.conftest import Harness, StartSettings
 from tests.ui.settings.support import default_config, engine
 
 KEY = "sk-live-SECRET-0123456789"
@@ -527,18 +529,21 @@ async def test_api_key_is_submitted_by_update_secret_and_never_shown(
     assert field.editor.edit.echoMode() == QLineEdit.EchoMode.Password
 
 
-async def test_api_key_debounce_commit_keeps_typing_intact(start_settings: StartSettings) -> None:
+async def test_api_key_pause_does_not_commit_and_finish_clears(start_settings: StartSettings) -> None:
+    """API key 不按停顿提交：停顿时输入原样留着，按 Enter 或离开输入框时才提交并清空。"""
     harness = await start_settings(debounce_ms=30)
     page = await open_engines(harness)
     field = page.secret_field
     assert field is not None
     field.editor.edit.setText("sk-part")
     field.editor.edit.textEdited.emit("sk-part")
-    await wait_until(lambda: bool(harness.recorded.commands) or bool(field.editor.pending) is False)
+    await asyncio.sleep(0.1)  # 比防抖时间长
+    await harness.flush()
+    assert harness.recorded.secrets == []
+    assert field.editor.pending and field.editor.edit.text() == "sk-part"
+    field.editor.edit.editingFinished.emit()
     await harness.flush()
     assert [c.value for c in harness.recorded.secrets] == ["sk-part"]
-    assert field.editor.edit.text() == "sk-part"  # 还在输入时不清空
-    field.editor.edit.editingFinished.emit()
     assert field.editor.edit.text() == ""
 
 
@@ -620,3 +625,54 @@ async def test_language_switch_relabels_the_list_and_the_form(harness: Harness) 
     assert page.test_button.text() == "&Test connection"
     assert page.editor_title.text() == "Settings of DeepSeek"
     assert page.editor_card("base_url").title_label.text() == "Endpoint"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------- 附带截图（需求 ENG-07）
+
+
+async def test_send_image_cards_have_titles_and_say_screenshots_are_sent(harness: Harness) -> None:
+    page = await open_engines(harness, "deepseek")
+    send, size = page.editor_card("send_image"), page.editor_card("image_max_side")
+    assert send is not None and size is not None
+    assert send.title_label.text() == "附带截图"
+    assert "截图会发送给该服务" in send.desc_label.text()
+    assert size.title_label.text() == "截图尺寸上限"
+    assert "只在开启“附带截图”时可用" in size.desc_label.text()
+    size_editor = page.editor_editor("image_max_side")
+    assert isinstance(size_editor, IntEditor)
+    assert size_editor.spin.suffix() == " 像素" and size_editor.json_value() == 1568
+    assert (size_editor.spin.minimum(), size_editor.spin.maximum()) == (256, 8192)
+
+
+async def test_image_size_is_only_available_when_send_image_is_on(harness: Harness) -> None:
+    page = await open_engines(harness, "deepseek")
+    send, size = page.editor_editor("send_image"), page.editor_card("image_max_side")
+    assert isinstance(send, SwitchEditor) and size is not None
+    assert send.json_value() is False and not size.isEnabled()
+    send.switch.click()
+    assert size.isEnabled()  # 立即可用，不等配置回传
+    await harness.flush()
+    entries = harness.recorded.updates[-1].patch["engines"]
+    assert isinstance(entries, list)
+    deepseek = next(e for e in entries if isinstance(e, dict) and e.get("id") == "deepseek")
+    assert deepseek["send_image"] is True
+
+    config = default_config(
+        engines=[engine("openai_compat", "deepseek", 1, send_image=True), engine("deepl", "deepl", 2)],
+        revision=2,
+    )
+    await harness.publish(config)
+    assert size.isEnabled()
+    page.select("deepl")
+    assert page.editor_card("send_image") is None  # 只有 OpenAI 兼容引擎有这一项
+    page.select("deepseek")
+    rebuilt = page.editor_card("image_max_side")
+    assert rebuilt is not None and rebuilt.isEnabled()
+
+
+async def test_send_image_texts_in_english(start_settings: StartSettings) -> None:
+    harness = await start_settings(config=default_config({"ui": {"language": "en"}}))
+    page = await open_engines(harness, "deepseek")
+    send = page.editor_card("send_image")
+    assert send is not None and send.title_label.text() == "Send screenshot"
+    assert "screenshots are sent to this service" in send.desc_label.text()

@@ -5,6 +5,7 @@
 
 import asyncio
 import dataclasses
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -491,3 +492,38 @@ async def test_operations_submitted_before_close_complete(db_path: Path) -> None
         assert await reopened.count() == 20
     finally:
         await reopened.close()
+
+
+# ---------------------------------------------------------------- 截图摘要（ENG-07）
+
+
+def legacy_digest(k: CacheKey) -> bytes:
+    """加入 image_digest 字段之前的算法：五个字段各写“8 字节长度 + UTF-8 字节”。"""
+    digest = hashlib.sha256()
+    for field in (k.text, k.source, k.target, k.engine_id, k.fingerprint):
+        data = field.encode("utf-8")
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.digest()
+
+
+def test_digest_without_image_is_unchanged() -> None:
+    # 没有截图的键与原来的算法一致，已有的缓存条目继续命中。
+    assert cache_digest(key()) == legacy_digest(key())
+
+
+def test_digest_depends_on_image_digest() -> None:
+    plain = key()
+    first = dataclasses.replace(plain, image_digest="a" * 64)
+    second = dataclasses.replace(plain, image_digest="b" * 64)
+    assert len({cache_digest(plain), cache_digest(first), cache_digest(second)}) == 3
+
+
+async def test_image_keys_are_stored_separately(cache: SqliteTranslationCache) -> None:
+    plain = key()
+    with_image = dataclasses.replace(plain, image_digest="c" * 64)
+    other_image = dataclasses.replace(plain, image_digest="d" * 64)
+    await cache.put(plain, "不带图的译文")
+    await cache.put(with_image, "带图的译文")
+    hits = await cache.get_many([plain, with_image, other_image])
+    assert hits == {plain: "不带图的译文", with_image: "带图的译文"}

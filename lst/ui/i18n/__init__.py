@@ -10,8 +10,12 @@ import ctypes
 import logging
 import sys
 from collections.abc import Mapping
+from typing import Final
 
+from lst.contracts.config import AppConfig
 from lst.contracts.errors import ErrorCode
+from lst.contracts.ocr_engines import OcrEngineErrorCode
+from lst.contracts.updates import UpdateErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,20 @@ def current_language() -> str:
     return _language
 
 
+def apply_config_language(config: AppConfig | None) -> str:
+    """按配置的 [ui].language 设置界面语言，返回当前生效的语言。
+
+    组合根也设置界面语言，但它与各界面模块的 AppConfig 处理函数谁先执行没有保证（组合根的处理函数是协程，
+    下一轮循环才执行）。每个按配置刷新文案的界面模块先调用它，刷新时用到的就是新语言。
+    配置里没有这一项或类型不对时不改动当前语言。
+    """
+    section = config.section("ui") if config is not None else None
+    raw = section.get("language") if isinstance(section, dict) else None
+    if isinstance(raw, str):
+        return set_language(raw)
+    return _language
+
+
 def system_language() -> str:
     """Windows 的用户界面语言为中文（任何地区）时返回 zh-Hans，否则返回 en。"""
     if sys.platform != "win32":
@@ -71,13 +89,26 @@ def tr(key: str, **params: object) -> str:
         return text
 
 
-def error_text(code: ErrorCode | str | None) -> tuple[str, str]:
-    """错误码 → (原因, 处理建议)。未知或缺失的错误码按 engine.internal 处理。"""
-    try:
-        resolved = ErrorCode(code) if code is not None else ErrorCode.INTERNAL
-    except ValueError:
-        resolved = ErrorCode.INTERNAL
-    return tr(f"error.{resolved.value}.reason"), tr(f"error.{resolved.value}.suggestion")
+type AnyErrorCode = ErrorCode | OcrEngineErrorCode | UpdateErrorCode
+"""界面按错误码显示原因与处理建议的三类错误码：翻译引擎与竞速、OCR 引擎的安装与运行、应用更新。"""
+
+ERROR_CODE_FAMILIES: Final[tuple[type[AnyErrorCode], ...]] = (ErrorCode, OcrEngineErrorCode, UpdateErrorCode)
+
+_KNOWN_CODES: Final = frozenset(code.value for family in ERROR_CODE_FAMILIES for code in family)
+
+
+def error_text(
+    code: AnyErrorCode | str | None, default: AnyErrorCode = ErrorCode.INTERNAL
+) -> tuple[str, str]:
+    """错误码 → (原因, 处理建议)。
+
+    code 可以是三类错误码中的任何一个，也可以是它们的字符串值。未知或缺失的错误码按 default 处理，
+    default 缺省为 engine.internal；OCR 引擎与更新的调用方传入各自的 internal。
+    """
+    value = str(code) if code is not None else ""
+    if value not in _KNOWN_CODES:
+        value = default.value
+    return tr(f"error.{value}.reason"), tr(f"error.{value}.suggestion")
 
 
 _COMMON: Catalog = {
@@ -139,6 +170,15 @@ _COMMON: Catalog = {
         "zh-Hans": "为该语言对启用其他引擎",
         "en": "Enable another engine for this language pair",
     },
+    "error.engine.image_unsupported.reason": {
+        "zh-Hans": "模型不支持图片输入",
+        "en": "The model does not accept images",
+    },
+    "error.engine.image_unsupported.suggestion": {
+        "zh-Hans": "在设置 → 翻译引擎中关闭该实例的“附带截图”，或换用支持图片输入的模型",
+        "en": "Turn off “Send screenshot” for this engine in Settings → Engines, "
+        "or use a model that accepts images",
+    },
     "error.engine.model_missing.reason": {
         "zh-Hans": "没有安装对应的本地模型",
         "en": "Local model not installed",
@@ -173,6 +213,115 @@ _COMMON: Catalog = {
         "en": "Engine replaced after a settings change",
     },
     "error.race.engine_removed.suggestion": {"zh-Hans": "重新翻译即可", "en": "Translate again"},
+    # OCR 引擎的安装与运行（需求 OCRE-01 至 OCRE-06）
+    "error.ocr_engine.no_language.reason": {
+        "zh-Hans": "Windows 没有安装任何语言的 OCR 功能",
+        "en": "Windows has no OCR language installed",
+    },
+    "error.ocr_engine.no_language.suggestion": {
+        "zh-Hans": "在 Windows 设置 → 时间和语言 → 语言和区域中，打开要识别的语言的“语言选项”，"
+        "安装“光学字符识别”，然后重新启动 LSTtranslate",
+        "en": "In Windows Settings → Time & language → Language & region, open the language options of the "
+        "language to recognize, install “Optical character recognition”, then restart LSTtranslate",
+    },
+    "error.ocr_engine.network.reason": {"zh-Hans": "网络连接失败", "en": "Network connection failed"},
+    "error.ocr_engine.network.suggestion": {
+        "zh-Hans": "检查网络连接或代理设置后重试",
+        "en": "Check your network connection or proxy settings and try again",
+    },
+    "error.ocr_engine.timeout.reason": {"zh-Hans": "下载超时", "en": "The download timed out"},
+    "error.ocr_engine.timeout.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.ocr_engine.http.reason": {
+        "zh-Hans": "下载服务器返回错误",
+        "en": "The download server returned an error",
+    },
+    "error.ocr_engine.http.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.ocr_engine.disk.reason": {
+        "zh-Hans": "无法写入安装目录，或磁盘空间不足",
+        "en": "Cannot write to the install folder, or the disk is full",
+    },
+    "error.ocr_engine.disk.suggestion": {
+        "zh-Hans": "检查磁盘空间和目录权限后重试",
+        "en": "Check free disk space and folder permissions, then try again",
+    },
+    "error.ocr_engine.invalid_package.reason": {
+        "zh-Hans": "下载的文件没有通过校验",
+        "en": "The downloaded files failed verification",
+    },
+    "error.ocr_engine.invalid_package.suggestion": {"zh-Hans": "重新下载", "en": "Download again"},
+    "error.ocr_engine.install_failed.reason": {
+        "zh-Hans": "运行环境安装失败",
+        "en": "The runtime could not be installed",
+    },
+    "error.ocr_engine.install_failed.suggestion": {
+        "zh-Hans": "重试；仍然失败时导出诊断信息并检查日志",
+        "en": "Try again; if it still fails, export diagnostics and check the logs",
+    },
+    "error.ocr_engine.worker_failed.reason": {
+        "zh-Hans": "识别进程反复退出",
+        "en": "The recognition process keeps exiting",
+    },
+    "error.ocr_engine.worker_failed.suggestion": {
+        "zh-Hans": "卸载后重新下载该引擎，或改用其他 OCR 引擎",
+        "en": "Uninstall and download this engine again, or switch to another OCR engine",
+    },
+    "error.ocr_engine.internal.reason": {"zh-Hans": "内部错误", "en": "Internal error"},
+    "error.ocr_engine.internal.suggestion": {
+        "zh-Hans": "导出诊断信息并检查日志",
+        "en": "Export diagnostics and check the logs",
+    },
+    # 应用更新（需求 UPD-01 至 UPD-06）
+    "error.update.network.reason": {"zh-Hans": "网络连接失败", "en": "Network connection failed"},
+    "error.update.network.suggestion": {
+        "zh-Hans": "检查网络连接或代理设置后重试",
+        "en": "Check your network connection or proxy settings and try again",
+    },
+    "error.update.timeout.reason": {"zh-Hans": "连接 GitHub 超时", "en": "Connecting to GitHub timed out"},
+    "error.update.timeout.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.update.http.reason": {
+        "zh-Hans": "GitHub 拒绝了请求，可能是访问过于频繁",
+        "en": "GitHub rejected the request, possibly because of rate limiting",
+    },
+    "error.update.http.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.update.bad_release.reason": {
+        "zh-Hans": "发布信息不完整或格式不对",
+        "en": "The release information is incomplete or malformed",
+    },
+    "error.update.bad_release.suggestion": {
+        "zh-Hans": "稍后重试，或到发布页面手动下载",
+        "en": "Try again later, or download it manually from the release page",
+    },
+    "error.update.checksum.reason": {
+        "zh-Hans": "安装包没有通过 SHA-256 校验，已经删除",
+        "en": "The installer failed the SHA-256 check and was deleted",
+    },
+    "error.update.checksum.suggestion": {"zh-Hans": "重新下载", "en": "Download it again"},
+    "error.update.disk.reason": {"zh-Hans": "无法写入下载目录", "en": "Cannot write to the download folder"},
+    "error.update.disk.suggestion": {
+        "zh-Hans": "检查磁盘空间和目录权限",
+        "en": "Check free disk space and folder permissions",
+    },
+    "error.update.not_installed.reason": {
+        "zh-Hans": "源码运行不能自动安装",
+        "en": "Running from source cannot install updates",
+    },
+    "error.update.not_installed.suggestion": {
+        "zh-Hans": "更新源码后重新运行",
+        "en": "Update the source code and run again",
+    },
+    "error.update.launch_failed.reason": {
+        "zh-Hans": "无法启动安装程序",
+        "en": "The installer could not be started",
+    },
+    "error.update.launch_failed.suggestion": {
+        "zh-Hans": "到发布页面手动下载安装",
+        "en": "Download and install it manually from the release page",
+    },
+    "error.update.internal.reason": {"zh-Hans": "内部错误", "en": "Internal error"},
+    "error.update.internal.suggestion": {
+        "zh-Hans": "导出诊断信息并检查日志",
+        "en": "Export diagnostics and check the logs",
+    },
 }
 
 register_catalog(_COMMON)

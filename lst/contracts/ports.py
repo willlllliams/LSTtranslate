@@ -15,6 +15,9 @@ class CacheKey:
 
     fingerprint 是引擎实例中影响译文的配置（模型、提示词、温度等）的哈希，取自 EngineInfo.fingerprint；
     换模型或改提示词后，旧译文因键不同而不会被误用。
+
+    image_digest 是随请求发送的截图的 SHA-256（JobImage.sha256，需求 ENG-07），没有发送截图时为空串。
+    同样的文字配不同的截图可能得到不同的译文，所以带图的尝试按图片区分缓存。
     """
 
     text: str
@@ -22,6 +25,7 @@ class CacheKey:
     target: Lang
     engine_id: EngineId
     fingerprint: str
+    image_digest: str = ""
 
 
 class TranslationCache(Protocol):

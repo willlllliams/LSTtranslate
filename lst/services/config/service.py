@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -233,7 +233,9 @@ class ConfigService:
                 rejected.extend(((name, *location), reason) for location, reason in issues)
                 if items != self._lists[name]:
                     lists[name] = items
-                    edits.append(ReplaceArray(name, items))
+                    edits.append(
+                        ReplaceArray(name, items, self._lists[name], _item_acceptor(self._schemas[name]))
+                    )
             else:
                 rejected.append(((name,), "未知的配置节"))
         if edits:
@@ -388,6 +390,19 @@ def _default_items(name: str, schema: ListSectionSchema) -> list[JsonObject]:
     if problems:
         raise ValueError(f"数组节 {name} 的默认条目没有通过跨条目约束：{problems}")
     return items
+
+
+def _item_acceptor(schema: ListSectionSchema) -> Callable[[Mapping[str, object]], bool]:
+    """写回数组节时判断文件里的一张表能否通过条目校验；校验不过的表原样保留在文件里。"""
+
+    def accepts(raw: Mapping[str, object]) -> bool:
+        try:
+            schema.validate_item(raw)
+        except (ValidationError, ValueError):
+            return False
+        return True
+
+    return accepts
 
 
 def _edit_location(edit: Edit) -> Location:

@@ -69,6 +69,37 @@ class TestRequirementTimeline:
         assert race.attempt(DEEPL).text == "deepl 译文"
 
 
+class TestRejoin:
+    """计费实例被替换后，同号新实例的尝试替换旧实例失败的尝试。"""
+
+    def test_replaces_failed_attempt_and_reopens_race(self) -> None:
+        race = make_race((DEEPSEEK, 1), (ARGOS, 3))
+        race.resolve(DEEPSEEK, fail("401"), now=0.2)
+        race.resolve(ARGOS, ok("argos 译文"), now=0.3)
+        assert (race.winner, race.finished) == (ARGOS, True)
+
+        race.rejoin(DEEPSEEK, 1, now=5.0)
+        attempt = race.attempt(DEEPSEEK)
+        assert (attempt.state, attempt.error, attempt.dispatched_at) == (AttemptState.QUEUED, None, 5.0)
+        assert race.participants() == (DEEPSEEK, ARGOS)
+        assert (race.winner, race.finished) == (ARGOS, False)
+
+        assert race.resolve(DEEPSEEK, ok("deepseek 译文"), now=5.5)
+        assert (race.winner, race.finished) == (DEEPSEEK, True)
+
+    @pytest.mark.parametrize("finish", [None, "done", "cancelled"])
+    def test_only_failed_attempt_can_be_replaced(self, finish: str | None) -> None:
+        race = make_race((DEEPSEEK, 1))
+        if finish == "done":
+            race.resolve(DEEPSEEK, ok("译文"), now=0.1)
+        elif finish == "cancelled":
+            race.cancel(DEEPSEEK, now=0.1)
+        with pytest.raises(ValueError, match="不能重新参赛"):
+            race.rejoin(DEEPSEEK, 1, now=1.0)
+        with pytest.raises(ValueError, match="不能重新参赛"):
+            race.rejoin(DEEPL, 2, now=1.0)
+
+
 def test_failure_never_overrides_and_top_failure_finishes_race() -> None:
     race = make_race((DEEPSEEK, 1), (ARGOS, 3))
     race.resolve(ARGOS, ok("argos 译文"), now=0.3)

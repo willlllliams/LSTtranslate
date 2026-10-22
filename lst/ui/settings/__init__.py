@@ -5,7 +5,8 @@
 - entries：引擎实例的读取、排序、新建与校验，不依赖 Qt；
 - presenter：展示器，订阅状态、发送 UpdateConfig 等命令，不依赖 Qt；
 - controls、cards：各种取值的编辑器、设置卡片，以及把它们接到展示器上的生成器；
-- pages、page_engines、page_models、page_about：七个页面；
+- pages、page_capture、page_engines、page_models、page_about：七个页面；
+  ocr_engine_rows、model_rows 把 OCR 引擎目录、模型目录整理成显示内容，不依赖 Qt；
 - window：左侧导航加右侧页面的窗口，Mica 背景；
 - module：SettingsModule，实现 kernel 的 Module 协议。
 

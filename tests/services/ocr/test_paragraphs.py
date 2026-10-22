@@ -40,6 +40,7 @@ from tests.services.ocr.helpers import groups, line, merge, stack
         (["これは", "テストです。"], "これはテストです。"),
         (["안녕하세요", "세계"], "안녕하세요 세계"),
         (["Ｆｕｌｌ", "ｗｉｄｔｈ"], "Ｆｕｌｌｗｉｄｔｈ"),
+        (["注音ㄅㄆ", "ㄇ"], "注音ㄅㄆㄇ"),
         (["recog-", "nition"], "recog-nition"),
         (["well-", "Known"], "well- Known"),
         (["page 3-", "4"], "page 3- 4"),
@@ -52,7 +53,9 @@ def test_join_lines(parts: list[str], expected: str) -> None:
     assert join_lines(parts) == expected
 
 
-@pytest.mark.parametrize("char", ["中", "。", "，", "あ", "カ", "ｱ", "Ａ", "㐀", "𠀀", "〔"])
+@pytest.mark.parametrize(
+    "char", ["中", "。", "，", "あ", "カ", "ｱ", "Ａ", "㐀", "𠀀", "〔", "ㄅ", "ㆠ", "㇀", "ㇰ"]
+)
 def test_cjk_characters(char: str) -> None:
     assert is_cjk(char)
 

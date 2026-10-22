@@ -12,7 +12,7 @@ import contextlib
 import itertools
 import os
 import tomllib
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,12 +169,26 @@ class SetField:
     value: JsonValue
 
 
+def _accept_all(_raw: Mapping[str, object]) -> bool:
+    return True
+
+
+ITEM_KEY = "id"
+"""数组节条目的标识字段。写回时按它把内存中的条目与文件里的表一一对应。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ReplaceArray:
-    """用 items 整体替换数组节 section。"""
+    """把数组节 section 的内容改为 items。
+
+    previous 是本次修改之前内存中的条目，accepts 判断文件里的一张表能否通过条目校验。
+    文件里已经是表数组时以它为底稿逐条更新（规则见 ``_update_array``），否则整体写入 items。
+    """
 
     section: str
     items: list[JsonObject]
+    previous: list[JsonObject]
+    accepts: Callable[[Mapping[str, object]], bool] = _accept_all
 
 
 type Edit = SetField | ReplaceArray
@@ -227,9 +241,8 @@ def _child_table(container: Container, key: str, *, inline: bool) -> Container:
 def _replace_array(doc: TOMLDocument, edit: ReplaceArray) -> None:
     root = cast(Container, doc)
     existing = root.get(edit.section)
-    if edit.items and isinstance(existing, AoT):
-        # 原地替换，表数组在文件中的位置不变；后面可能紧跟别的表头，末尾留一个空行隔开。
-        root[edit.section] = _array_of_tables(edit.items, blank_after=True)
+    if isinstance(existing, AoT):
+        _update_array(root, existing, edit)
         return
     if edit.section in root:
         del root[edit.section]
@@ -237,17 +250,110 @@ def _replace_array(doc: TOMLDocument, edit: ReplaceArray) -> None:
     root[edit.section] = _array_of_tables(edit.items) if edit.items else tomlkit.array()
 
 
-def _array_of_tables(items: Sequence[JsonObject], *, blank_after: bool = False) -> AoT:
-    """条目之间的空行由 tomlkit 自动加；blank_after 时在最后一个条目后再加一个空行。"""
+def _update_array(root: Container, existing: AoT, edit: ReplaceArray) -> None:
+    """以文件里的表数组为底稿，逐条把它更新成 edit.items。
+
+    文件里的每张表按以下规则处理：
+
+    1. 校验不过的表（启动时被整条丢弃的条目）原样保留，包括其中的注释和写错的字段。
+    2. 校验通过且标识第一次出现的表与同标识的条目对应。标识在 edit.items 中的，按“修改前的条目 →
+       新条目”的字段差异就地改写：界面没有改动的字段保留文件里的值，运行期间手工改过的内容不被冲掉；
+       修改前就没有这个条目（运行期间手工加的）时以表的现有内容为修改前的值。
+       标识只在 previous 中的，说明界面删除了它，删掉这张表。
+    3. 其余校验通过的表（运行期间手工加的、标识重复的）原样保留。没有标识的表视为已对应到旧条目，
+       由 edit.items 中没有标识的条目重新生成。
+
+    输出顺序：edit.items 的顺序决定对应表的先后，原样保留的表跟在文件里位于它前面的最近一张保留下来的
+    对应表之后。edit.items 中找不到对应表的条目新建一张表。
+    """
+    previous = {key: item for item in edit.previous if (key := _key(item)) is not None}
+    wanted = {key for item in edit.items if (key := _key(item)) is not None}
+    matched: dict[str, Table] = {}
+    # 原样保留的表，按它前面最近一张保留下来的对应表的标识分组；None 表示排在最前面。
+    kept_after: dict[str | None, list[Table]] = {}
+    anchor: str | None = None
+    for table in existing.body:
+        raw = cast(dict[str, object], table.unwrap())
+        valid = _safe_accepts(edit.accepts, raw)
+        key = _key(raw) if valid else None
+        if valid and key is None:
+            continue
+        if key is not None and key not in matched:
+            if key in wanted:
+                matched[key] = table
+                anchor = key
+                continue
+            if key in previous:
+                continue
+        kept_after.setdefault(anchor, []).append(table)
+
+    tables: list[Table] = list(kept_after.get(None, []))
+    for item in edit.items:
+        key = _key(item)
+        table = matched.get(key) if key is not None else None
+        if table is None:
+            table = _new_table(item)
+        else:
+            before = previous.get(key) if key is not None else None
+            _patch_table(table, before if before is not None else cast(JsonObject, table.unwrap()), item)
+        tables.append(table)
+        if key is not None:
+            tables.extend(kept_after.get(key, []))
+    if not tables:
+        del root[edit.section]
+        root[edit.section] = tomlkit.array()
+        return
+    # 每张表末尾自带与下一张表之间的空行。按“已解析”的方式组装，tomlkit 不再额外插入换行。
+    # 表数组在文件末尾时最后一张表不补空行。
+    at_end = list(root.keys())[-1] == edit.section
+    for table in tables[:-1] if at_end else tables:
+        _ensure_blank_after(table)
+    root[edit.section] = AoT(tables, parsed=True)
+
+
+def _key(item: Mapping[str, object]) -> str | None:
+    value = item.get(ITEM_KEY)
+    return value if isinstance(value, str) else None
+
+
+def _safe_accepts(accepts: Callable[[Mapping[str, object]], bool], raw: Mapping[str, object]) -> bool:
+    try:
+        return accepts(raw)
+    except Exception:
+        # 模式是注入的依赖，判断失败按校验不过处理，表原样保留。
+        return False
+
+
+def _patch_table(table: Table, before: Mapping[str, JsonValue], after: Mapping[str, JsonValue]) -> None:
+    """把 table 中 before 与 after 不同的字段改成 after 的值；after 中缺失或为 None 的字段删除。"""
+    for key in list(before):
+        if after.get(key) is None and key in table:
+            del table[key]
+    for key, value in after.items():
+        if value is None or before.get(key) == value:
+            continue
+        table[key] = to_item(value)
+
+
+def _new_table(entry: Mapping[str, JsonValue]) -> Table:
+    table = tomlkit.table()
+    for key, value in entry.items():
+        if value is not None:
+            table.add(key, to_item(value))
+    return table
+
+
+def _ensure_blank_after(table: Table) -> None:
+    """表数组后面可能紧跟别的表头，最后一张表的末尾留一个空行隔开。"""
+    if not table.as_string().endswith("\n\n"):
+        table.add(tomlkit.nl())
+
+
+def _array_of_tables(items: Sequence[JsonObject]) -> AoT:
+    """条目之间的空行由 tomlkit 自动加。"""
     array = tomlkit.aot()
-    for index, entry in enumerate(items):
-        table = tomlkit.table()
-        for key, value in entry.items():
-            if value is not None:
-                table.add(key, to_item(value))
-        if blank_after and index == len(items) - 1:
-            table.add(tomlkit.nl())
-        cast(list[Item], array).append(table)
+    for entry in items:
+        cast(list[Item], array).append(_new_table(entry))
     return array
 
 

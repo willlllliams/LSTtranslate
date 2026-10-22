@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from lst.contracts.config import AppConfig
 from lst.contracts.events import HotkeyRegistrationFailed, StartCapture, ToggleBilingualWindow
 from lst.kernel import EventBus, ModuleContext
+from lst.ui import i18n
+from lst.ui.common import HotkeyRecordingChanged
 from lst.ui.hotkeys import (
     ERROR_HOTKEY_ALREADY_REGISTERED,
     MOD_ALT,
@@ -137,3 +139,54 @@ def test_real_register_and_unregister_roundtrip() -> None:
         if error == 0:
             backend.unregister(0x7FFF)
     assert ctypes.sizeof(ctypes.c_void_p) in (4, 8)
+
+
+# ---------------------------------------------------------------------- 重复的组合、录入时暂停、文案
+
+
+def test_config_rejects_the_same_hotkey_twice() -> None:
+    with pytest.raises(ValidationError) as caught:
+        HotkeysConfig.model_validate({"capture": "Alt+Q", "bilingual": "alt+q"})
+    assert "Alt+Q" in caught.value.errors()[0]["msg"]
+
+
+def test_rejection_reasons_follow_the_interface_language() -> None:
+    i18n.set_language("en")
+    for raw in ({"capture": "q"}, {"capture": "ctrl+f12"}, {"capture": "alt+!"}, {"bilingual": "Alt+Q"}):
+        with pytest.raises(ValidationError) as caught:
+            HotkeysConfig.model_validate(raw)
+        message = caught.value.errors()[0]["msg"]
+        assert message.isascii(), message
+
+
+async def test_conflict_with_its_own_hotkey_is_named_as_such() -> None:
+    backend = FakeBackend()
+    module, bus, _ = await started(backend)
+    bus.publish(config())
+    await bus.drain()
+    own = module._failure_reason(parse_hotkey("alt+q"), ERROR_HOTKEY_ALREADY_REGISTERED)
+    other = module._failure_reason(parse_hotkey("ctrl+alt+z"), ERROR_HOTKEY_ALREADY_REGISTERED)
+    assert own == "与本程序的另一个热键（Alt+Q）相同"
+    assert other == "已被其他程序占用"
+    await module.stop()
+
+
+async def test_recording_pauses_and_resumes_hotkeys() -> None:
+    backend = FakeBackend(fail={"Alt+E": ERROR_HOTKEY_ALREADY_REGISTERED})
+    module, bus, received = await started(backend)
+    bus.publish(config())
+    await bus.drain()
+    assert sorted(backend.registered.values()) == ["Alt+Q"]
+    bus.publish(HotkeyRecordingChanged(True))
+    await bus.drain()
+    assert module.paused and backend.registered == {}
+    bus.publish(AppConfig(sections={"hotkeys": {"capture": "Ctrl+Alt+T"}}, revision=2))  # 录入的结果
+    await bus.drain()
+    assert backend.registered == {}  # 暂停期间不注册
+    bus.publish(HotkeyRecordingChanged(False))
+    await bus.drain()
+    assert not module.paused
+    assert sorted(backend.registered.values()) == ["Ctrl+Alt+T"]
+    failures = [m for m in received if isinstance(m, HotkeyRegistrationFailed)]
+    assert [f.hotkey for f in failures] == ["Alt+E"]  # 恢复时同一个失败不再通知
+    await module.stop()

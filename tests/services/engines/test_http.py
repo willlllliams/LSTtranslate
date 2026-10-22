@@ -1,11 +1,15 @@
 """网络引擎共用 HTTP 工具的测试。"""
 
+import asyncio
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 
 from lst.contracts.errors import ErrorCode
 from lst.services.engines.http import (
     EngineError,
+    ErrorVerdict,
     RateLimiter,
     RetryPolicy,
     aiter_sse_data,
@@ -214,3 +218,72 @@ class TestRateLimiter:
     def test_rejects_bad_parameters(self) -> None:
         with pytest.raises(ValueError):
             RateLimiter(0)
+
+
+class HangingBody(httpx.AsyncByteStream):
+    """错误响应的响应体：读取时一直挂起，记录是否被关闭。"""
+
+    def __init__(self) -> None:
+        self.reading = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.reading.set()
+        await asyncio.Event().wait()
+        yield b""
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class TestResponseCleanup:
+    async def test_error_response_closed_when_cancelled_while_reading_body(self) -> None:
+        """读取错误响应体时调用方被取消（例如任务时限到期），流式响应仍被关闭。"""
+        body = HangingBody()
+        script = Script(httpx.Response(503, stream=body))
+        async with client_for(script) as client:
+            task = asyncio.create_task(send_with_retry(client, build, stream=True, sleep=Sleeps()))
+            await asyncio.wait_for(body.reading.wait(), 2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert body.closed
+
+
+class TestSendTimeout:
+    async def test_limit_covers_each_send_but_not_backoff(self) -> None:
+        """send_timeout 只约束单次发送：退避等待比时限长时，重试照常发出。"""
+        script = Script(httpx.Response(503), httpx.Response(200, text="ok"))
+
+        async def slow_sleep(delay: float) -> None:
+            await asyncio.sleep(0.1)
+
+        async with client_for(script) as client:
+            response = await send_with_retry(client, build, sleep=slow_sleep, send_timeout=0.05)
+        assert (response.text, script.calls) == ("ok", 2)
+
+    async def test_send_exceeding_limit_raises_timeout_error(self) -> None:
+        async def never(request: httpx.Request) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(never)) as client:
+            with pytest.raises(TimeoutError):
+                await send_with_retry(client, build, sleep=Sleeps(), send_timeout=0.02)
+
+
+class TestClassifyHook:
+    async def test_hook_can_make_error_retryable_and_extend_detail(self) -> None:
+        script = Script(httpx.Response(403, json={"reason": "busy"}), httpx.Response(200, text="ok"))
+        seen: list[tuple[int, bytes, ErrorVerdict]] = []
+
+        def classify(status: int, body: bytes, default: ErrorVerdict) -> ErrorVerdict:
+            seen.append((status, body, default))
+            return ErrorVerdict(ErrorCode.RATE_LIMITED, True, default.detail + "（限流）")
+
+        async with client_for(script) as client:
+            response = await send_with_retry(
+                client, build, sleep=Sleeps(), rand=lambda: 0.5, classify=classify
+            )
+        assert (response.text, script.calls) == ("ok", 2)
+        assert seen == [(403, b'{"reason":"busy"}', ErrorVerdict(ErrorCode.AUTH, False, "HTTP 403"))]

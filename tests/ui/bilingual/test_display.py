@@ -15,7 +15,8 @@ from lst.ui.bilingual import SegmentItem, system_clipboard
 from lst.ui.bilingual.widgets import MARKER_OFFSET
 from lst.ui.i18n import error_text, tr
 from lst.ui.theme import TOKENS, engine_color
-from tests.ui.bilingual.conftest import Harness, attempt, config, segment, statuses, wait_until
+from tests.ui.bilingual.conftest import Harness, attempt, config, segment, statuses
+from tests.ui.conftest import wait_until
 
 Q, R, D, F, C = (
     AttemptState.QUEUED,

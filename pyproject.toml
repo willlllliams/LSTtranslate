@@ -16,6 +16,14 @@ dependencies = [
     "keyring>=25.7",
     "PySide6-Essentials>=6.12,<6.13",
     "qasync>=0.28",
+    "winrt-runtime>=3.2,<4",
+    "winrt-windows-media-ocr>=3.2,<4",
+    "winrt-windows-graphics-imaging>=3.2,<4",
+    "winrt-windows-storage-streams>=3.2,<4",
+    "winrt-windows-globalization>=3.2,<4",
+    "winrt-windows-foundation>=3.2,<4",
+    "winrt-windows-foundation-collections>=3.2,<4",
+    "numpy>=2.0,<3",
 ]
 
 [dependency-groups]
@@ -100,13 +108,46 @@ modules = [
     "lst.services.cache",
     "lst.services.stats",
     "lst.services.models",
+    "lst.services.ocr_engines",
+    "lst.services.updates",
     "lst.services.diagnostics",
 ]
 
 [[tool.importlinter.contracts]]
-name = "界面模块互不依赖（ui.theme、ui.i18n 为共用模块，不在此列）"
+name = "共享基础设施不依赖业务模块"
+type = "forbidden"
+source_modules = ["lst.services._shared"]
+forbidden_modules = [
+    "lst.services.race",
+    "lst.services.engines",
+    "lst.services.ocr",
+    "lst.services.config",
+    "lst.services.cache",
+    "lst.services.stats",
+    "lst.services.models",
+    "lst.services.ocr_engines",
+    "lst.services.updates",
+    "lst.services.diagnostics",
+]
+
+[[tool.importlinter.contracts]]
+name = "界面模块互不依赖（ui.theme、ui.i18n、ui.common 为共用模块，不在此列）"
 type = "independence"
 modules = [
+    "lst.ui.hotkeys",
+    "lst.ui.tray",
+    "lst.ui.capture",
+    "lst.ui.overlay",
+    "lst.ui.bilingual",
+    "lst.ui.settings",
+    "lst.ui.onboarding",
+]
+
+[[tool.importlinter.contracts]]
+name = "界面共用模块不依赖具体界面模块"
+type = "forbidden"
+source_modules = ["lst.ui.common", "lst.ui.theme", "lst.ui.i18n"]
+forbidden_modules = [
     "lst.ui.hotkeys",
     "lst.ui.tray",
     "lst.ui.capture",

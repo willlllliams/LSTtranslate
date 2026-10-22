@@ -22,6 +22,15 @@ from lst.workers.ocr_worker import network_guard
         ("socket.connect", (socket.socket, ("2606:2800:220:1::", 443, 0, 0))),
         ("http.client.connect", (object(), "modelscope.cn", 443)),
         ("urllib.Request", ("https://huggingface.co/PaddlePaddle/x", None, dict[str, str](), "GET")),
+        # 以 127. 开头的域名不是回环地址。
+        ("socket.getaddrinfo", ("127.evil.example.com", 443, 0, 0, 0)),
+        ("http.client.connect", (object(), "127.0.0.1.nip.io", 443)),
+        # connect、sendto 直接带域名时由 C 层解析，不再触发 getaddrinfo 事件，所以一律拒绝。
+        ("socket.connect", (socket.socket, ("huggingface.co", 443))),
+        ("socket.connect", (socket.socket, ("127.evil.example.com", 443))),
+        ("socket.connect", (socket.socket, ("localhost", 443))),
+        ("socket.sendto", (socket.socket, ("dns.example.com", 53))),
+        ("socket.getnameinfo", (("93.184.216.34", 443), 0)),
     ],
 )
 def test_remote_targets_are_blocked(
@@ -42,6 +51,11 @@ def test_remote_targets_are_blocked(
         ("socket.getaddrinfo", (None, 0, 0, 0, 0)),
         ("socket.connect", (socket.socket, ("127.0.0.1", 5000))),
         ("socket.connect", (socket.socket, ("::1", 5000, 0, 0))),
+        ("socket.connect", (socket.socket, ("0:0:0:0:0:0:0:1", 5000, 0, 0))),
+        ("socket.connect", (socket.socket, ("::ffff:127.0.0.1", 5000, 0, 0))),
+        ("socket.connect", (socket.socket, (b"127.0.0.1", 5000))),
+        ("socket.sendto", (socket.socket, ("127.0.0.1", 53))),
+        ("socket.getnameinfo", (("127.0.0.1", 80), 0)),
         ("socket.connect", (socket.socket, r"\\.\pipe\some-pipe")),  # 不是网络地址
         ("urllib.Request", ("http://127.0.0.1:8080/x", None, dict[str, str](), "GET")),
         ("open", ("C:/file.txt", "r", 0)),  # 无关的审计事件
@@ -52,7 +66,21 @@ def test_local_and_unrelated_events_pass(event: str, args: tuple[object, ...]) -
 
 
 @pytest.mark.parametrize(
-    ("host", "loopback"), [("LOCALHOST", True), ("127.8.8.8", True), ("[::1]", True), ("10.0.0.1", False)]
+    ("host", "loopback"),
+    [
+        ("LOCALHOST", True),
+        ("localhost.", True),
+        ("127.8.8.8", True),
+        ("[::1]", True),
+        ("0:0:0:0:0:0:0:1", True),
+        ("::ffff:127.0.0.1", True),
+        ("::1%1", True),
+        ("10.0.0.1", False),
+        ("127.evil.example.com", False),
+        ("127.0.0.1.nip.io", False),
+        ("localhost.example.com", False),
+        ("::ffff:10.0.0.1", False),
+    ],
 )
 def test_is_loopback(host: str, loopback: bool) -> None:
     assert network_guard.is_loopback(host) is loopback

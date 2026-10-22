@@ -4,8 +4,12 @@
 1、2、3……再发送 ``UpdateConfig``，数组节整体替换。勾选框表示是否启用。选中一个实例后，下方显示该类引擎的参数，
 字段、取值范围和默认值都来自注入的 pydantic 模型（``schema.model_field_specs``）。
 
-API key 不经过配置：输入框里的内容用 ``UpdateSecret`` 提交，提交后清空，界面永远不显示已保存的 key，
+API key 不经过配置：输入框里的内容在按 Enter 或离开输入框时去掉首尾空白，用 ``UpdateSecret`` 提交，
+提交后清空，界面永远不显示已保存的 key，
 只显示“已设置”“未设置”。
+
+OpenAI 兼容引擎的“附带截图”（send_image，需求 ENG-07）关闭时，“截图尺寸上限”（image_max_side）的卡片不可用；
+开关一拨动就随之变化，不等配置回传。
 """
 
 from itertools import pairwise
@@ -215,16 +219,12 @@ class AddEngineDialog(QDialog):
         has_provider = "provider" in specs
         self._provider_label.setVisible(has_provider)
         self.provider_combo.setVisible(has_provider)
-        keyless = self.kind in self._presenter_keyless
+        keyless = self.kind in self._presenter.keyless_kinds
         self._key_label.setVisible(not keyless)
         self.key_edit.setVisible(not keyless)
         self._fill_defaults()
         self._relink_tab_order()
         self._validate()
-
-    @property
-    def _presenter_keyless(self) -> frozenset[str]:
-        return frozenset(self._presenter.keyless_kinds)
 
     def _provider_changed(self) -> None:
         self._fill_defaults()
@@ -285,7 +285,8 @@ class SecretField(QWidget):
         super().__init__()
         self.engine_id = engine_id
         self._presenter = presenter
-        self.editor = TextEditor(password=True)
+        # 只在按 Enter 或离开输入框时提交：按停顿提交会把输入到一半的 key 写进密钥库。
+        self.editor = TextEditor(password=True, finish_only=True)
         self.status_label = ThemedLabel("secondary", TOKENS.caption_px)
         self.clear_button = QPushButton()
         self.clear_button.setIcon(fluent_icon(Glyph.DELETE))
@@ -327,6 +328,7 @@ class SecretField(QWidget):
         self.clear_button.setEnabled(state in (KeyState.SET, KeyState.UNKNOWN))
 
     def _submit(self, value: object) -> None:
+        # 空白内容不提交：清空的输入框表示“没有输入”，不是删除已保存的 key（删除用“清除”按钮）。
         if isinstance(value, str) and value.strip():
             self._presenter.set_api_key(self.engine_id, value)
 
@@ -421,7 +423,6 @@ class EnginesPage(SettingsPage):
         self.up_button.clicked.connect(lambda: self._move(-1))
         self.down_button.clicked.connect(lambda: self._move(1))
         self.test_button.clicked.connect(self._test)
-        self.finish()
 
     def add_title_label(self) -> QLabel:
         return ThemedLabel("primary", TOKENS.title_px, semibold=True)
@@ -468,9 +469,8 @@ class EnginesPage(SettingsPage):
                 for binding in self._editor_bindings:
                     binding.refresh_error(self.presenter)
                 self._refresh_key_error()
-            case Topic.LANGUAGE:
-                self.retranslate()
             case _:
+                # LANGUAGE 由基类调用 retranslate（本类重写的版本），这里不再重复。
                 pass
 
     def all_bindings(self) -> list[Binding]:
@@ -523,7 +523,7 @@ class EnginesPage(SettingsPage):
         if code is None:
             return ""
         reason, suggestion = error_text(code)
-        return f"{reason}。{suggestion}"
+        return tr("settings.engines.error.tip", reason=reason, suggestion=suggestion)
 
     def _sync_items(self) -> None:
         """让列表与配置一致：顺序不变时只更新文字和勾选状态，不重建，焦点与选中都保留。"""
@@ -694,6 +694,7 @@ class EnginesPage(SettingsPage):
                 binding.refresh(self.presenter)
             if self.secret_field is not None:
                 self.secret_field.refresh()
+        self._sync_image_fields()
         self.select_hint.setVisible(entry is None)
         self._update_editor_title()
 
@@ -763,6 +764,8 @@ class EnginesPage(SettingsPage):
 
         editor.committed.connect(commit)
         editor.edited.connect(lambda: self.presenter.clear_rejection(location))
+        if name in IMAGE_FIELDS:
+            editor.edited.connect(self._sync_image_fields)
 
         def load(presenter: SettingsPresenter) -> JsonValue:
             current = presenter.engine(engine_id)
@@ -797,6 +800,13 @@ class EnginesPage(SettingsPage):
         if self.secret_field is not None and self._key_card is not None:
             self._key_card.set_error(self.presenter.rejection_for(self._key_card.location))
 
+    def _sync_image_fields(self) -> None:
+        """“截图尺寸上限”只在“附带截图”开启时可用。按开关当前的显示判断，用户刚拨动时立即生效。"""
+        switch = self.editor_editor("send_image")
+        card = self.editor_card("image_max_side")
+        if switch is not None and card is not None:
+            card.setEnabled(switch.json_value() is True)
+
     def editor_card(self, name: str) -> SettingCard | None:
         """参数表单里某个字段的卡片，没有时返回 None。"""
         for binding in self._editor_bindings:
@@ -810,3 +820,6 @@ class EnginesPage(SettingsPage):
 
 
 _NULLABLE: Final = frozenset({Kind.OPTIONAL_FLOAT, Kind.OPTIONAL_TEXT, Kind.TEXT_LIST})
+
+IMAGE_FIELDS: Final = frozenset({"send_image"})
+"""修改后要立即重新判断“截图尺寸上限”是否可用的字段。"""

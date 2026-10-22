@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
+from lst.contracts.langs import normalize_lang
 from lst.services.engines.common import EngineSettings
 
 Provider = Literal["deepseek", "openai", "ollama", "llamacpp", "generic"]
@@ -22,8 +23,11 @@ class OpenAICompatSettings(EngineSettings):
     - first_token_timeout_s 为 None 时按 provider 取默认值：在线 8 秒；本地首次 60 秒（含模型加载），
       拿到过首 token 之后 15 秒。给出数值时所有请求都用这个值。
     - structured_output 为 auto 时，DeepSeek 用 json_object（它不支持 json_schema），其余用 json_schema。
-    - languages 是语言白名单，None 表示支持任意语言对。
+    - languages 是语言白名单，None 表示支持任意语言对。校验时按 contracts.langs.normalize_lang 整理成
+      规范写法并去重（zh、zh-CN → zh-Hans，en-US → en），调度器按规范写法比较语言代码；非法代码校验失败。
     - 本地 provider 没有显式配置 max_concurrency 时默认为 1，对应 Ollama 默认的服务端并行数（2.7.3 节）。
+    - send_image 为真时，截屏翻译把截图连同识别出的文字一起发给模型（需求 ENG-07）；截图发送前等比缩小，
+      长边不超过 image_max_side。DeepSeek 等不接受图片的服务请保持关闭。
     """
 
     provider: Provider
@@ -36,6 +40,19 @@ class OpenAICompatSettings(EngineSettings):
     first_token_timeout_s: float | None = Field(default=None, gt=0, le=600)
     structured_output: StructuredOutput = "auto"
     languages: tuple[str, ...] | None = None
+    send_image: bool = Field(
+        default=False,
+        description=(
+            "截屏翻译时把截图连同识别出的文字一起发给模型，帮助理解上下文、纠正识别错误。"
+            "截图会发送给该服务。模型不支持图片输入时，该实例的翻译会失败。"
+        ),
+    )
+    image_max_side: int = Field(
+        default=1568,
+        ge=256,
+        le=8192,
+        description="附带截图时，截图发送前等比缩小，长边不超过这个像素数，以节省 token。",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -46,6 +63,13 @@ class OpenAICompatSettings(EngineSettings):
         if fields.get("provider") in LOCAL_PROVIDERS and "max_concurrency" not in fields:
             return {**fields, "max_concurrency": 1}
         return fields
+
+    @field_validator("languages")
+    @classmethod
+    def _normalize_languages(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return tuple(dict.fromkeys(normalize_lang(code) for code in value))
 
     @field_validator("base_url")
     @classmethod

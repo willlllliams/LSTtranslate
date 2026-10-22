@@ -371,3 +371,83 @@ async def test_update_waits_for_lock_holder(start: Launcher, config_path: Path) 
     await harness.bus.drain()
 
     assert 'mode = "full"' in read(config_path)
+
+
+# ---------------------------------------------------------------------- 数组节：逐条写回
+
+
+DROPPED = """\
+# 我的配置
+[[engines]]
+id = "argos"
+kind = "local"
+priority = 1
+
+[[engines]]
+# 付费引擎，注意额度
+id = "deepl"
+kind = "online"
+priority = 2
+base_url = "https://api.example.com"
+secret = "deepl-key"
+timeuot_s = 30
+"""
+
+
+async def test_dropped_entry_survives_list_update(start: Launcher, config_path: Path) -> None:
+    write(config_path, DROPPED)
+    harness = await start(config_path)
+    assert [e["id"] for e in harness.engines() if isinstance(e, dict)] == ["argos"]
+
+    items = [dict(e) for e in harness.engines() if isinstance(e, dict)]
+    items[0]["timeout_s"] = 7
+    await update(harness, {"engines": list[JsonValue](items)})
+
+    # 启动时校验不过而被丢弃的 deepl 条目连同注释和拼错的字段原样留在文件里，用户可以手工修好。
+    text = read(config_path)
+    assert "# 付费引擎，注意额度" in text
+    assert "timeuot_s = 30" in text
+    parsed = tomllib.loads(text)
+    assert [e["id"] for e in parsed["engines"]] == ["argos", "deepl"]
+    assert parsed["engines"][0]["timeout_s"] == 7
+
+
+async def test_external_entry_edit_survives_list_update(start: Launcher, config_path: Path) -> None:
+    text = BASE.replace(
+        "[ocr]",
+        '[[engines]]\nid = "b"\nkind = "local"\npriority = 2\n\n[ocr]',
+    )
+    harness = await started(start, config_path, text)
+    # 运行期间用户手工改了 b 的超时，又手工加了一条 c。
+    edited = text.replace(
+        'id = "b"\nkind = "local"\npriority = 2\n', 'id = "b"\nkind = "local"\npriority = 2\ntimeout_s = 9\n'
+    )
+    edited = edited.replace("[ocr]", '[[engines]]\nid = "c"\nkind = "local"\npriority = 3\n\n[ocr]')
+    write(config_path, edited)
+
+    # 界面只改 argos 的超时，删除不涉及的条目以外原样发回整份数组。
+    items = [dict(e) for e in harness.engines() if isinstance(e, dict)]
+    items[0]["timeout_s"] = 7
+    await update(harness, {"engines": list[JsonValue](items)})
+
+    parsed = tomllib.loads(read(config_path))
+    assert [(e["id"], e.get("timeout_s")) for e in parsed["engines"]] == [("argos", 7), ("b", 9), ("c", None)]
+    assert "# 本地引擎" in read(config_path)
+
+
+async def test_list_update_removes_and_reorders_known_entries(start: Launcher, config_path: Path) -> None:
+    write(
+        config_path,
+        DROPPED.replace(
+            "# 我的配置\n", '# 我的配置\n[[engines]]\nid = "x"\nkind = "local"\npriority = 5\n\n'
+        ),
+    )
+    harness = await start(config_path)
+    assert [e["id"] for e in harness.engines() if isinstance(e, dict)] == ["x", "argos"]
+
+    # 界面删除 x，并新增 y 排在 argos 前面。
+    await update(harness, {"engines": [engine("y", 1), engine("argos", 2)]})
+
+    parsed = tomllib.loads(read(config_path))
+    assert [e["id"] for e in parsed["engines"]] == ["y", "argos", "deepl"]
+    assert [e["id"] for e in harness.engines() if isinstance(e, dict)] == ["y", "argos"]

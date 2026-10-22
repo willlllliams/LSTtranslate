@@ -13,13 +13,20 @@ from lst.app.bootstrap import all_config_sections
 from lst.contracts.config import AppConfig
 from lst.contracts.worker_protocol import JsonValue
 from lst.services.engines import ENGINE_KINDS, EngineListSchema
+from lst.services.updates.config import CONFIG_SECTIONS as UPDATES_SECTIONS
 
 SCHEMA = EngineListSchema()
 
 
 def all_models() -> dict[str, type[BaseModel]]:
-    """全部普通配置节的模型，与组合根交给配置服务的相同。"""
-    return all_config_sections()
+    """全部普通配置节的模型，与组合根交给配置服务的相同。
+
+    组合根还没有登记 [updates] 节时在这里补上，关于页的更新设置项才有模型可读。
+    """
+    sections = all_config_sections()
+    for name, model in UPDATES_SECTIONS.items():
+        sections.setdefault(name, model)
+    return sections
 
 
 def engine_kinds() -> dict[str, type[BaseModel]]:
@@ -109,6 +116,7 @@ class FakeDialogs:
         self.directory = directory
         self.confirms: list[tuple[str, str]] = []
         self.directories: list[tuple[str, str]] = []
+        self.urls: list[str] = []
 
     def confirm(self, title: str, text: str) -> bool:
         self.confirms.append((title, text))
@@ -117,3 +125,7 @@ class FakeDialogs:
     def choose_directory(self, title: str, start: str) -> str | None:
         self.directories.append((title, start))
         return self.directory
+
+    def open_url(self, url: str) -> bool:
+        self.urls.append(url)
+        return True

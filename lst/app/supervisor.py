@@ -76,6 +76,8 @@ __all__ = ["SupervisedRequest", "SupervisorTimings", "WorkerSupervisor"]
 _NAME_PATTERN: Final = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _CREATION_FLAGS: Final = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 # 子进程的环境变量默认值：启动即启用 faulthandler（导入推理库时的崩溃也能留下堆栈），标准输出与错误用 UTF-8。
+# 只对源码版生效：安装版用 -I 启动子进程，解释器忽略全部 PYTHON* 环境变量。安装版的编码由命令行的 -X utf8
+# 保证，faulthandler 由进程入口的 _runtime.setup_process 启用，只是覆盖不到 setup_process 之前的导入阶段。
 _CHILD_ENV_DEFAULTS: Final = {"PYTHONFAULTHANDLER": "1", "PYTHONIOENCODING": "utf-8"}
 _TERMINAL_REPLIES: Final = (RequestDone, RequestFailed, OcrResult)
 _REPLY_TYPES: Final = (Started, SegmentResult, OcrResult, RequestDone, RequestFailed)
@@ -110,6 +112,9 @@ class SupervisorTimings:
     """进程退出后，等待读线程交完剩余消息、标准错误读完的上限。"""
     pipe_closed_grace_s: float = 1.0
     """管道断开而进程还在时，等它自行退出的时长，之后强制结束。"""
+    stop_timeout_s: float = 10.0
+    """stop() 结束子进程之后等待监管任务收尾的上限。超时记 ERROR 并放弃等待（取消监管任务）。
+    默认值覆盖强制结束后的等待（5 秒）与读线程交完消息的等待（io_drain_s），再留出余量。"""
 
 
 class _Termination(Enum):
@@ -433,6 +438,9 @@ class WorkerSupervisor:
     - ``stop()``：→ STOPPED；``reload()``：结束当前进程后用新配置重新 STARTING；
     - ``retry()``：FAILED 时清零崩溃计数并重新 STARTING。
 
+    启动命令可以在构造时给出，也可以留到第一次 ``reload(command=…)`` 给出（OCR 进程的命令随引擎而定）；
+    还没有命令时 ``start()``、``retry()`` 与不带命令的 ``reload()`` 抛 RuntimeError。
+
     ``start()`` 只启动监管任务，不等待子进程就绪：模型加载可能需要几分钟，期间提交的请求在监管器里排队
     （需求 OCR-07），就绪后按提交顺序发出。需要等待某个状态时用 ``wait_for_state``。
     """
@@ -440,7 +448,7 @@ class WorkerSupervisor:
     def __init__(
         self,
         name: str,
-        command: Sequence[str],
+        command: Sequence[str] | None,
         *,
         settings: Mapping[str, JsonValue],
         cwd: str | os.PathLike[str] | None = None,
@@ -455,7 +463,8 @@ class WorkerSupervisor:
         """
         参数：
             name：进程名，用于管道地址、线程名和日志，只能包含字母、数字、下划线和连字符。
-            command：启动命令（解释器路径加参数），监管器在末尾追加 ``--address <管道地址>``。
+            command：启动命令（解释器路径加参数），监管器在末尾追加 ``--address <管道地址>``；
+                None 表示命令由第一次 ``reload(command=…)`` 给出。
             settings：Configure 消息的内容。
             cwd、env：子进程的工作目录与额外的环境变量（叠加在当前进程的环境变量上）。
             on_state：状态变化回调 ``on_state(state, detail)``，在事件循环线程上同步调用；
@@ -466,10 +475,10 @@ class WorkerSupervisor:
         """
         if not _NAME_PATTERN.fullmatch(name):
             raise ValueError(f"推理进程名只能包含字母、数字、下划线和连字符：{name!r}")
-        if not command:
+        if command is not None and not command:
             raise ValueError("启动命令不能为空")
         self._name = name
-        self._command = tuple(command)
+        self._command: tuple[str, ...] | None = None if command is None else tuple(command)
         self._settings: dict[str, JsonValue] = dict(settings)
         self._cwd = cwd
         self._env = dict(env) if env is not None else {}
@@ -564,21 +573,33 @@ class WorkerSupervisor:
                     await self._terminate(proc, self._timings.shutdown_grace_s, _Termination.STOP)
                 # 子进程已退出或退避已取消，监管任务随即结束。
                 # 用 wait 而不是 await：任务自身的异常不传给 stop() 的调用方。
-                await asyncio.wait({task})
+                done, _ = await asyncio.wait({task}, timeout=self._timings.stop_timeout_s)
+                if not done:
+                    await self._abandon(task)
             self._lifecycle = None
             self._stopping = False
             self._fail_all(CANCELLED, "推理进程已停止")
             self._set_state(WorkerState.STOPPED)
 
-    async def reload(self, settings: Mapping[str, JsonValue]) -> None:
+    async def reload(
+        self, settings: Mapping[str, JsonValue], *, command: Sequence[str] | None = None
+    ) -> None:
         """用新配置重启子进程（需求 CFG-03，架构文档 8.2 节第 7 条），并清零崩溃计数。
 
         做法是结束当前进程再启动新进程：发送 Shutdown，等待 ``reload_grace_s``，仍未退出就强制结束。
         已发给旧进程的请求以 cancelled 结束；还在监管器排队的请求保留，新进程就绪后发出。
         未运行（STOPPED、FAILED）时直接启动。返回时旧进程已经退出，新进程正在启动。
+        command 不为 None 时，新进程改用这条启动命令（切换 OCR 引擎时换解释器与后端）。
+
+        重载落在新进程正在创建（``_spawn`` 在线程里执行）的窗口里时，那个进程用的是创建时取下的旧命令；
+        ``_run_process`` 在创建返回后核对命令，不同就按 RELOAD 结束它，再用新命令启动。
         """
+        if command is not None and not command:
+            raise ValueError("启动命令不能为空")
         async with self._control:
             self._settings = dict(settings)
+            if command is not None:
+                self._command = tuple(command)
             self._crash_times.clear()
             if not self._running():
                 self._launch()
@@ -590,7 +611,8 @@ class WorkerSupervisor:
             proc = self._proc
             if proc is not None:
                 await self._terminate(proc, self._timings.reload_grace_s, _Termination.RELOAD)
-            # proc 为 None 说明新进程正在创建，还没有发送 Configure，它会直接用到新配置。
+            # proc 为 None 说明新进程正在创建，还没有发送 Configure：配置在握手时读取，会用到新配置；
+            # 命令变了时由 _run_process 在创建返回后核对并重启。
 
     def retry(self) -> None:
         """从 FAILED 重新开始：清零崩溃计数后启动。其他状态下没有效果。"""
@@ -775,6 +797,8 @@ class WorkerSupervisor:
         return self._lifecycle is not None and not self._lifecycle.done()
 
     def _launch(self) -> None:
+        if self._command is None:
+            raise RuntimeError(f"推理进程 {self._name} 还没有启动命令，先用 reload(command=…) 给出")
         self._stopping = False
         self._set_state(WorkerState.STARTING)
         self._lifecycle = asyncio.get_running_loop().create_task(
@@ -816,8 +840,11 @@ class WorkerSupervisor:
         """启动一个子进程并服务到它退出，返回结束原因。"""
         self._set_state(WorkerState.STARTING)
         self._generation += 1
+        # 命令在事件循环线程上取快照交给线程：_spawn 执行期间 reload 可能换掉 self._command。
+        command = self._command
+        assert command is not None, "_launch 已检查启动命令"
         try:
-            popen, listener, address = await asyncio.to_thread(self._spawn)
+            popen, listener, address = await asyncio.to_thread(self._spawn, command)
         except (OSError, ValueError) as exc:
             self._logger.error("无法启动推理进程 %s：%r", self._name, exc)
             return _Outcome.FAILED, f"无法启动推理进程：{exc}"
@@ -837,6 +864,9 @@ class WorkerSupervisor:
         try:
             if self._stopping:
                 proc.kill(_Termination.STOP)
+            elif command != self._command:
+                self._logger.info("推理进程 %s 创建期间启动命令已改变，按新命令重启", proc.label)
+                proc.kill(_Termination.RELOAD)
             else:
                 await self._handshake(proc)
             await proc.exited
@@ -846,14 +876,17 @@ class WorkerSupervisor:
             raise
         return await self._settle(proc)
 
-    def _spawn(self) -> tuple[subprocess.Popen[bytes], Listener, str]:
-        """在线程池里执行：建命名管道、启动子进程、加入作业对象、写入 authkey。"""
+    def _spawn(self, command: tuple[str, ...]) -> tuple[subprocess.Popen[bytes], Listener, str]:
+        """在线程池里执行：建命名管道、启动子进程、加入作业对象、写入 authkey。
+
+        command 由事件循环线程传入；这里不读监管器的任何状态。
+        """
         address = f"\\\\.\\pipe\\lst-{self._name}-{uuid.uuid4().hex}"
         authkey = secrets.token_bytes(32)
         listener = Listener(address, family="AF_PIPE", authkey=authkey)
         try:
             popen = subprocess.Popen(
-                [*self._command, "--address", address],
+                [*command, "--address", address],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -998,6 +1031,20 @@ class WorkerSupervisor:
                 task.cancel()
             elif not task.cancelled() and task.exception() is not None:
                 self._logger.warning("退避等待出错：%r", task.exception())
+
+    async def _abandon(self, task: asyncio.Task[None]) -> None:
+        """stop() 等监管任务超时：记 ERROR，取消任务，强制结束仍在的子进程，不再等待。"""
+        self._logger.error(
+            "推理进程 %s 的监管任务在 %g 秒内没有结束，放弃等待",
+            self._name,
+            self._timings.stop_timeout_s,
+        )
+        task.cancel()
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            proc.kill(_Termination.STOP)
+        # 给取消一次运行机会；任务卡在线程里的阻塞调用上时，取消只是放弃等待那个调用。
+        await asyncio.wait({task}, timeout=0.1)
 
     async def _terminate(self, proc: _Process, grace_s: float, reason: _Termination) -> None:
         """发送 Shutdown，总共等待 grace_s，仍未退出就强制结束，然后等到进程退出。"""

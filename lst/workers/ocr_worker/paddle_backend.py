@@ -378,6 +378,7 @@ class PaddleBackend:
         prepared = image
         if target != (width, height):
             prepared = modules.cv2.resize(prepared, target, interpolation=modules.cv2.INTER_AREA)
+        # 先缩放再灰度化：灰度化只处理缩小后的像素，与 Windows OCR 后端的顺序相同。
         if parsed.grayscale:
             prepared = to_grayscale(prepared)
         result = self._predict(prepared, features)

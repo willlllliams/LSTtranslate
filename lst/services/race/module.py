@@ -1,13 +1,19 @@
 """竞速模块：把 RaceScheduler 接到事件总线上（架构文档 4.3、5.3、6.5、11.6 节）。
 
-模块订阅三类消息：
+模块订阅四类消息：
 
 - AppConfig：解析 race、screenshot、bilingual 三节，竞速模式变化时切换调度器的模式；
 - EngineRoster：更新调度器的引擎实例集合；
 - TranslateText：双语窗口的翻译请求。按段落切段、检测语言、按互译对确定目标语言后开始会话；
-  Ctrl+Enter 且文本未变时，让计费实例加入当前会话（需求 BI-03 至 BI-06，RACE-10）。
+  Ctrl+Enter 且文本未变时，让计费实例加入当前会话（需求 BI-03 至 BI-06，RACE-10）；
+- CaptureCompleted：保存最近一次截屏的截图，并为接收截图的实例在线程池里开始缩小与编码（需求 ENG-07）。
 
 截屏翻译的入口是 start_screenshot_session，由 M4 在收到 OcrCompleted 时调用。
+
+附带截图的编码放在本模块，在 CaptureCompleted 到达时就开始：编码与 OCR 识别同时进行，识别完成时
+截图通常已经编好，不增加出译文的延迟；需要的尺寸由引擎名册里各实例的 EngineInfo.image_max_side 决定，
+这只有竞速模块知道；没有实例接收截图时完全不编码。截图只保留最近一次截屏的一张，新截屏到达时旧的丢弃。
+
 调度器的三类输出经 _BusSink 发布为 SegmentsUpdated、SessionProgress、AttemptRecorded。
 
 语言检测要在线程池里执行，期间同一入口可能又来了新请求。每个入口有一个代号计数，
@@ -32,13 +38,18 @@ from lst.contracts.events import (
     TranslateText,
 )
 from lst.contracts.ids import Entry, Lang, SegmentId, SessionId
+from lst.contracts.ocr import CaptureCompleted, RawImage
 from lst.contracts.ports import TranslationCache
-from lst.contracts.translation import AttemptView, Segment, SegmentView
+from lst.contracts.translation import AttemptView, Engine, JobImage, Segment, SegmentView
 from lst.kernel import EventBus, ModuleContext
 from lst.services.race.config import BilingualConfig, RaceConfig, ScreenshotConfig
 from lst.services.race.langid import LanguageDetector, SupportsLanguageDetection, normalize_lang
 from lst.services.race.paragraphs import split_paragraphs
 from lst.services.race.scheduler import LangPair, RaceMode, RaceScheduler
+from lst.services.race.screenshot import encode_screenshot
+
+ImageEncoder = Callable[[RawImage, int], JobImage]
+"""截图编码函数：(截图, 最大边长) → 缩小并编码后的图片。在线程池里调用，可以耗时。"""
 
 
 def bilingual_langs(
@@ -84,6 +95,15 @@ class _BusSink:
         self._bus.publish(AttemptRecorded(session_id, segment_id, attempt))
 
 
+@dataclass(eq=False, slots=True)
+class _Capture:
+    """最近一次截屏的截图，以及各个最大边长的编码任务。任务的结果为 None 表示编码失败。"""
+
+    session_id: SessionId
+    image: RawImage
+    encodings: dict[int, asyncio.Task[JobImage | None]]
+
+
 @dataclass(frozen=True, slots=True)
 class _BilingualSession:
     """双语窗口的当前会话：会话号、各段文本与各段语言对，用来判断 Ctrl+Enter 时文本是否未变。"""
@@ -98,6 +118,7 @@ class RaceModule:
 
     cache 是译文缓存端口（RACE-08），detector 是语言检测器，缺省时用默认候选语言的 LanguageDetector；
     clock 与 frame_interval 原样交给 RaceScheduler，缺省时用调度器的默认值。
+    image_encoder 是截图编码函数，缺省时用 screenshot.encode_screenshot（PNG）。
     """
 
     name = "race"
@@ -109,8 +130,12 @@ class RaceModule:
         detector: SupportsLanguageDetection | None = None,
         clock: Callable[[], float] | None = None,
         frame_interval: float | None = None,
+        image_encoder: ImageEncoder | None = None,
     ) -> None:
         self._cache = cache
+        self._encoder: ImageEncoder = image_encoder if image_encoder is not None else encode_screenshot
+        self._engines: tuple[Engine, ...] = ()
+        self._capture: _Capture | None = None
         self._detector: SupportsLanguageDetection = detector if detector is not None else LanguageDetector()
         self._clock = clock if clock is not None else time.monotonic
         self._frame_interval = frame_interval if frame_interval is not None else 1 / 60
@@ -173,6 +198,7 @@ class RaceModule:
         ctx.subscribe(AppConfig, self._on_config)
         ctx.subscribe(EngineRoster, self._on_roster)
         ctx.subscribe(TranslateText, self._on_translate)
+        ctx.subscribe(CaptureCompleted, self._on_capture)
         self._warm_up = asyncio.create_task(self._warm_up_detector(), name="race-langid-warm-up")
 
     async def stop(self) -> None:
@@ -183,6 +209,12 @@ class RaceModule:
         for entry in Entry:
             self._generation[entry] += 1
         self._bilingual = None
+        capture, self._capture = self._capture, None
+        if capture is not None:
+            # 模块停止后编码结果没有用处。线程里的编码无法中断，取消只是不再等待它，免得任务在
+            # 事件循环关闭时仍未结束；正在等待的 start_screenshot_session 把它按没有截图处理后返回。
+            for task in capture.encodings.values():
+                task.cancel()
         if self._warm_up is not None and not self._warm_up.done():
             # 线程里的构建无法中断，它结束后结果仍然有效；这里只是不再等待它。
             self._warm_up.cancel()
@@ -201,6 +233,8 @@ class RaceModule:
 
         每段检测语言，目标语言为 screenshot.target_lang，检测不出的段按同语言跳过；
         计费实例直接参赛。同一入口的旧会话被取消（CAP-06、RACE-01）。
+        会话号与最近一次 CaptureCompleted 相同时，接收截图的实例随任务收到缩小后的截图（ENG-07）；
+        语言检测与等待截图编码同时进行。编码失败时这些实例照常参赛，只是不带图。
         检测期间又开始了新的截屏会话时，这次请求作废。模块停止后调用没有效果；
         段号重复等非法参数抛出 ValueError。
         """
@@ -211,12 +245,18 @@ class RaceModule:
         generation = self._advance(Entry.SCREENSHOT)
         batch = tuple(segments)
         target = self._screenshot.target_lang
-        detected = await self._detect(batch)
+        detected, images = await asyncio.gather(self._detect(batch), self._screenshot_images(session_id))
         if not self._is_current(Entry.SCREENSHOT, generation):
             return
         langs = {s.id: screenshot_langs(lang, target) for s, lang in zip(batch, detected, strict=True)}
         await self._scheduler.start_session(
-            Entry.SCREENSHOT, session_id, batch, langs, include_billing=True, context=_context(batch)
+            Entry.SCREENSHOT,
+            session_id,
+            batch,
+            langs,
+            include_billing=True,
+            context=_context(batch),
+            images=images,
         )
 
     # ---- 消息处理 ----
@@ -228,6 +268,16 @@ class RaceModule:
     def _on_roster(self, roster: EngineRoster) -> None:
         if self._running:
             self._apply_roster(roster)
+
+    def _on_capture(self, event: CaptureCompleted) -> None:
+        """保存截图，为名册里接收截图的实例开始编码。之前保存的截图和未完成的编码丢弃。"""
+        if not self._running:
+            return
+        self._drop_capture()
+        capture = _Capture(event.session_id, event.image, {})
+        self._capture = capture
+        for side in self._image_sides():
+            self._encoding(capture, side)
 
     async def _on_translate(self, command: TranslateText) -> None:
         """双语窗口的翻译请求（架构文档 11.6 节）。"""
@@ -306,6 +356,9 @@ class RaceModule:
             self._scheduler.set_engines(roster.engines)
         except ValueError:
             self._logger.exception("引擎名册无效，调度器沿用原来的实例集合")
+            return
+        # 调度器接受之后才更新：截图要编码的尺寸必须与调度器实际使用的实例一致。
+        self._engines = roster.engines
 
     def _manual_lang(self, code: Lang | None, what: str) -> Lang | None:
         """手动指定的语言规范化后使用；非法时记录警告，按“自动”处理。"""
@@ -332,6 +385,76 @@ class RaceModule:
             )
             return [None] * len(segments)
         return detected
+
+    # ---- 截图 ----
+
+    def _image_sides(self) -> list[int]:
+        """名册里接收截图的实例要求的最大边长，去重后从小到大排列。"""
+        sides: set[int] = set()
+        for engine in self._engines:
+            side = engine.info.image_max_side
+            if side is not None:
+                sides.add(side)
+        return sorted(sides)
+
+    def _encoding(self, capture: _Capture, side: int) -> asyncio.Task[JobImage | None]:
+        """取该尺寸的编码任务，没有（或被取消过）时新建一个。"""
+        task = capture.encodings.get(side)
+        if task is None or task.cancelled():
+            task = asyncio.create_task(
+                self._encode(capture.session_id, capture.image, side), name=f"race-image-{side}"
+            )
+            capture.encodings[side] = task
+        return task
+
+    async def _encode(self, session_id: SessionId, image: RawImage, side: int) -> JobImage | None:
+        """在线程池里缩小并编码截图。失败时记录日志（不含图片内容）并返回 None。"""
+        started = time.perf_counter()
+        try:
+            encoded = await asyncio.to_thread(self._encoder, image, side)
+        except Exception:
+            self._logger.exception("会话 %s 的截图编码失败（最大边长 %d），本次不附带截图", session_id, side)
+            return None
+        self._logger.debug(
+            "会话 %s 的截图编码完成：%d×%d → %d×%d，%d 字节，用时 %.1f 毫秒",
+            session_id,
+            image.width,
+            image.height,
+            encoded.width,
+            encoded.height,
+            len(encoded.data),
+            (time.perf_counter() - started) * 1000,
+        )
+        return encoded
+
+    async def _screenshot_images(self, session_id: SessionId) -> dict[int, JobImage]:
+        """截屏会话要附带的截图，按最大边长索引。会话没有对应的截图或没有实例接收截图时为空。
+
+        用 asyncio.wait 等待：调用方被取消时编码任务不受影响，同一会话再次开始（例如重新识别）时直接复用；
+        编码任务本身被取消（只会出自事件循环关闭）时，该尺寸按没有截图处理，取消不传给调用方。
+        """
+        capture = self._capture
+        if capture is None or capture.session_id != session_id:
+            return {}
+        sides = self._image_sides()
+        if not sides:
+            return {}
+        tasks = [self._encoding(capture, side) for side in sides]
+        await asyncio.wait(tasks)
+        images: dict[int, JobImage] = {}
+        for side, task in zip(sides, tasks, strict=True):
+            image = None if task.cancelled() else task.result()
+            if image is not None:
+                images[side] = image
+        return images
+
+    def _drop_capture(self) -> None:
+        """新截屏到达时丢弃上一次的截图。
+
+        编码任务不取消：正在等待它的 start_screenshot_session 属于上一次截屏，仍应带上那张截图。
+        丢弃引用后，任务结束时结果随之释放；_encode 捕获全部异常，任务不会留下未取回的异常。
+        """
+        self._capture = None
 
     def _advance(self, entry: Entry) -> int:
         self._generation[entry] += 1

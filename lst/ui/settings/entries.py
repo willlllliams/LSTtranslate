@@ -241,7 +241,8 @@ class EngineDraft:
     界面连续修改两处时（例如先拖动排序，紧接着改名称），第二次修改不能基于还没更新的 AppConfig 构造，
     否则会把第一次修改覆盖掉。草稿记下最近一次发送的列表：下一次修改在它的基础上进行，
     直到 AppConfig 里的列表与它相同（已被确认），或者收到引擎相关的 ConfigRejected，或者超过
-    ``max_age_s`` 仍没有被确认（配置服务做了规范化，永远不会相等）。
+    ``max_age_s`` 仍没有被确认（配置服务做了规范化，永远不会相等）。过期在读取草稿时和收到 AppConfig 时
+    都会检查，两条路径的规则相同。
     """
 
     def __init__(self, *, max_age_s: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
@@ -250,12 +251,18 @@ class EngineDraft:
         self._max_age_s = max_age_s
         self._clock = clock
 
+    def _expire(self) -> None:
+        if self._pending is not None and self._clock() - self._sent_at > self._max_age_s:
+            self._pending = None
+
     @property
     def pending(self) -> bool:
+        self._expire()
         return self._pending is not None
 
     def working(self, config: AppConfig | None) -> list[Entry]:
-        """修改的基础：草稿存在时用草稿，否则用 AppConfig 里的列表。返回的是副本。"""
+        """修改的基础：草稿存在且没有过期时用草稿，否则用 AppConfig 里的列表。返回的是副本。"""
+        self._expire()
         source = self._pending if self._pending is not None else raw_entries(config)
         return [dict(entry) for entry in source]
 
@@ -265,10 +272,53 @@ class EngineDraft:
 
     def confirm(self, config: AppConfig | None) -> None:
         """收到新的 AppConfig：与草稿相同或草稿已过期时丢弃草稿。"""
-        if self._pending is None:
-            return
-        if raw_entries(config) == self._pending or self._clock() - self._sent_at > self._max_age_s:
+        self._expire()
+        if self._pending is not None and raw_entries(config) == self._pending:
             self._pending = None
 
     def discard(self) -> None:
         self._pending = None
+
+
+class SentEngineOrders:
+    """最近几次发送的引擎列表里实例号的顺序，用来把 ConfigRejected 的下标换算成实例号。
+
+    配置服务按到达顺序逐条处理 UpdateConfig，但 ConfigRejected 只带下标，不说明属于哪一次发送。
+    换算规则取最保守的做法：
+
+    - 还没被确认的每一次发送都可能是被拒绝的那一次，所以只有它们在这个下标上是同一个实例时才换算；
+      顺序在两次发送之间变过（例如拖动排序后紧接着又改了参数）就无法确定，位置保持下标，
+      由窗口底部的提示条显示，不会把原因写在另一个实例旁边；
+    - AppConfig 里的顺序与某一次发送相同，说明这一次和它之前的发送都已经处理完，不再参与；
+    - 超过 ``max_age_s`` 的发送也不再参与，规则与 ``EngineDraft`` 相同。
+    """
+
+    def __init__(self, *, max_age_s: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
+        self._sent: list[tuple[float, list[str]]] = []
+        self._max_age_s = max_age_s
+        self._clock = clock
+
+    def _expire(self) -> None:
+        now = self._clock()
+        self._sent = [(at, ids) for at, ids in self._sent if now - at <= self._max_age_s]
+
+    def add(self, entries: Sequence[Mapping[str, JsonValue]]) -> None:
+        self._expire()
+        self._sent.append((self._clock(), [str(entry.get("id")) for entry in entries]))
+
+    def confirm(self, config: AppConfig | None) -> None:
+        """收到 AppConfig：与它顺序相同的那次发送及更早的发送都已处理完。"""
+        self._expire()
+        ids = [str(entry.get("id")) for entry in raw_entries(config)]
+        for position in range(len(self._sent) - 1, -1, -1):
+            if self._sent[position][1] == ids:
+                del self._sent[: position + 1]
+                return
+
+    def resolve(self, index: int) -> str | None:
+        """下标对应的实例号；没有待确认的发送，或各次发送在这个下标上不是同一个实例时返回 None。"""
+        self._expire()
+        candidates = {ids[index] if 0 <= index < len(ids) else None for _, ids in self._sent}
+        if len(candidates) != 1:
+            return None
+        return candidates.pop()

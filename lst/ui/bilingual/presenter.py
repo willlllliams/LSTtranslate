@@ -27,7 +27,7 @@ from lst.contracts.translation import AttemptState, AttemptView, SegmentView
 from lst.kernel import EventBus
 from lst.ui.bilingual.options import BilingualOptions, parse_options
 from lst.ui.bilingual.state import WindowStateStore
-from lst.ui.i18n import current_language, error_text, tr
+from lst.ui.i18n import apply_config_language, current_language, error_text, tr
 from lst.ui.theme import engine_color
 
 _STATE_KEYS: Mapping[AttemptState, str] = {
@@ -266,6 +266,11 @@ class BilingualPresenter:
             self._show()
 
     def on_config(self, config: AppConfig) -> None:
+        if self._closed:
+            return
+        # 组合根与各模块处理 AppConfig 的先后没有保证（组合根的处理函数是协程，下一轮循环才执行），
+        # 所以这里先按配置设置界面语言，再判断文案要不要刷新。
+        apply_config_language(config)
         options = parse_options(config)
         self._options = options
         # 正在计时的停顿保持原来的时长，新时长从下一次输入开始生效。
@@ -275,6 +280,8 @@ class BilingualPresenter:
         self._refresh_language()
 
     def on_engine_statuses(self, statuses: EngineStatuses) -> None:
+        if self._closed:
+            return
         self._statuses = statuses
         self._push_rows(self._engines)
         colors = {
@@ -286,6 +293,8 @@ class BilingualPresenter:
             self._view.set_segment_colors(colors)
 
     def on_segments_updated(self, event: SegmentsUpdated) -> None:
+        if self._closed:
+            return
         if self._last is None or event.session_id != self._last.session_id:
             # 截屏会话、已被取代的双语会话都在这里丢弃。
             self._logger.debug("丢弃不属于当前会话的 SegmentsUpdated：会话 %s", event.session_id)

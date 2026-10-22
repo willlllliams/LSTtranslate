@@ -1,7 +1,6 @@
 """独占一个 sqlite3 连接的后台线程（架构文档 2.9.3 节）。
 
-lst.services.cache 里有一份内容相同的副本。import-linter 规定业务模块互不依赖，
-两个包各自持有一份，修改时两边同步。
+译文缓存（lst.services.cache）与竞速统计（lst.services.stats）共用这一份实现。
 """
 
 import asyncio

@@ -32,7 +32,8 @@ from lst.ui.settings.controls import (
 )
 from lst.ui.settings.page_engines import EnginesPage
 from lst.ui.settings.pages import RacePage, SettingsPage
-from tests.ui.settings.conftest import Full, StartFull, wait_until
+from tests.ui.conftest import wait_until
+from tests.ui.settings.conftest import Full, StartFull
 
 KEY = "sk-live-INTEGRATION-0042"
 
@@ -154,6 +155,23 @@ async def test_hotkey_without_modifier_is_rejected_by_the_service(start_full: St
     capture.editor._chosen("Ctrl+Alt+Q")
     assert capture.card.error_text == ""
     await wait_until(lambda: published(full, "hotkeys", "capture") == "Ctrl+Alt+Q")
+
+
+async def test_duplicate_hotkey_is_rejected_beside_the_edited_hotkey(start_full: StartFull) -> None:
+    """两个热键设成同一组合：配置服务拒绝这次修改，原因显示在刚改的热键旁边，另一个热键不受影响。"""
+    full = await start_full()
+    window = await full.open()
+    window.show_page("hotkeys")
+    page = window.page("hotkeys")
+    bilingual = binding(page, "hotkeys", "bilingual")
+    assert isinstance(bilingual.editor, HotkeyEditor)
+    bilingual.editor._chosen("Alt+Q")  # 与截屏翻译的默认热键相同
+    await wait_until(lambda: bilingual.card.error_text != "")
+    assert "同一个热键" in bilingual.card.error_text
+    assert binding(page, "hotkeys", "capture").card.error_text == ""
+    assert full.window.unclaimed_rejections() == []
+    await full.settle()
+    assert published(full, "hotkeys", "bilingual") == "Alt+E"
 
 
 async def test_instances_survive_edits_and_reorder_through_the_real_service(start_full: StartFull) -> None:

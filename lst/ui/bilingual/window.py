@@ -8,10 +8,9 @@ from collections.abc import Collection, Mapping, Sequence
 from itertools import pairwise
 from typing import cast
 
-from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtGui import QCloseEvent, QColor, QGuiApplication, QKeyEvent, QScreen, QWindow
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QKeyEvent, QWindow
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -24,11 +23,11 @@ from PySide6.QtWidgets import (
 
 from lst.contracts.ids import EngineId, Lang
 from lst.ui.bilingual.presenter import BilingualActions, EngineRow, SegmentItem
-from lst.ui.bilingual.state import fit_on_screens
 from lst.ui.bilingual.strings import LANGUAGES, language_name
 from lst.ui.bilingual.widgets import EngineResultList, TranslationPane
+from lst.ui.common.window import SecondaryWindow
 from lst.ui.i18n import tr
-from lst.ui.theme import TOKENS, enable_mica, is_dark
+from lst.ui.theme import TOKENS
 
 DEFAULT_SIZE = QSize(640, 600)
 
@@ -36,21 +35,12 @@ _CTRL = Qt.KeyboardModifier.ControlModifier
 _SHIFT = Qt.KeyboardModifier.ShiftModifier
 
 
-def _primary_screen() -> QScreen | None:
-    # 类型桩把 primaryScreen 标成非空，没有屏幕时（例如显示器全部断开）它返回 None。
-    return cast(QScreen | None, QGuiApplication.primaryScreen())
-
-
-class BilingualWindow(QWidget):
+class BilingualWindow(SecondaryWindow):
     """双语窗口。控件以公开属性暴露，供展示器测试检查。"""
 
     def __init__(self) -> None:
-        super().__init__(None, Qt.WindowType.Window)
-        # 这是常驻托盘程序的次要窗口，关闭它不应让程序退出。
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        super().__init__()
         self._actions: BilingualActions | None = None
-        self._allow_close = False
-        self._backdrop_tried = False
 
         self.source_combo = QComboBox()
         self.target_combo = QComboBox()
@@ -280,69 +270,9 @@ class BilingualWindow(QWidget):
 
     # ------------------------------------------------------------------ 显示与隐藏
 
-    def is_shown(self) -> bool:
-        return self.isVisible() and not self.isMinimized()
-
-    def window_geometry(self) -> tuple[QPoint, QSize]:
-        return (self.pos(), self.size())
-
-    def restore_geometry(self, position: QPoint | None, size: QSize | None) -> None:
-        if size is not None:
-            self.resize(size)
-        if position is not None:
-            self.move(position)
-            return
-        primary = _primary_screen()
-        if primary is not None:
-            area = primary.availableGeometry()
-            frame = self.frameGeometry()
-            self.move(area.center() - frame.center() + frame.topLeft())
-
-    def ensure_on_screen(self) -> None:
-        """位置不在任何屏幕上时移到主屏中央（需求 BI-01）。"""
-        primary = _primary_screen()
-        if primary is None:
-            return
-        screens = [screen.availableGeometry() for screen in QGuiApplication.screens()]
-        frame = self.frameGeometry()
-        target = fit_on_screens(frame, screens, primary.availableGeometry())
-        if target.size() != frame.size():
-            # 外框与客户区的尺寸差就是边框和标题栏，缩小时保持不变。
-            self.resize(self.size() - (frame.size() - target.size()))
-        if target.topLeft() != frame.topLeft():
-            self.move(target.topLeft())
-
     def present(self) -> None:
-        self.ensure_on_screen()
-        self._apply_backdrop()
-        if self.isMinimized():
-            self.showNormal()
-        else:
-            self.show()
-        # 不显示在屏幕上的窗口（WA_DontShowOnScreen，例如原生平台上的测试）不去抢前台。
-        if not self.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen):
-            self.raise_()
-            self.activateWindow()
-        self.input_edit.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-
-    def conceal(self) -> None:
-        self.hide()
-
-    def _apply_backdrop(self) -> None:
-        """首次显示前尝试 Mica 背景（需求 UI-01）。失败时 enable_mica 自己退回不透明背景。"""
-        if self._backdrop_tried:
-            return
-        self._backdrop_tried = True
-        if QGuiApplication.platformName() != "windows":
-            return
-        app = QApplication.instance()
-        dark = is_dark(app) if isinstance(app, QApplication) else False
-        enable_mica(self, dark=dark)
-
-    def close_for_good(self) -> None:
-        """模块停止时真正关闭窗口；其他情况下关闭按钮只隐藏窗口。"""
-        self._allow_close = True
-        self.close()
+        """显示并激活窗口，焦点放到输入框（位置不在任何屏幕上时先移到主屏中央，需求 BI-01）。"""
+        self.present_window(self.input_edit)
 
     # ------------------------------------------------------------------ 事件
 
@@ -371,11 +301,9 @@ class BilingualWindow(QWidget):
                 return
         super().keyPressEvent(event)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        if self._allow_close:
-            event.accept()
-            return
+    def close_requested(self) -> None:
         # 标题栏的关闭按钮与 Alt+F4 只隐藏窗口，窗口状态由展示器保存。
-        event.ignore()
         if self._actions is not None:
             self._actions.hide_requested()
+        else:
+            self.hide()

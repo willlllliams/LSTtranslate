@@ -9,11 +9,14 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import subprocess
 import sys
+import threading
 import time
 import zlib
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any, NoReturn
 
 import pytest
 
@@ -37,7 +40,15 @@ from lst.contracts.worker_protocol import (
     TranslateSegment,
     WorkerReply,
 )
-from tests.app.conftest import FAST, ROOT, FakeTime, GatedSleep, SupervisorFactory
+from tests.app.conftest import (
+    FAST,
+    ROOT,
+    SUPERVISOR_NAME,
+    WORKER_COMMAND,
+    FakeTime,
+    GatedSleep,
+    SupervisorFactory,
+)
 from tests.app.fake_worker import SEEN_PROBE
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="推理进程通过 Windows 命名管道通信")
@@ -640,6 +651,20 @@ async def test_reload_from_failed_starts_with_new_settings(make_supervisor: Supe
     assert log.states == [S.STARTING, S.LOADING, S.FAILED, S.STARTING, S.LOADING, S.READY]
 
 
+async def test_reload_with_new_command_switches_executable(make_supervisor: SupervisorFactory) -> None:
+    """切换 OCR 引擎时换启动命令：旧命令以配置错误退出进入 FAILED，换成正常命令后就绪。"""
+    supervisor, _ = make_supervisor(args=["--exit-code", str(int(ExitCode.CONFIG_ERROR))])
+    await supervisor.start()
+    await wait_state(supervisor, S.FAILED)
+
+    await supervisor.reload({"capabilities": {"switched": True}}, command=WORKER_COMMAND)
+
+    await wait_state(supervisor, S.READY)
+    assert supervisor.capabilities == {"switched": True}
+    with pytest.raises(ValueError):
+        await supervisor.reload({}, command=())
+
+
 # ---------------------------------------------------------------- 作业对象
 
 
@@ -650,3 +675,87 @@ async def test_worker_process_is_assigned_to_kill_on_close_job(make_supervisor: 
     assert pid is not None
     assert jobobject.contains_process(pid)
     assert pid in jobobject.process_ids()
+
+
+# ---------------------------------------------------------------- 启动命令
+
+
+async def test_reload_with_new_command_during_spawn_restarts_with_that_command(
+    make_supervisor: SupervisorFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reload(command=…) 落在 _spawn 正在创建进程的窗口里：按旧命令起来的进程被结束，改用新命令重启。
+
+    旧命令的进程一启动就以配置错误退出；如果新配置发给了它，监管器会停在 FAILED。
+    """
+    entered, release = threading.Event(), threading.Event()
+    real_popen = subprocess.Popen
+
+    class GatedPopen(real_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            entered.set()
+            release.wait(10)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", GatedPopen)
+    supervisor, log = make_supervisor(args=["--exit-code", str(int(ExitCode.CONFIG_ERROR))])
+    await supervisor.start()
+    assert await asyncio.to_thread(entered.wait, 10)
+
+    await supervisor.reload({"capabilities": {"who": "new"}}, command=WORKER_COMMAND)
+    release.set()
+
+    assert await wait_state(supervisor, S.READY, S.FAILED) is S.READY
+    assert supervisor.capabilities == {"who": "new"}
+    assert S.FAILED not in log.states
+
+
+async def test_command_can_be_given_by_the_first_reload() -> None:
+    """构造时可以不给启动命令；这时 start、retry 报错，第一次 reload 给出命令后正常启动。"""
+    supervisor = WorkerSupervisor(SUPERVISOR_NAME, None, settings={}, cwd=ROOT, timings=FAST)
+    try:
+        with pytest.raises(RuntimeError):
+            await supervisor.start()
+        with pytest.raises(RuntimeError):
+            await supervisor.reload({})
+        assert supervisor.state is S.STOPPED
+        await supervisor.reload({"capabilities": {"late": True}}, command=WORKER_COMMAND)
+        await wait_state(supervisor, S.READY)
+        assert supervisor.capabilities == {"late": True}
+    finally:
+        await supervisor.stop()
+
+
+async def test_retry_without_command_raises() -> None:
+    supervisor = WorkerSupervisor(SUPERVISOR_NAME, None, settings={}, cwd=ROOT, timings=FAST)
+    supervisor._state = S.FAILED  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(RuntimeError):
+        supervisor.retry()
+
+
+# ---------------------------------------------------------------- 停止的时限
+
+
+async def test_stop_gives_up_when_the_lifecycle_task_hangs(
+    make_supervisor: SupervisorFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    """创建进程的线程卡住时，stop() 在 stop_timeout_s 之后记 ERROR 并返回，状态为 STOPPED。"""
+    entered, release = threading.Event(), threading.Event()
+
+    def hanging_spawn(*_args: object) -> NoReturn:
+        entered.set()
+        release.wait(10)
+        raise OSError("测试结束，放弃创建进程")
+
+    supervisor, _ = make_supervisor(timings=replace(FAST, stop_timeout_s=0.3))
+    supervisor._spawn = hanging_spawn  # type: ignore[method-assign]  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    try:
+        await supervisor.start()
+        assert await asyncio.to_thread(entered.wait, 10)
+        began = time.monotonic()
+        with caplog.at_level(logging.ERROR, logger=LOGGER):
+            await asyncio.wait_for(supervisor.stop(), 5)
+        assert time.monotonic() - began < 3
+        assert supervisor.state is S.STOPPED
+        assert "放弃等待" in caplog.text
+    finally:
+        release.set()

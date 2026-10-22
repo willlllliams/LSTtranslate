@@ -2,7 +2,7 @@
 
 视图只负责 Qt 对象：按展示器给出的 TrayMenu 更新菜单条目，把用户操作交给 TrayIntents。
 状态区出错的条目带一个子菜单，列出原因和处理建议：鼠标悬停时子菜单自动展开（需求 TR-03），
-用键盘打开托盘菜单时也能用方向键进入。
+用键盘打开托盘菜单时也能用方向键进入。出错的推理进程的子菜单最后有“重新启动”。
 """
 
 import logging
@@ -132,7 +132,9 @@ class QtTrayView:
         self._status_separator = self._menu.addSeparator()
         self._status_actions: list[QAction] = []
         self._status_submenus: list[QMenu | None] = []
-        self._status_shape: tuple[tuple[str, int], ...] = ()
+        self._status_details: list[list[QAction]] = []
+        self._status_restarts: list[QAction | None] = []
+        self._status_shape: tuple[tuple[str, int, str], ...] = ()
         self._command_items: list[QAction] = []
         self._command_actions: dict[TrayAction, QAction] = {}
         self._layout: tuple[TrayAction | None, ...] = ()
@@ -196,15 +198,17 @@ class QtTrayView:
     # ------------------------------------------------------------ 状态区
 
     def _render_status(self, lines: Sequence[StatusLine]) -> None:
-        shape = tuple((line.key, len(line.details)) for line in lines)
+        shape = tuple((line.key, len(line.details), line.restart) for line in lines)
         if shape != self._status_shape:
             self._rebuild_status(lines)
             self._status_shape = shape
-        for action, submenu, line in zip(self._status_actions, self._status_submenus, lines, strict=True):
+        rows = zip(self._status_actions, self._status_details, self._status_restarts, lines, strict=True)
+        for action, details, restart, line in rows:
             action.setText(_escape(line.text))
-            if submenu is not None:
-                for detail_action, text in zip(submenu.actions(), line.details, strict=True):
-                    detail_action.setText(_escape(text))
+            for detail_action, text in zip(details, line.details, strict=True):
+                detail_action.setText(_escape(text))
+            if restart is not None:
+                restart.setText(line.restart_text)
 
     def _rebuild_status(self, lines: Sequence[StatusLine]) -> None:
         for action, submenu in zip(self._status_actions, self._status_submenus, strict=True):
@@ -214,22 +218,35 @@ class QtTrayView:
                 submenu.deleteLater()
         self._status_actions = []
         self._status_submenus = []
+        self._status_details = []
+        self._status_restarts = []
         for line in lines:
             action = QAction(self._menu)
             submenu: QMenu | None = None
-            if line.details:
+            details: list[QAction] = []
+            restart: QAction | None = None
+            if line.details or line.restart:
                 # 出错的条目保持可用，悬停或按方向键时展开原因与处理建议。
                 submenu = QMenu(self._menu)
                 for _ in line.details:
                     detail = QAction(submenu)
                     detail.setEnabled(False)
                     submenu.addAction(detail)
+                    details.append(detail)
+                if line.restart:
+                    if details:
+                        submenu.addSeparator()
+                    restart = QAction(submenu)
+                    restart.triggered.connect(partial(self._on_restart, line.restart))
+                    submenu.addAction(restart)
                 action.setMenu(submenu)
             else:
                 action.setEnabled(False)
             self._menu.insertAction(self._status_separator, action)
             self._status_actions.append(action)
             self._status_submenus.append(submenu)
+            self._status_details.append(details)
+            self._status_restarts.append(restart)
 
     # ------------------------------------------------------------ 命令区
 
@@ -266,6 +283,10 @@ class QtTrayView:
     def _on_triggered(self, kind: TrayAction, checked: bool = False) -> None:
         if self._intents is not None:
             self._intents.choose(kind)
+
+    def _on_restart(self, worker: str, checked: bool = False) -> None:
+        if self._intents is not None:
+            self._intents.restart_worker(worker)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         # 只响应左键单击。双击时 Qt 先发 Trigger 再发 DoubleClick，只处理前者，双语窗口不会被切换两次。

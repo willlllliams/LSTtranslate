@@ -11,14 +11,14 @@ import random
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Final, cast
 
 import httpx
 
 from lst.contracts.errors import ErrorCode
 
-# 错误消息字段的最大长度，防止异常的长响应进入日志。
-_DETAIL_LIMIT = 200
+DETAIL_LIMIT: Final = 200
+"""错误消息字段写进错误详情时的最大长度，防止异常的长响应进入日志。各引擎共用。"""
 
 
 class EngineError(Exception):
@@ -104,7 +104,7 @@ async def error_detail(response: httpx.Response) -> str:
         return detail
     message = _find_message(payload)
     if message:
-        detail += f": {message[:_DETAIL_LIMIT]}"
+        detail += f": {message[:DETAIL_LIMIT]}"
     return detail
 
 
@@ -130,6 +130,23 @@ def _find_message(payload: object) -> str | None:
 Sleep = Callable[[float], Awaitable[None]]
 
 
+@dataclass(frozen=True, slots=True)
+class ErrorVerdict:
+    """一个错误响应的分类结果：错误码、是否值得重试、写日志用的技术细节。"""
+
+    code: ErrorCode
+    retryable: bool
+    detail: str
+
+
+ClassifyError = Callable[[int, bytes, ErrorVerdict], ErrorVerdict]
+"""错误分类钩子：(状态码, 响应体, 按状态码得到的默认分类) → 最终分类。
+
+有些接口要看响应体才能分类，例如 Google 的 403 既可能是限流也可能是 key 无权限。钩子只能把
+响应体里的结构化字段（错误原因等）写进 detail，不能写入正文（隐私约束见模块说明）。
+"""
+
+
 async def send_with_retry(
     client: httpx.AsyncClient,
     build: Callable[[], httpx.Request],
@@ -138,17 +155,26 @@ async def send_with_retry(
     stream: bool = False,
     sleep: Sleep = asyncio.sleep,
     rand: Callable[[], float] = random.random,
+    classify: ClassifyError | None = None,
+    send_timeout: float | None = None,
 ) -> httpx.Response:
     """发送请求，按策略重试，返回状态码小于 400 的响应；失败时抛出 EngineError。
 
-    build 每次重试都会被调用，生成一个新的请求对象。stream=True 时返回未读取的流式响应，
-    调用方负责关闭（用 `async with` 或 `aclose()`）。
+    - build 每次重试都会被调用，生成一个新的请求对象；它在每次发送前一刻调用，调用方可以据此记下发送时刻。
+    - stream=True 时返回未读取的流式响应，调用方负责关闭（用 `async with` 或 `aclose()`）。
+      错误响应在这里读取错误详情后关闭，读取期间被取消或出错也会关闭。
+    - classify 不为 None 时，错误响应的分类交给它调整，见 ClassifyError。
+    - send_timeout 是单次发送（发出请求到收到响应头）的时限，不含重试前的退避等待。
+      超出时抛出 TimeoutError，不重试，由调用方决定如何报告（例如 LLM 引擎报“首 token 超时”）。
+
+    总请求次数不超过 policy.max_retries + 1。
     """
     policy = policy or RetryPolicy()
     for retry_index in range(policy.max_retries + 1):
         last_try = retry_index == policy.max_retries
         try:
-            response = await client.send(build(), stream=stream)
+            async with asyncio.timeout(send_timeout):
+                response = await client.send(build(), stream=stream)
         except httpx.TransportError as exc:
             code = classify_transport_error(exc)
             if last_try or not policy.retry_transport_errors:
@@ -161,17 +187,30 @@ async def send_with_retry(
         if response.status_code < 400:
             return response
 
-        detail = await error_detail(response)
-        await response.aclose()
-        code = classify_status(response.status_code)
-        if last_try or response.status_code not in policy.retry_statuses:
-            raise EngineError(code, detail, status=response.status_code)
+        try:
+            detail = await error_detail(response)
+        finally:
+            await response.aclose()
+        status = response.status_code
+        verdict = ErrorVerdict(classify_status(status), status in policy.retry_statuses, detail)
+        if classify is not None:
+            verdict = classify(status, _read_body(response), verdict)
+        if last_try or not verdict.retryable:
+            raise EngineError(verdict.code, verdict.detail, status=status)
         delay = backoff_delay(retry_index, policy, response.headers.get("retry-after"), rand)
         if delay is None:
-            raise EngineError(code, f"{detail}（Retry-After 过长，放弃重试）", status=response.status_code)
+            raise EngineError(verdict.code, f"{verdict.detail}（Retry-After 过长，放弃重试）", status=status)
         await sleep(delay)
 
     raise AssertionError("unreachable")  # 循环的最后一次一定返回或抛出
+
+
+def _read_body(response: httpx.Response) -> bytes:
+    """error_detail 已经读过的响应体；读取失败时为空。"""
+    try:
+        return response.content
+    except httpx.ResponseNotRead:
+        return b""
 
 
 async def aiter_sse_data(response: httpx.Response) -> AsyncIterator[str]:

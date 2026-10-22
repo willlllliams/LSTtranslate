@@ -150,6 +150,17 @@ async def test_only_executed_attempts_count(store: SqliteStatsStore) -> None:
     assert stats.p95_ms == 120.0
 
 
+async def test_running_attempt_ended_by_engine_removal_does_not_count(store: SqliteStatsStore) -> None:
+    """执行中的尝试因实例被移除或替换而结束：这是配置变化，不计入执行数和失败率。"""
+    await record(
+        store,
+        attempt(DEEPSEEK, FAILED, 300.0, started=True, error_code=ErrorCode.ENGINE_REMOVED),
+        done(DEEPSEEK, 120.0),
+    )
+    stats = by_engine(await store.summary())[DEEPSEEK]
+    assert (stats.executed, stats.failure_rate) == (1, 0.0)
+
+
 async def test_engine_with_only_unexecuted_attempts(store: SqliteStatsStore) -> None:
     await record(store, cache_hit(ARGOS), attempt(ARGOS, CANCELLED, 1.0, started=False))
     assert await store.summary() == [
@@ -200,11 +211,11 @@ async def test_winner_change_keeps_last_record(store: SqliteStatsStore) -> None:
     seg = next_segment()
     argos, deepseek = done(ARGOS, 80.0), done(DEEPSEEK, 600.0)
     await store.record_attempt(SESSION, seg, argos)
-    await store.record_segment(SESSION, segment(seg, ARGOS, (argos,)))
+    await store.record_segments(SESSION, [segment(seg, ARGOS, (argos,))])
     assert by_engine(await store.summary())[ARGOS].wins == 1
 
     await store.record_attempt(SESSION, seg, deepseek)
-    await store.record_segment(SESSION, segment(seg, DEEPSEEK, (deepseek, argos)))
+    await store.record_segments(SESSION, [segment(seg, DEEPSEEK, (deepseek, argos))])
     rows = by_engine(await store.summary())
     assert (rows[ARGOS].wins, rows[DEEPSEEK].wins) == (0, 1)
 
@@ -213,9 +224,9 @@ async def test_unfinished_segment_is_not_recorded(store: SqliteStatsStore) -> No
     seg = next_segment()
     argos, deepseek = done(ARGOS, 80.0), done(DEEPSEEK, 600.0)
     await record(store, argos, deepseek)
-    await store.record_segment(SESSION, segment(seg, DEEPSEEK, (deepseek, argos)))
+    await store.record_segments(SESSION, [segment(seg, DEEPSEEK, (deepseek, argos))])
     # 晚加入后段变回未定，此时的快照不覆盖已有记录。
-    await store.record_segment(SESSION, segment(seg, ARGOS, (argos,), finished=False))
+    await store.record_segments(SESSION, [segment(seg, ARGOS, (argos,), finished=False)])
     assert by_engine(await store.summary())[DEEPSEEK].wins == 1
 
 
@@ -223,9 +234,9 @@ async def test_segment_without_winner(store: SqliteStatsStore) -> None:
     seg = next_segment()
     failed = attempt(ARGOS, FAILED, 50.0, error_code=ErrorCode.SERVER)
     await store.record_attempt(SESSION, seg, done(ARGOS, 40.0))
-    await store.record_segment(SESSION, segment(seg, ARGOS, (done(ARGOS, 40.0),)))
+    await store.record_segments(SESSION, [segment(seg, ARGOS, (done(ARGOS, 40.0),))])
     # 同一段最后一次记录没有胜出者，之前的胜出被覆盖。
-    await store.record_segment(SESSION, segment(seg, None, (failed,)))
+    await store.record_segments(SESSION, [segment(seg, None, (failed,))])
     assert by_engine(await store.summary())[ARGOS].wins == 0
 
 
@@ -248,7 +259,7 @@ async def test_same_segment_id_in_different_sessions(store: SqliteStatsStore) ->
     for session in (SessionId("a"), SessionId("b")):
         a = done(ARGOS, 50.0)
         await store.record_attempt(session, seg, a)
-        await store.record_segment(session, segment(seg, ARGOS, (a,)))
+        await store.record_segments(session, [segment(seg, ARGOS, (a,))])
     stats = by_engine(await store.summary())[ARGOS]
     assert (stats.executed, stats.wins) == (2, 2)
 
@@ -354,7 +365,7 @@ async def test_persists_across_restart(db_path: Path) -> None:
     seg = next_segment()
     a = done(ARGOS, 60.0)
     await first.record_attempt(SESSION, seg, a)
-    await first.record_segment(SESSION, segment(seg, ARGOS, (a,)))
+    await first.record_segments(SESSION, [segment(seg, ARGOS, (a,))])
     before = await first.summary()
     await first.close()
 
@@ -370,7 +381,7 @@ async def test_reset(store: SqliteStatsStore) -> None:
     seg = next_segment()
     a = done(ARGOS, 60.0)
     await store.record_attempt(SESSION, seg, a)
-    await store.record_segment(SESSION, segment(seg, ARGOS, (a,)))
+    await store.record_segments(SESSION, [segment(seg, ARGOS, (a,))])
     await store.reset()
     assert await store.summary() == []
 
@@ -387,7 +398,7 @@ async def test_no_text_is_stored(db_path: Path) -> None:
     lost = attempt(ARGOS, FAILED, 90.0, error=error_detail, error_code=ErrorCode.BAD_RESPONSE)
     await store.record_attempt(SESSION, seg, won)
     await store.record_attempt(SESSION, seg, lost)
-    await store.record_segment(SESSION, segment(seg, engine, (won, lost), source_text=source))
+    await store.record_segments(SESSION, [segment(seg, engine, (won, lost), source_text=source)])
 
     # 逐列核对库里实际保存的内容。
     attempts, segments = await store._db.run(
@@ -426,7 +437,7 @@ async def test_database_work_runs_on_background_thread(store: SqliteStatsStore) 
     seg = next_segment()
     a = done(ARGOS, 10.0)
     await store.record_attempt(SESSION, seg, a)
-    await store.record_segment(SESSION, segment(seg, ARGOS, (a,)))
+    await store.record_segments(SESSION, [segment(seg, ARGOS, (a,))])
     await store.summary()
     await store.reset()
 
