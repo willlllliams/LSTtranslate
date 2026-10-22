@@ -1,19 +1,28 @@
-"""lst.app.uninstall：卸载时清理凭据管理器里本程序的 API key。
+"""lst.app.uninstall：卸载时清理凭据管理器里本程序的 API key，以及用户另选的数据目录与模型目录。
 
-测试只用假的 advapi32：它按 Win32 的调用约定把凭据数组写进调用方传入的指针，测试从不读写真实的
-凭据管理器。
+凭据的测试只用假的 advapi32：它按 Win32 的调用约定把凭据数组写进调用方传入的指针，测试从不读写真实的
+凭据管理器。目录的测试在临时目录里搭出数据目录、模型目录与位置文件。
 """
 
 import ctypes
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from lst.app import uninstall
-from lst.app.uninstall import SERVICE, CredentialError, credential_targets, purge_secrets
+from lst.app.paths import write_location
+from lst.app.uninstall import (
+    SERVICE,
+    CredentialError,
+    configured_models_dir,
+    credential_targets,
+    purge_secrets,
+    purge_user_data,
+)
 
 _ERROR_ACCESS_DENIED = 5
 _ERROR_NOT_FOUND = 1168
@@ -136,3 +145,76 @@ def test_purge_without_credential_manager_is_ok(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(uninstall, "_load_advapi32", lambda: None)
     result = purge_secrets()
     assert result.ok and result.deleted == 0
+
+
+# ---------------------------------------------------------------- 数据目录与模型目录
+
+
+def _data_dir(root: Path, models_dir: Path | None = None) -> None:
+    (root / "config").mkdir(parents=True)
+    storage = f'[storage]\nmodels_dir = "{models_dir.as_posix()}"\n' if models_dir is not None else ""
+    (root / "config" / "settings.toml").write_text(storage, encoding="utf-8")
+    (root / "logs").mkdir()
+    (root / "cache.sqlite3").write_bytes(b"x")
+    (root / "models" / "nmt").mkdir(parents=True)
+
+
+def _models_dir(root: Path) -> None:
+    for name in ("nmt", "ocr", "dict", "engines", "runtimes"):
+        (root / name).mkdir(parents=True)
+        (root / name / "f.bin").write_bytes(b"x")
+
+
+def test_purge_data_removes_only_what_the_program_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """选的数据目录与模型目录里还放着用户自己的文件：只删程序创建的条目，目录本身不为空就保留。"""
+    monkeypatch.setattr(uninstall, "default_data_dir", lambda: tmp_path / "default")
+    chosen, models, env_models = tmp_path / "D" / "资料", tmp_path / "E" / "models", tmp_path / "F" / "m"
+    _data_dir(chosen, models)
+    (chosen / "我的笔记.txt").write_text("别删", encoding="utf-8")
+    _models_dir(models)
+    (models / "photos").mkdir()
+    env_dir = tmp_path / "env-data"
+    _data_dir(env_dir, env_models)
+    _models_dir(env_models)
+    location = tmp_path / "roaming" / "LSTtranslate" / "location.json"
+    write_location(location, chosen)
+
+    result = purge_user_data(location=location, environ={"LST_DATA_DIR": str(env_dir)})
+
+    assert result.ok and result.deleted > 0
+    assert sorted(p.name for p in chosen.iterdir()) == ["我的笔记.txt"]
+    assert sorted(p.name for p in models.iterdir()) == ["photos"]
+    assert not env_models.exists()  # 模型子目录删完后目录为空，一并删除
+    assert env_dir.is_dir()  # LST_DATA_DIR 指定的数据目录由卸载脚本整个删除，这里不动
+    assert not location.exists() and not location.parent.exists()
+
+
+def test_purge_data_ignores_a_location_that_is_not_a_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """位置文件指向的目录里没有 config/settings.toml（例如被用户换成了别的文件夹）：一个文件也不删。"""
+    monkeypatch.setattr(uninstall, "default_data_dir", lambda: tmp_path / "default")
+    other = tmp_path / "other"
+    (other / "logs").mkdir(parents=True)
+    location = tmp_path / "location.json"
+    write_location(location, other)
+    result = purge_user_data(location=location, environ={})
+    assert result.ok and result.deleted == 0
+    assert (other / "logs").is_dir()
+    assert not location.exists()
+
+
+def test_purge_data_reads_the_model_dir_of_the_default_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认数据目录由卸载脚本删除，但它的配置可能把模型目录指到了别的盘，那里的模型子目录要在这里删。"""
+    default, models = tmp_path / "default", tmp_path / "G" / "models"
+    _data_dir(default, models)
+    _models_dir(models)
+    monkeypatch.setattr(uninstall, "default_data_dir", lambda: default)
+    result = purge_user_data(location=tmp_path / "none.json", environ={})
+    assert result.ok and not models.exists()
+    assert (default / "config" / "settings.toml").is_file()
+    assert configured_models_dir(default) == models

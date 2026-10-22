@@ -385,7 +385,7 @@ async def test_hotkey_failure_notice(rig: Rig) -> None:
     assert rig.view.notices == [
         Notice(
             "热键注册失败",
-            "热键 Alt+Q 注册失败：已被其他程序占用。请在设置 → 热键中换一个组合。",
+            "热键 Alt+Q 注册失败：已被其他程序占用。请在“设置 › 热键与键位 › 全局热键”里换一个组合。",
             NoticeLevel.WARNING,
         )
     ]

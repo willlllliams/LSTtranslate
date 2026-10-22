@@ -92,6 +92,11 @@ class StubCt2:
         return self.supported[device]
 
 
+def cublas_loaded(dirs: object) -> None:
+    """替换 _load_cublas：假装 cuBLAS 已经加载。"""
+    del dirs
+
+
 CPU_TYPES = {"int8", "int8_float32", "int16", "float32"}
 CUDA_TYPES = {"int8", "int8_float32", "int8_float16", "float16", "bfloat16", "float32"}
 
@@ -107,12 +112,12 @@ def test_auto_uses_cpu_int8_without_cuda() -> None:
 
 
 def test_auto_uses_cuda_float16_when_cublas_loads(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ct2_backend, "_load_cublas", lambda: None)
+    monkeypatch.setattr(ct2_backend, "_load_cublas", cublas_loaded)
     assert resolve(StubCt2(1, CPU_TYPES, CUDA_TYPES), "auto") == ("cuda", "float16")
 
 
 def test_auto_falls_back_to_cpu_when_cublas_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    def missing() -> None:
+    def missing(dirs: object) -> None:
         raise OSError("cublas64_12.dll not found")
 
     monkeypatch.setattr(ct2_backend, "_load_cublas", missing)
@@ -123,7 +128,7 @@ def test_explicit_cuda_requires_device_and_cublas(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(ConfigError):
         resolve(StubCt2(0, CPU_TYPES, set()), "cuda")
 
-    def missing() -> None:
+    def missing(dirs: object) -> None:
         raise OSError("cublas64_12.dll not found")
 
     monkeypatch.setattr(ct2_backend, "_load_cublas", missing)
@@ -350,7 +355,7 @@ def fake_load(
         return runtime, runtime
 
     monkeypatch.setattr(Ct2Backend, "_import_runtime", import_runtime)
-    monkeypatch.setattr(ct2_backend, "_load_cublas", lambda: None)
+    monkeypatch.setattr(ct2_backend, "_load_cublas", cublas_loaded)
     backend = Ct2Backend()
     progress = ProgressLog()
     raw: dict[str, JsonValue] = {"model_dir": str(models), **settings}
@@ -401,6 +406,7 @@ def test_warmup_model_load_failure_is_logged(
 
 
 def test_cpu_does_not_warm_up(monkeypatch: pytest.MonkeyPatch, models: Path) -> None:
+    """CPU 不预热：第一次翻译慢一些用户可以接受，启动时不多占内存（之后保持热态另有保证）。"""
     runtime = FakeRuntime()
     backend, progress, _ = fake_load(monkeypatch, models, runtime, device="cpu")
     assert runtime.batches == [] and runtime.translators == []
@@ -447,3 +453,17 @@ def test_real_backend_config_errors_exit_66(settings: dict[str, JsonValue]) -> N
         worker.send(Hello(PROTOCOL_VERSION))
         worker.send(Configure(settings))
         assert worker.wait_exit(timeout=30) == ExitCode.CONFIG_ERROR
+
+
+def test_cublas_is_looked_up_only_in_given_directories(tmp_path: Path) -> None:
+    """只在设置给出的目录与 nvidia/cublas/bin 里找 cuBLAS，按完整路径加载，不按 PATH 搜索（MOD-06）。"""
+    configured = tmp_path / "runtime" / "bin"
+    dirs = ct2_backend.cublas_dirs(configured)
+    assert dirs[0] == configured
+    assert all(d.parts[-3:] == ("nvidia", "cublas", "bin") for d in dirs[1:])
+    only_one = tmp_path / "partial"
+    only_one.mkdir()
+    (only_one / "cublas64_12.dll").write_bytes(b"x")  # 缺 cublasLt64_12.dll，不算
+    if sys.platform == "win32":
+        with pytest.raises(FileNotFoundError):
+            ct2_backend._load_cublas([only_one, tmp_path / "missing"])  # pyright: ignore[reportPrivateUsage]

@@ -10,7 +10,7 @@
 """
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,7 +22,7 @@ from lst.contracts.config import AppConfig
 from lst.contracts.errors import ErrorCode
 from lst.contracts.events import EngineHealth, EngineStatus, EngineStatuses, SegmentsUpdated, TranslateText
 from lst.contracts.ids import EngineId, SegmentId, SessionId
-from lst.contracts.translation import AttemptState, AttemptView, SegmentView
+from lst.contracts.translation import AttemptState, AttemptView, SegmentView, SkipReason
 from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus, ModuleContext
 from lst.ui.bilingual import BilingualModule, BilingualPresenter, BilingualWindow
@@ -61,20 +61,22 @@ def segment(
     segment_id: str,
     source: str,
     *attempts: AttemptView,
-    winner: str | None = None,
+    shown_engine: str | None = None,
     finished: bool = False,
+    skip_reason: SkipReason | None = None,
 ) -> SegmentView:
-    """构造段快照。display_text 按竞速模块的规则取：有胜出者时是它的译文，否则是原文。"""
+    """构造段快照。display_text 按调度模块的规则取：有显示的实例时是它的译文，否则是原文。"""
     display = source
-    if winner is not None:
-        display = next(a.text for a in attempts if a.engine_id == winner and a.text is not None)
+    if shown_engine is not None:
+        display = next(a.text for a in attempts if a.engine_id == shown_engine and a.text is not None)
     return SegmentView(
         segment_id=SegmentId(segment_id),
         source_text=source,
         display_text=display,
-        winner=None if winner is None else EngineId(winner),
+        shown_engine=None if shown_engine is None else EngineId(shown_engine),
         finished=finished,
         attempts=attempts,
+        skip_reason=skip_reason,
     )
 
 
@@ -82,24 +84,33 @@ def config(
     *,
     debounce_ms: JsonValue = DEBOUNCE_MS,
     layout: JsonValue = None,
-    marker: JsonValue = None,
     revision: int = 1,
 ) -> AppConfig:
     bilingual: dict[str, JsonValue] = {"pair": ["zh-Hans", "en"], "debounce_ms": debounce_ms}
     if layout is not None:
         bilingual["layout"] = layout
-    race: dict[str, JsonValue] = {"mode": "saver"}
-    if marker is not None:
-        race["show_source_marker"] = {"overlay": False, "bilingual": marker}
-    return AppConfig(sections={"bilingual": bilingual, "race": race}, revision=revision)
+    return AppConfig(sections={"bilingual": bilingual}, revision=revision)
 
 
-def statuses(names: Mapping[str, str], colors: Mapping[str, str] | None = None) -> EngineStatuses:
+def statuses(
+    names: Mapping[str, str],
+    *,
+    health: Mapping[str, EngineHealth] | None = None,
+    billing: Collection[str] = (),
+) -> EngineStatuses:
+    """引擎状态：names 的顺序就是优先级（第一个优先级为 1），billing 里列出的实例计费，
+    health 给出个别实例的状态（缺省为就绪），未启用的实例不进计费标记。"""
+    states = {e: (health or {}).get(e, EngineHealth.READY) for e in names}
     return EngineStatuses(
-        statuses={EngineId(e): EngineStatus(EngineHealth.READY) for e in names},
+        statuses={EngineId(e): EngineStatus(h) for e, h in states.items()},
         names={EngineId(e): n for e, n in names.items()},
-        colors=None if colors is None else {EngineId(e): c for e, c in colors.items()},
+        priorities={EngineId(e): rank for rank, e in enumerate(names, start=1)},
+        billing={EngineId(e): e in billing for e, h in states.items() if h is not EngineHealth.DISABLED},
     )
+
+
+DEFAULT_ENGINES = {"argos": "Argos"}
+"""夹具启动时发布的引擎状态：只有一个就绪的本地实例，它就是双语窗口选中的服务。"""
 
 
 # ---------------------------------------------------------------------- 夹具
@@ -107,7 +118,7 @@ def statuses(names: Mapping[str, str], colors: Mapping[str, str] | None = None) 
 
 @dataclass
 class Harness:
-    """一个运行中的双语窗口模块，加上扮演竞速模块的命令记录。"""
+    """一个运行中的双语窗口模块，加上扮演调度模块的命令记录。"""
 
     bus: EventBus
     module: BilingualModule
@@ -171,7 +182,9 @@ async def start_harness(bus: EventBus, tmp_path: Path) -> AsyncIterator[StartHar
     bus.subscribe(TranslateText, sent.append)
     harnesses: list[Harness] = []
 
-    async def start(settings_path: Path | None = None, *, with_config: bool = True) -> Harness:
+    async def start(
+        settings_path: Path | None = None, *, with_config: bool = True, with_engines: bool = True
+    ) -> Harness:
         path = settings_path or tmp_path / "data" / "ui_state.ini"
         module = BilingualModule(path, clipboard=copied.append)
         ctx = ModuleContext(bus, logging.getLogger("lst.ui.bilingual"))
@@ -182,6 +195,8 @@ async def start_harness(bus: EventBus, tmp_path: Path) -> AsyncIterator[StartHar
             harness.window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         if with_config:
             bus.publish(config())
+        if with_engines:
+            bus.publish(statuses(DEFAULT_ENGINES))
         await bus.drain()
         return harness
 

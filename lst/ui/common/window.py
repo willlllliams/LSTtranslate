@@ -9,7 +9,9 @@ Mica 背景、显示与关闭。
   ``mica_active`` 为假，子类据此决定要不要自己绘制底色；
 - 系统或设置里的深浅色变化时，Mica 生效的窗口更新深浅色属性并重绘；
 - 显示时位置不在任何屏幕上就移到主屏中央，带 WA_DontShowOnScreen 的窗口（原生平台上的测试）不抢前台；
-- 标题栏的关闭按钮与 Alt+F4 只隐藏窗口，模块停止时 ``close_for_good`` 才真正关闭。
+- 标题栏的关闭按钮与 Alt+F4 只隐藏窗口，模块停止时 ``close_for_good`` 才真正关闭；
+- 构造时 ``taskbar=False`` 的窗口不在任务栏占按钮：首次显示前给它挂一个隐藏的所有者窗口
+  （Windows 不为有所有者的顶层窗口创建任务栏按钮），并去掉最小化按钮。取舍见 ``SecondaryWindow``。
 
 窗口状态（位置、大小等）属于界面状态，用 QSettings 写进 ui_state.ini，每个窗口一个组。INI 不记录值的类型，
 重新打开文件后读到的都是字符串，所以读取时按字符串和原生类型两种情况解析，解析不了的项当作没有保存过。
@@ -19,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from typing import Final, cast
 
 from PySide6.QtCore import QPoint, QRect, QSettings, QSize, Qt
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QScreen
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QScreen, QWindow
 from PySide6.QtWidgets import QApplication, QWidget
 
 from lst.ui.theme import enable_mica, is_dark
@@ -121,17 +123,47 @@ def _app_is_dark() -> bool:
 # ---------------------------------------------------------------- 窗口
 
 
-class SecondaryWindow(QWidget):
-    """常驻托盘程序的次要顶层窗口。规则见模块说明。"""
+_NO_MINIMIZE: Final = (
+    Qt.WindowType.Window
+    | Qt.WindowType.CustomizeWindowHint
+    | Qt.WindowType.WindowTitleHint
+    | Qt.WindowType.WindowSystemMenuHint
+    | Qt.WindowType.WindowMaximizeButtonHint
+    | Qt.WindowType.WindowCloseButtonHint
+)
+"""不占任务栏的窗口用的标志：标题、系统菜单、最大化与关闭按钮，没有最小化按钮。"""
 
-    def __init__(self) -> None:
-        super().__init__(None, Qt.WindowType.Window)
+
+class SecondaryWindow(QWidget):
+    """常驻托盘程序的次要顶层窗口。规则见模块说明。
+
+    taskbar 为假时窗口不在任务栏占按钮。Windows 有两种做法，这里选第二种：
+
+    - 加 WS_EX_TOOLWINDOW 扩展样式（Qt.WindowType.Tool）：窗口同时从 Alt+Tab 列表里消失，标题栏变成工具窗口的
+      样式，只剩关闭按钮；
+    - 给窗口一个隐藏的所有者窗口：Windows 只为没有所有者的顶层窗口创建任务栏按钮，而 Alt+Tab 列表、激活、
+      置顶、Mica 背景和普通标题栏都不受影响。
+
+    有所有者的窗口最小化后没有任务栏按钮可以点回来，只会缩成桌面左下角的一小条标题栏，所以这类窗口去掉
+    最小化按钮，隐藏窗口用关闭按钮、Esc 或热键。所有者是一个只创建原生句柄、从不显示的 QWindow，在首次显示前
+    通过 ``QWindow.setTransientParent`` 挂上，Qt 在 Windows 上把它写成窗口的所有者（GWLP_HWNDPARENT）。
+    """
+
+    def __init__(self, *, taskbar: bool = True) -> None:
+        super().__init__(None, Qt.WindowType.Window if taskbar else _NO_MINIMIZE)
         # 关闭它不应让程序退出。
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
         self._allow_close = False
         self._backdrop_tried = False
         self._mica = False
+        self._taskbar = taskbar
+        self._owner: QWindow | None = None
         QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
+
+    @property
+    def owner_window(self) -> QWindow | None:
+        """不占任务栏的窗口挂上的隐藏所有者窗口；还没显示过或 taskbar 为真时为 None。"""
+        return self._owner
 
     @property
     def mica_active(self) -> bool:
@@ -188,6 +220,7 @@ class SecondaryWindow(QWidget):
     def present_window(self, focus: QWidget | None) -> None:
         """显示并激活窗口，把焦点交给 focus。窗口已经显示时只是带到前面。"""
         self.ensure_on_screen()
+        self._attach_owner()
         self.apply_backdrop()
         if self.isMinimized():
             self.showNormal()
@@ -207,6 +240,25 @@ class SecondaryWindow(QWidget):
         """模块停止时真正关闭窗口；其他情况下关闭按钮只隐藏窗口。"""
         self._allow_close = True
         self.close()
+        owner, self._owner = self._owner, None
+        if owner is not None:
+            owner.destroy()
+            owner.deleteLater()
+
+    def _attach_owner(self) -> None:
+        """taskbar 为假的窗口首次显示前挂上隐藏的所有者窗口（见类说明）。"""
+        if self._taskbar or self._owner is not None:
+            return
+        owner = QWindow()
+        owner.create()
+        self.winId()  # 先建好本窗口的原生句柄，windowHandle 才不为 None
+        # 类型桩把 windowHandle 标成非空，实际上原生窗口创建之前它返回 None。
+        handle = cast(QWindow | None, self.windowHandle())
+        if handle is None:
+            owner.destroy()
+            return
+        handle.setTransientParent(owner)
+        self._owner = owner
 
     def close_requested(self) -> None:
         """用户点了标题栏的关闭按钮或按了 Alt+F4。默认只隐藏窗口。"""

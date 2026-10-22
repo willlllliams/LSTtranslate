@@ -41,29 +41,32 @@ from typing import Final, Protocol, cast
 import numpy as np
 
 from lst.contracts.worker_protocol import JsonValue
-from lst.workers._runtime import ConfigError, LoadResult, ProgressReporter
+from lst.workers._runtime import LoadResult, ProgressReporter
 from lst.workers.ocr_worker.blocks import blocks_to_json
 from lst.workers.ocr_worker.convert import convert_structure, convert_text
 from lst.workers.ocr_worker.extract import extract_structure, extract_text
 from lst.workers.ocr_worker.geometry import CoordinateMap, plan_resize
 from lst.workers.ocr_worker.image import Pixels, to_grayscale
 from lst.workers.ocr_worker.paddle_config import Config, attach_models, structure_config, text_config
-from lst.workers.ocr_worker.settings import FEATURES, OcrSettings, RequestOptions
+from lst.workers.ocr_worker.settings import (
+    FEATURES,
+    OcrSettings,
+    PredictParams,
+    RequestOptions,
+    predict_kwargs,
+    resolve_cpu_threads,
+)
 
 log = logging.getLogger(__name__)
 
 GPU_ONLY_FEATURES: Final = frozenset({"chart"})
 """只在 GPU 上提供的子能力，见模块说明。"""
 
-DEFAULT_CPU_THREADS: Final = 8
-"""cpu_threads 为 0（自动）时的线程数，取值依据见 _cpu_threads。"""
-
-
 # ---------------------------------------------------------------- 推理库的类型（只列出用到的部分）
 
 
 class _Pipeline(Protocol):
-    def predict(self, input: Pixels, **kwargs: bool) -> list[object]: ...
+    def predict(self, input: Pixels, **kwargs: object) -> list[object]: ...
 
     def close(self) -> None: ...
 
@@ -170,8 +173,9 @@ def resolve_device(compiled_with_cuda: bool, gpu_count: int, requested: str) -> 
 
     - cpu：总是 CPU。
     - gpu：安装的 PaddlePaddle 没有编译 CUDA（CPU 版）时抛 ImportError，进程以 DEPENDENCY_ERROR 退出：
-      缺的是推理依赖的能力，要换装 GPU 版 PaddlePaddle（或把 device 改成 auto、cpu）；
-      编译了 CUDA 但没有可用的 GPU 时抛 ConfigError，进程以 CONFIG_ERROR 退出，与 NMT 进程的处理一致。
+      缺的是推理依赖的能力，要换装 CUDA 版运行环境（或把 device 改成 auto、cpu）；
+      编译了 CUDA 但 CUDA 不可用（没有 GPU、驱动太旧）时同样抛 ImportError：运行时缺的是推理依赖的能力，
+      设置窗口显示依赖错误与处理建议（需求 OCRE-07）。
     - auto：有 CUDA 且有 GPU 时用 GPU，否则 CPU。
     """
     if requested == "cpu":
@@ -179,24 +183,16 @@ def resolve_device(compiled_with_cuda: bool, gpu_count: int, requested: str) -> 
     if requested == "gpu":
         if not compiled_with_cuda:
             raise ImportError(
-                "device 设为 gpu，但安装的 PaddlePaddle 是 CPU 版（未编译 CUDA）；"
-                "请在 OCR 环境中安装 GPU 版 PaddlePaddle，或把 device 改为 auto 或 cpu"
+                "推理设备设为显卡，但 PaddleOCR 运行环境是 CPU 版（PaddlePaddle 未编译 CUDA）；"
+                "请在设置里安装 PaddleOCR 的 CUDA 版，或把推理设备改为自动或 CPU"
             )
         if gpu_count <= 0:
-            raise ConfigError("device 设为 gpu，但没有可用的 GPU")
+            raise ImportError(
+                "推理设备设为显卡，PaddleOCR 是 CUDA 版，但 CUDA 不可用"
+                "（没有 NVIDIA 显卡，或驱动不支持 CUDA 12.9）；请更新显卡驱动，或把推理设备改为自动或 CPU"
+            )
         return "gpu"
     return "gpu" if compiled_with_cuda and gpu_count > 0 else "cpu"
-
-
-def _cpu_threads(requested: int) -> int:
-    """CPU 推理线程数。0 表示自动，取 DEFAULT_CPU_THREADS 与逻辑处理器数中较小的一个。
-
-    本机（8 个性能核 + 16 个能效核）实测 1920×1080 文本模式：4、8、12、16 线程的耗时差别在测量波动之内，
-    8 线程与 PaddleOCR 的默认值 10 相当，并给其他进程留出处理器。
-    """
-    if requested > 0:
-        return requested
-    return max(1, min(DEFAULT_CPU_THREADS, os.cpu_count() or 1))
 
 
 def warmup_image(cv2: _Cv2Module) -> Pixels:
@@ -292,9 +288,9 @@ class PaddleBackend:
         structure = settings.mode == "structure"
         base = modules.inference.load_pipeline_config("PP-StructureV3" if structure else "OCR")
         config = (structure_config if structure else text_config)(base, settings, features)
-        threads = _cpu_threads(settings.cpu_threads) if self._device == "cpu" else None
+        threads = resolve_cpu_threads(settings.cpu_threads) if self._device == "cpu" else None
         models_dir = settings.model_cache_dir / "official_models"
-        models = attach_models(config, models_dir, threads)
+        models = attach_models(config, models_dir, threads, settings.enable_mkldnn)
         kwargs: dict[str, object] = {
             "paddlex_config": config,
             "device": "gpu:0" if self._device == "gpu" else "cpu",
@@ -341,6 +337,7 @@ class PaddleBackend:
         models: dict[str, JsonValue] = {"det": settings.det_model, "rec": settings.rec_model}
         if settings.mode == "structure":
             models["layout"] = settings.layout_model
+            models["region"] = settings.model("region_model")
         models["all"] = list[JsonValue](self._models)
         return {
             "mode": settings.mode,
@@ -381,7 +378,7 @@ class PaddleBackend:
         # 先缩放再灰度化：灰度化只处理缩小后的像素，与 Windows OCR 后端的顺序相同。
         if parsed.grayscale:
             prepared = to_grayscale(prepared)
-        result = self._predict(prepared, features)
+        result = self._predict(prepared, features, parsed.predict)
         if settings.mode == "structure":
             page = extract_structure(result)
             blocks = convert_structure(
@@ -392,12 +389,14 @@ class PaddleBackend:
             blocks = convert_text(page, CoordinateMap((width, height), target, page.angle, page.output_size))
         return blocks_to_json(blocks)
 
-    def _predict(self, image: Pixels, features: frozenset[str]) -> object:
-        """推理一张图，返回 PaddleX 的结果对象。"""
+    def _predict(
+        self, image: Pixels, features: frozenset[str], params: PredictParams | None = None
+    ) -> object:
+        """推理一张图，返回 PaddleX 的结果对象。params 是请求的产线参数，只传与默认值不同的项。"""
         settings, pipeline = self._settings, self._pipeline
         assert settings is not None and pipeline is not None
         orientation = "doc_orientation" in features
-        flags = {
+        flags: dict[str, object] = {
             "use_doc_orientation_classify": orientation,
             "use_doc_unwarping": "doc_unwarping" in features,
             "use_textline_orientation": "textline_orientation" in features,
@@ -408,9 +407,11 @@ class PaddleBackend:
                 use_formula_recognition="formula" in features,
                 use_chart_recognition="chart" in features,
                 use_seal_recognition=False,
-                use_region_detection=True,
+                # 与建产线时一致：关掉区域检测时产线里没有这个模型，这里再传 True 会在预测时出错。
+                use_region_detection="region" in features,
                 use_table_orientation_classify=orientation,
             )
+        flags.update(predict_kwargs(params or settings.predict, settings.mode == "structure"))
         results = pipeline.predict(image, **flags)
         if len(results) != 1:
             raise RuntimeError(f"产线返回了 {len(results)} 个结果，应为 1 个")

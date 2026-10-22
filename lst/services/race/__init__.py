@@ -2,6 +2,7 @@
 
 from lst.services.race.config import (
     CONFIG_SECTIONS,
+    REMOVED_FIELDS,
     BilingualConfig,
     LangCode,
     RaceConfig,
@@ -10,17 +11,19 @@ from lst.services.race.config import (
 )
 from lst.services.race.langid import (
     DEFAULT_CANDIDATES,
+    Detection,
     LanguageDetector,
     SupportsLanguageDetection,
     chinese_variant,
+    has_text,
     normalize_lang,
+    resolve_with_context,
 )
 from lst.services.race.merger import SegmentRace, SessionRace
 from lst.services.race.module import RaceModule, bilingual_langs, screenshot_langs
 from lst.services.race.paragraphs import split_paragraphs
 from lst.services.race.scheduler import (
     LangPair,
-    RaceMode,
     RaceScheduler,
     RaceSink,
     pack_segments,
@@ -29,12 +32,13 @@ from lst.services.race.scheduler import (
 __all__ = [
     "CONFIG_SECTIONS",
     "DEFAULT_CANDIDATES",
+    "REMOVED_FIELDS",
     "BilingualConfig",
+    "Detection",
     "LangCode",
     "LangPair",
     "LanguageDetector",
     "RaceConfig",
-    "RaceMode",
     "RaceModule",
     "RaceScheduler",
     "RaceSink",
@@ -45,8 +49,10 @@ __all__ = [
     "SupportsLanguageDetection",
     "bilingual_langs",
     "chinese_variant",
+    "has_text",
     "normalize_lang",
     "pack_segments",
+    "resolve_with_context",
     "screenshot_langs",
     "split_paragraphs",
 ]

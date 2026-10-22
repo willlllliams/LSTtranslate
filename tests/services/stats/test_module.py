@@ -23,13 +23,13 @@ MODULE_LOGGER = "lst.stats"
 
 
 def view(
-    segment_id: SegmentId, winner: EngineId | None, attempts: tuple[AttemptView, ...], *, finished: bool
+    segment_id: SegmentId, shown_engine: EngineId | None, attempts: tuple[AttemptView, ...], *, finished: bool
 ) -> SegmentView:
     return SegmentView(
         segment_id=segment_id,
         source_text="原文",
-        display_text="译文" if winner else "原文",
-        winner=winner,
+        display_text="译文" if shown_engine else "原文",
+        shown_engine=shown_engine,
         finished=finished,
         attempts=attempts,
     )

@@ -1,5 +1,7 @@
 """竞速模块测试：真实事件总线（raise_errors=True）→ RaceModule → RaceScheduler → 假引擎。
 
+截屏入口既直接调用 start_screenshot_session，也经 OcrCompleted 触发（模块订阅它，用其中的段开始会话）。
+
 语言检测用假的检测器，按文本给出检测结果，必要时在闸门上停住，以控制检测完成的先后。
 假引擎按段文本设闸门，测试放行后才产出结果。
 """
@@ -21,6 +23,16 @@ from lst.contracts.events import (
     TranslateText,
 )
 from lst.contracts.ids import EngineId, Lang, SegmentId, SessionId
+from lst.contracts.ocr import (
+    BBox,
+    BlockCategory,
+    CaptureCompleted,
+    CaptureGeometry,
+    LayoutBlock,
+    OcrCompleted,
+    OcrSegment,
+    RawImage,
+)
 from lst.contracts.translation import (
     AttemptState,
     Engine,
@@ -36,8 +48,6 @@ from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus, Module, ModuleContext
 from lst.services.race import (
     BilingualConfig,
-    RaceConfig,
-    RaceMode,
     RaceModule,
     ScreenshotConfig,
     bilingual_langs,
@@ -56,7 +66,7 @@ DETECTED: dict[str, str | None] = {
     "Good morning": "en",
     "Bonjour le monde": "fr",
     "こんにちは": "ja",
-    "12345": None,
+    "Xyzzy": None,
 }
 
 
@@ -183,12 +193,12 @@ class Recorder:
         assert view is not None, f"会话 {session} 没有段 {segment} 的快照"
         return view
 
-    def winner(self, session: str, segment: str) -> str | None:
+    def shown_engine(self, session: str, segment: str) -> str | None:
         view = self.find(session, segment)
-        return None if view is None else view.winner
+        return None if view is None else view.shown_engine
 
     def engines(self, session: str, segment: str) -> set[str]:
-        """进入过终态的参赛实例。"""
+        """进入过终态的实例。"""
         return {
             m.attempt.engine_id for m in self.attempts if m.session_id == session and m.segment_id == segment
         }
@@ -207,13 +217,24 @@ class Recorder:
 
 
 class Harness:
-    """事件总线、竞速模块、记录器放在一起，并提供发命令、发配置、等待稳定的便捷方法。"""
+    """事件总线、竞速模块、记录器放在一起，并提供发命令、发配置、等待稳定的便捷方法。
 
-    def __init__(self, bus: EventBus, module: RaceModule, ctx: ModuleContext, recorder: Recorder) -> None:
+    translate 不指定 engine 时，请求交给创建时给出的第一个引擎（双语窗口里选中的服务）。
+    """
+
+    def __init__(
+        self,
+        bus: EventBus,
+        module: RaceModule,
+        ctx: ModuleContext,
+        recorder: Recorder,
+        default_engine: str | None,
+    ) -> None:
         self.bus = bus
         self.module = module
         self.ctx = ctx
         self.recorder = recorder
+        self.default_engine = default_engine
         self._revision = 0
 
     def translate(
@@ -223,15 +244,17 @@ class Harness:
         *,
         source: str | None = None,
         target: str | None = None,
-        billing: bool = False,
+        engine: str | None = "",
     ) -> None:
+        """engine 为空串时用 default_engine，为 None 时表示没有可用的服务。"""
+        chosen = self.default_engine if engine == "" else engine
         self.bus.send(
             TranslateText(
                 SessionId(session),
                 text,
                 source=None if source is None else Lang(source),
                 target=None if target is None else Lang(target),
-                include_billing=billing,
+                engine_id=None if chosen is None else EngineId(chosen),
             )
         )
 
@@ -288,7 +311,7 @@ async def make(bus: EventBus) -> AsyncIterator[MakeHarness]:
     def factory(*engines: Engine, detector: FakeDetector | None = None) -> Harness:
         module = RaceModule(detector=detector or FakeDetector(), frame_interval=0)
         ctx = ModuleContext(bus, logging.getLogger(MODULE_LOGGER))
-        harness = Harness(bus, module, ctx, recorder)
+        harness = Harness(bus, module, ctx, recorder, engines[0].info.id if engines else None)
         if engines:
             harness.roster(*engines)
         harnesses.append(harness)
@@ -368,9 +391,8 @@ async def test_start_applies_existing_config_and_roster(make: MakeHarness) -> No
     """config、engines 先于 race 启动：总线上已有的配置和名册在 start 返回时就已生效。"""
     engine = FakeEngine("argos", 1)
     harness = make(engine)
-    harness.configure(screenshot={"target_lang": "ja"}, race={"mode": "full"})
+    harness.configure(screenshot={"target_lang": "ja"})
     await harness.module.start(harness.ctx)  # 不等总线分发
-    assert harness.module.mode is RaceMode.FULL
     assert harness.module.screenshot_config.target_lang == "ja"
     await harness.module.start_screenshot_session(SessionId("shot"), [Segment(SegmentId("b1"), "Hello")])
     await harness.settle()
@@ -379,29 +401,38 @@ async def test_start_applies_existing_config_and_roster(make: MakeHarness) -> No
 
 async def test_missing_sections_use_defaults(make: MakeHarness) -> None:
     harness = await started(make())
-    harness.configure(bilingual={"pair": ["ja", "en"], "auto_billing": True}, race={"mode": "full"})
+    harness.configure(bilingual={"pair": ["ja", "en"]})
     await harness.settle()
     assert harness.module.bilingual_config.pair == ("ja", "en")
-    harness.configure()  # 三节都缺失
+    harness.configure()  # 两节都缺失
     await harness.settle()
-    assert harness.module.race_config == RaceConfig()
     assert harness.module.screenshot_config == ScreenshotConfig()
     assert harness.module.bilingual_config == BilingualConfig()
-    assert harness.module.mode is RaceMode.SAVER
+
+
+async def test_old_sections_and_fields_are_ignored(make: MakeHarness) -> None:
+    """旧配置里的 [race] 节与 bilingual.auto_billing 不影响解析，同一节的其他字段照常生效。"""
+    harness = await started(make())
+    harness.configure(
+        race={"mode": "full", "show_source_marker": {"overlay": True}},
+        bilingual={"pair": ["ja", "en"], "auto_billing": True},
+    )
+    await harness.settle()
+    assert harness.module.bilingual_config.pair == ("ja", "en")
 
 
 async def test_unparsable_section_keeps_previous_value(
     make: MakeHarness, caplog: pytest.LogCaptureFixture
 ) -> None:
     harness = await started(make())
-    harness.configure(race={"mode": "full"}, screenshot={"target_lang": "ja"})
+    harness.configure(bilingual={"pair": ["ja", "en"]}, screenshot={"target_lang": "ja"})
     await harness.settle()
     with caplog.at_level(logging.ERROR, logger=MODULE_LOGGER):
-        harness.configure(race={"mode": "turbo"}, screenshot={"target_lang": "fr"})
+        harness.configure(bilingual={"pair": ["ja", "ja"]}, screenshot={"target_lang": "fr"})
         await harness.settle()
-    assert harness.module.mode is RaceMode.FULL
+    assert harness.module.bilingual_config.pair == ("ja", "en")
     assert harness.module.screenshot_config.target_lang == "fr"  # 其他节照常更新
-    assert "[race]" in caplog.text
+    assert "[bilingual]" in caplog.text
 
 
 async def test_warm_up_runs_once_after_start(make: MakeHarness) -> None:
@@ -428,11 +459,11 @@ async def test_roster_takes_effect(make: MakeHarness) -> None:
     assert argos.sessions() == ["s1"]
 
     harness.roster(deepl)
-    harness.translate("s2", "Good morning")
+    harness.translate("s2", "Good morning", engine="deepl")
     await harness.settle()
     assert argos.sessions() == ["s1"]
     assert deepl.sessions() == ["s2"]
-    assert harness.recorder.view("s2", "p1").winner == "deepl"
+    assert harness.recorder.view("s2", "p1").shown_engine == "deepl"
 
 
 async def test_invalid_roster_is_rejected(make: MakeHarness, caplog: pytest.LogCaptureFixture) -> None:
@@ -450,10 +481,11 @@ async def test_invalid_roster_is_rejected(make: MakeHarness, caplog: pytest.LogC
 # ---------------------------------------------------------------- 双语窗口：会话与事件
 
 
-async def test_translate_text_publishes_race_events(make: MakeHarness) -> None:
+async def test_translate_text_uses_only_the_chosen_engine(make: MakeHarness) -> None:
+    """双语窗口的请求只交给选中的服务（BI-04），优先级更高的其他实例不参加。"""
     deepseek, argos = FakeEngine("deepseek", 1), FakeEngine("argos", 2)
     harness = await started(make(deepseek, argos))
-    harness.translate("s1", lines("Hello world", "", "  Good morning  "))
+    harness.translate("s1", lines("Hello world", "", "  Good morning  "), engine="argos")
     await harness.settle()
 
     recorder = harness.recorder
@@ -462,12 +494,13 @@ async def test_translate_text_publishes_race_events(make: MakeHarness) -> None:
     for segment, text in (("p1", "Hello world"), ("p2", "Good morning")):
         view = recorder.view("s1", segment)
         assert view.source_text == text
-        assert view.winner == "deepseek"
-        assert view.display_text == deepseek.translated(text)
+        assert view.shown_engine == "argos"
+        assert view.display_text == argos.translated(text)
         assert view.finished
-        assert recorder.engines("s1", segment) == {"deepseek", "argos"}
+        assert recorder.engines("s1", segment) == {"argos"}
+    assert deepseek.jobs == []
     assert recorder.last_progress("s1") == (2, 2)
-    assert {job.context for job in deepseek.jobs} == {lines("Hello world", "Good morning")}
+    assert {job.context for job in argos.jobs} == {lines("Hello world", "Good morning")}
     assert recorder.sessions() == {"s1"}
 
 
@@ -526,26 +559,39 @@ async def test_manual_codes_are_normalized(make: MakeHarness, caplog: pytest.Log
     assert "不是合法的语言代码" in caplog.text
 
 
+async def test_segment_without_text_is_skipped_as_no_text(make: MakeHarness) -> None:
+    """只有数字、符号或单个字母的段不送去翻译，标为“无需翻译”，显示原文（DSP-09）。"""
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    harness.translate("s1", lines("12345", "☆4", "a", "Hello world"), target="ja")
+    await harness.settle()
+    for segment, text in (("p1", "12345"), ("p2", "☆4"), ("p3", "a")):
+        view = harness.recorder.view("s1", segment)
+        assert (view.skip_reason, view.display_text, view.finished) == (SkipReason.NO_TEXT, text, True)
+    assert set(engine.langs_by_text()) == {"Hello world"}
+    assert harness.recorder.last_progress("s1") == (4, 4)
+
+
 async def test_undetectable_segment_is_skipped_as_same_language(make: MakeHarness) -> None:
     """检测不出时源语言取 pair[0]；目标语言为自动时也取 pair[0]，该段按同语言跳过，显示原文。"""
     engine = FakeEngine("argos", 1)
     harness = await started(make(engine))
-    harness.translate("s1", lines("12345", "Hello world"))
+    harness.translate("s1", lines("Xyzzy", "Hello world"))
     await harness.settle()
     view = harness.recorder.view("s1", "p1")
     assert view.skip_reason is SkipReason.SAME_LANGUAGE
-    assert view.display_text == "12345"
+    assert view.display_text == "Xyzzy"
     assert view.finished
-    assert "12345" not in engine.langs_by_text()
+    assert "Xyzzy" not in engine.langs_by_text()
     assert harness.recorder.last_progress("s1") == (2, 2)
 
 
 async def test_undetectable_segment_with_manual_target_is_translated(make: MakeHarness) -> None:
     engine = FakeEngine("argos", 1)
     harness = await started(make(engine))
-    harness.translate("s1", "12345", target="en")
+    harness.translate("s1", "Xyzzy", target="en")
     await harness.settle()
-    assert engine.langs_by_text() == {"12345": (ZH, EN)}
+    assert engine.langs_by_text() == {"Xyzzy": (ZH, EN)}
 
 
 async def test_detector_failure_falls_back_to_undetected(
@@ -562,108 +608,58 @@ async def test_detector_failure_falls_back_to_undetected(
     assert engine.langs_by_text() == {"Hello world": (ZH, JA)}
 
 
-# ---------------------------------------------------------------- 计费实例
+# ---------------------------------------------------------------- 选中的服务
 
 
-async def test_billing_engines_wait_for_ctrl_enter_by_default(make: MakeHarness) -> None:
+async def test_chosen_billing_engine_translates_on_every_request(make: MakeHarness) -> None:
+    """选中的是计费服务时，每次请求都交给它，不再等 Ctrl+Enter（BI-04）。"""
     argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
     harness = await started(make(argos, deepseek))
-    harness.translate("s1", "Hello world")
-    await harness.settle()
-    assert argos.sessions() == ["s1"]
-    assert deepseek.jobs == []
-    assert harness.recorder.view("s1", "p1").winner == "argos"
-
-
-async def test_include_billing_with_new_text_starts_session_with_billing(make: MakeHarness) -> None:
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
-    harness = await started(make(argos, deepseek))
-    harness.translate("s1", "Hello world", billing=True)
+    harness.translate("s1", "Hello world", engine="deepseek")
     await harness.settle()
     assert deepseek.sessions() == ["s1"]
-    assert harness.recorder.engines("s1", "p1") == {"argos", "deepseek"}
-    assert harness.recorder.view("s1", "p1").winner == "deepseek"
+    assert argos.jobs == []
+    assert harness.recorder.view("s1", "p1").shown_engine == "deepseek"
 
 
-async def test_auto_billing_lets_billing_engines_join_on_pause(make: MakeHarness) -> None:
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
-    harness = await started(make(argos, deepseek))
-    harness.configure(bilingual={"auto_billing": True})
+async def test_request_without_engine_skips_every_segment(make: MakeHarness) -> None:
+    """没有可用的服务（engine_id 为 None）时各段按“没有支持的服务”跳过，显示原文。"""
+    argos = FakeEngine("argos", 1)
+    harness = await started(make(argos))
+    harness.translate("s1", lines("Hello world", "Good morning"), engine=None)
     await harness.settle()
-    harness.translate("s1", "Hello world")
-    await harness.settle()
-    assert deepseek.sessions() == ["s1"]
-
-
-async def test_ctrl_enter_with_same_session_extends_current_session(make: MakeHarness) -> None:
-    """Ctrl+Enter 时窗口沿用会话号：计费实例加入当前会话，免费实例不重新翻译。"""
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
-    harness = await started(make(argos, deepseek))
-    text = lines("Hello world", "Good morning")
-    harness.translate("s1", text)
-    await harness.settle()
-    assert harness.recorder.view("s1", "p1").winner == "argos"
-
-    harness.translate("s1", text, billing=True)
-    await harness.settle()
-    assert deepseek.sessions() == ["s1"]
-    assert argos.sessions() == ["s1"]  # 免费实例没有重新翻译
+    assert argos.jobs == []
     for segment in ("p1", "p2"):
         view = harness.recorder.view("s1", segment)
-        assert view.winner == "deepseek"
-        assert {a.engine_id for a in view.attempts} == {"argos", "deepseek"}
-    assert harness.recorder.last_progress("s1") == (2, 2)
+        assert (view.skip_reason, view.finished) == (SkipReason.NO_ENGINE, True)
 
-    # 再按一次 Ctrl+Enter：计费实例已经参赛过，不会重复请求
-    harness.translate("s1", text, billing=True)
+
+async def test_removed_engine_skips_as_no_engine(make: MakeHarness) -> None:
+    """选中的服务已经不在名册里（停用或删除）：段按“没有支持的服务”跳过。"""
+    argos = FakeEngine("argos", 1)
+    harness = await started(make(argos))
+    harness.translate("s1", "Hello world", engine="deepl")
     await harness.settle()
-    assert len(deepseek.jobs) == 1
+    assert argos.jobs == []
+    assert harness.recorder.view("s1", "p1").skip_reason is SkipReason.NO_ENGINE
 
 
-async def test_ctrl_enter_with_new_session_id_starts_new_session_even_if_segments_match(
-    make: MakeHarness,
-) -> None:
-    """窗口认为文本变了（例如只多了一个空行）就换会话号；切段结果相同也开始新会话，结果按新会话号发布。"""
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
-    harness = await started(make(argos, deepseek))
-    harness.translate("s1", lines("Hello world", "Good morning"))
-    await harness.settle()
-
-    harness.translate("s2", lines("Hello world", "", "Good morning"), billing=True)
-    await harness.settle()
-    assert deepseek.sessions() == ["s2"]
-    for segment in ("p1", "p2"):
-        assert harness.recorder.view("s2", segment).winner == "deepseek"
-
-
-async def test_ctrl_enter_with_different_text_starts_new_session(make: MakeHarness) -> None:
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
+async def test_resending_same_text_starts_new_session(make: MakeHarness) -> None:
+    """立即翻译总是开始新会话：同样的文本以新会话号重新翻译，旧会话取消。"""
+    argos = FakeEngine("argos", 1)
     argos.gate("Hello world")
-    harness = await started(make(argos, deepseek))
+    harness = await started(make(argos))
     harness.translate("s1", "Hello world")
     await harness.wait_running("s1", "p1", argos)
     events_before = harness.recorder.count("s1")
 
-    harness.translate("s2", "Hello there", billing=True)
-    await eventually(lambda: len(argos.cancelled) == 1)  # 旧会话执行中的任务被取消
+    harness.translate("s2", "Hello world")
+    await eventually(lambda: len(argos.cancelled) == 1)
     argos.release("Hello world")
     await harness.settle()
-    assert deepseek.sessions() == ["s2"]
-    assert harness.recorder.engines("s2", "p1") == {"argos", "deepseek"}
-    assert harness.recorder.count("s1") == events_before  # 旧会话不再产生事件
-    assert harness.recorder.view("s2", "p1").winner == "deepseek"
-
-
-async def test_ctrl_enter_with_same_text_but_other_languages_starts_new_session(make: MakeHarness) -> None:
-    """文本相同但手动改了目标语言：当前会话的语言对已经不对，开始新会话。"""
-    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
-    harness = await started(make(argos, deepseek))
-    harness.translate("s1", "Hello world")
-    await harness.settle()
-    harness.translate("s2", "Hello world", target="ja", billing=True)
-    await harness.settle()
-    assert deepseek.sessions() == ["s2"]
-    assert deepseek.langs_by_text() == {"Hello world": (EN, JA)}
+    assert argos.sessions() == ["s1", "s2"]
+    assert harness.recorder.count("s1") == events_before
+    assert harness.recorder.view("s2", "p1").shown_engine == "argos"
 
 
 async def test_empty_text_cancels_current_session(make: MakeHarness) -> None:
@@ -681,11 +677,11 @@ async def test_empty_text_cancels_current_session(make: MakeHarness) -> None:
     assert harness.recorder.count("s1") == events_before
     assert "s2" not in harness.recorder.sessions()
 
-    # 当前会话已取消：同样的文本按 Ctrl+Enter 开始新会话，而不是加入已取消的会话
-    harness.translate("s3", "Hello world", billing=True)
+    # 当前会话已取消：之后的请求照常开始新会话
+    harness.translate("s3", "Hello world", engine="deepseek")
     await harness.settle()
     assert deepseek.sessions() == ["s3"]
-    assert harness.recorder.view("s3", "p1").winner == "deepseek"
+    assert harness.recorder.view("s3", "p1").shown_engine == "deepseek"
 
 
 async def test_latest_request_wins_when_detection_finishes_late(make: MakeHarness) -> None:
@@ -731,19 +727,17 @@ async def test_duplicate_session_id_keeps_current_session(make: MakeHarness) -> 
         await harness.settle()
     assert info.group_contains(ValueError)
 
-    harness.translate("s1", "Hello world", billing=True)  # 沿用当前会话 s1
+    assert harness.recorder.view("s1", "p1").finished  # 当前会话不受影响
+    harness.translate("s2", "Hello world", engine="deepseek")
     await harness.settle()
-    assert deepseek.sessions() == ["shared", "s1"]
+    assert deepseek.sessions() == ["shared", "s2"]
 
 
-# ---------------------------------------------------------------- 竞速模式
+# ---------------------------------------------------------------- 剪枝
 
 
-@pytest.mark.parametrize(
-    ("mode", "expected"), [(RaceMode.SAVER, AttemptState.CANCELLED), (RaceMode.FULL, AttemptState.DONE)]
-)
-async def test_mode_change_takes_effect(make: MakeHarness, mode: RaceMode, expected: AttemptState) -> None:
-    """节省模式下，低优先级实例的排队尝试在高优先级实例胜出后被取消；完整模式下照常执行。
+async def test_lower_priority_queued_attempt_is_pruned(make: MakeHarness) -> None:
+    """截屏会话里，低优先级实例排队中的尝试在高优先级实例的译文显示后被取消，不调用引擎（DSP-05）。
 
     argos 每个任务只放一个段，第一个段停在闸门上，第二个段就在 argos 的队列里排队；
     deepseek 很快完成两个段，第二个段由此显示已定。
@@ -751,17 +745,18 @@ async def test_mode_change_takes_effect(make: MakeHarness, mode: RaceMode, expec
     deepseek, argos = FakeEngine("deepseek", 1), FakeEngine("argos", 2, max_batch_segments=1)
     argos.gate("Hello world")
     harness = await started(make(deepseek, argos))
-    assert harness.module.mode is RaceMode.SAVER
-    harness.configure(race={"mode": mode.value})
-    await harness.settle()
-    assert harness.module.mode is mode
-
-    harness.translate("s1", lines("Hello world", "Good morning"))
-    await eventually(lambda: harness.recorder.winner("s1", "p2") == "deepseek")
+    task = asyncio.create_task(
+        harness.module.start_screenshot_session(
+            SessionId("shot"),
+            [Segment(SegmentId("b1"), "Hello world"), Segment(SegmentId("b2"), "Good morning")],
+        )
+    )
+    await eventually(lambda: harness.recorder.shown_engine("shot", "b2") == "deepseek")
     argos.release("Hello world")
+    await task
     await harness.settle()
-    assert harness.recorder.states("s1", "p2", argos) == [expected]
-    assert harness.recorder.view("s1", "p2").display_text == deepseek.translated("Good morning")
+    assert harness.recorder.states("shot", "b2", argos) == [AttemptState.CANCELLED]
+    assert harness.recorder.view("shot", "b2").display_text == deepseek.translated("Good morning")
 
 
 # ---------------------------------------------------------------- 截屏入口
@@ -777,9 +772,9 @@ async def test_screenshot_session_uses_screenshot_target(make: MakeHarness) -> N
     await harness.settle()
 
     assert deepseek.langs_by_text() == {"Hello world": (EN, JA)}
-    assert deepseek.sessions() == ["shot"]  # 截屏会话里计费实例直接参赛
-    assert harness.recorder.view("shot", "b1").winner == "deepseek"
-    assert harness.recorder.view("shot", "b2").skip_reason is SkipReason.SAME_LANGUAGE
+    assert deepseek.sessions() == ["shot"]  # 截屏翻译使用全部可用实例，计费实例也在其中
+    assert harness.recorder.view("shot", "b1").shown_engine == "deepseek"
+    assert harness.recorder.view("shot", "b2").skip_reason is SkipReason.NO_TEXT
     assert harness.recorder.last_progress("shot") == (2, 2)
     assert {job.context for job in deepseek.jobs} == {lines("Hello world", "12345")}
 
@@ -795,8 +790,8 @@ async def test_screenshot_and_bilingual_sessions_coexist(make: MakeHarness) -> N
     await harness.bus.drain()
     engine.release("Hello world")
     await harness.settle()
-    assert harness.recorder.view("shot", "b1").winner == "argos"
-    assert harness.recorder.view("s1", "p1").winner == "argos"
+    assert harness.recorder.view("shot", "b1").shown_engine == "argos"
+    assert harness.recorder.view("s1", "p1").shown_engine == "argos"
     assert engine.cancelled == []
 
 
@@ -825,6 +820,128 @@ async def test_screenshot_before_start_raises(make: MakeHarness) -> None:
         await harness.module.start_screenshot_session(SessionId("shot"), [])
 
 
+# ---------------------------------------------------------------- OcrCompleted 接线（架构文档第 7 章第 6 步）
+
+SHOT_GEOMETRY = CaptureGeometry("screen", (0, 0, 1920, 1080), (10, 10, 4, 3), 1.0)
+
+
+def _shot(session: str) -> CaptureCompleted:
+    return CaptureCompleted(SessionId(session), RawImage(4, 3, 16, bytes(48)), SHOT_GEOMETRY)
+
+
+def _ocr(session: str, *texts: str) -> OcrCompleted:
+    segments = tuple(
+        OcrSegment(Segment(SegmentId(f"p{i}"), text), "0", BBox(0, 10 * i, 100, 10 * i + 10))
+        for i, text in enumerate(texts, start=1)
+    )
+    block = LayoutBlock("0", BlockCategory.TEXT, BBox(0, 0, 100, 100), 0, 1.0)
+    return OcrCompleted(SessionId(session), (block,), segments)
+
+
+async def test_ocr_completed_starts_screenshot_session(make: MakeHarness) -> None:
+    """OcrCompleted 的段以同一会话号开始翻译，结果经 SegmentsUpdated 与 SessionProgress 发布。"""
+    argos, deepseek = FakeEngine("argos", 2), FakeEngine("deepseek", 1, billing=True)
+    harness = await started(make(argos, deepseek))
+    harness.bus.publish(_shot("shot"))
+    harness.bus.publish(_ocr("shot", "Hello world", "Good morning"))
+    await harness.settle()
+
+    assert deepseek.sessions() == ["shot"]  # 截屏翻译使用全部可用实例
+    assert harness.recorder.view("shot", "p1").shown_engine == "deepseek"
+    assert harness.recorder.view("shot", "p2").display_text == "deepseek:Good morning"
+    assert harness.recorder.last_progress("shot") == (2, 2)
+    assert deepseek.langs_by_text()["Hello world"] == (EN, ZH)
+
+
+async def test_ocr_completed_without_capture_still_starts(make: MakeHarness) -> None:
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    harness.bus.publish(_ocr("shot", "Hello world"))
+    await harness.settle()
+    assert engine.sessions() == ["shot"]
+
+
+async def test_stale_ocr_result_is_dropped(make: MakeHarness) -> None:
+    """新截屏之后才到达的旧会话识别结果直接丢弃，不取消新会话（CAP-06）。"""
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    harness.bus.publish(_shot("old"))
+    harness.bus.publish(_shot("new"))
+    harness.bus.publish(_ocr("new", "Good morning"))
+    harness.bus.publish(_ocr("old", "Hello world"))
+    await harness.settle()
+    assert engine.sessions() == ["new"]
+    assert "old" not in harness.recorder.sessions()
+
+
+async def test_new_capture_cancels_running_screenshot_session(make: MakeHarness) -> None:
+    """新截屏完成时，上一次截屏还在翻译的任务立即取消，迟到的结果不再发布（CAP-06）。"""
+    engine = FakeEngine("argos", 1)
+    engine.gate("Hello world")
+    harness = await started(make(engine))
+    harness.bus.publish(_shot("first"))
+    harness.bus.publish(_ocr("first", "Hello world"))
+    await harness.wait_running("first", "p1", engine)
+    before = harness.recorder.count("first")
+
+    harness.bus.publish(_shot("second"))
+    await harness.settle()
+    assert engine.cancelled == engine.jobs
+    engine.release("Hello world")
+    await harness.settle()
+    assert harness.recorder.count("first") == before
+
+
+async def test_new_capture_does_not_touch_bilingual_session(make: MakeHarness) -> None:
+    engine = FakeEngine("argos", 1)
+    engine.gate("Good morning")
+    harness = await started(make(engine))
+    harness.translate("s1", "Good morning")
+    await harness.wait_running("s1", "p1", engine)
+    harness.bus.publish(_shot("shot"))
+    await harness.bus.drain()
+    assert engine.cancelled == []
+    engine.release("Good morning")
+    await harness.settle()
+    assert harness.recorder.view("s1", "p1").shown_engine == "argos"
+
+
+async def test_ocr_completed_without_segments_starts_nothing(make: MakeHarness) -> None:
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    harness.bus.publish(_shot("shot"))
+    harness.bus.publish(OcrCompleted(SessionId("shot"), (), ()))
+    await harness.settle()
+    assert engine.jobs == []
+    assert "shot" not in harness.recorder.sessions()
+
+
+async def test_ocr_completed_with_duplicate_segment_ids_is_logged(
+    make: MakeHarness, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    duplicated = OcrCompleted(
+        SessionId("shot"),
+        (),
+        tuple(OcrSegment(Segment(SegmentId("p1"), t), "0", BBox(0, 0, 1, 1)) for t in ("a", "b")),
+    )
+    with caplog.at_level(logging.ERROR, logger=MODULE_LOGGER):
+        harness.bus.publish(duplicated)
+        await harness.settle()
+    assert "无法开始" in caplog.text
+    assert engine.jobs == []
+
+
+async def test_ocr_completed_after_stop_is_ignored(make: MakeHarness) -> None:
+    engine = FakeEngine("argos", 1)
+    harness = await started(make(engine))
+    await harness.module.stop()
+    harness.bus.publish(_ocr("shot", "Hello world"))
+    await harness.settle()
+    assert engine.jobs == []
+
+
 # ---------------------------------------------------------------- 停止
 
 
@@ -839,14 +956,14 @@ async def test_stop_cancels_sessions_and_ignores_later_messages(make: MakeHarnes
     await harness.module.stop()
     assert engine.cancelled == engine.jobs
     harness.translate("s2", "Good morning")  # 订阅还在（ctx.close 之前），处理函数直接返回
-    harness.configure(race={"mode": "full"})
+    harness.configure(screenshot={"target_lang": "ja"})
     harness.roster(FakeEngine("deepl", 2))
     await harness.module.start_screenshot_session(SessionId("shot"), [Segment(SegmentId("b1"), "Hi")])
     await harness.settle()
     assert engine.sessions() == ["s1"]
     assert harness.recorder.count("s1") == events_before
     assert harness.recorder.sessions() <= {"s1"}
-    assert harness.module.race_config.mode is RaceMode.SAVER
+    assert harness.module.screenshot_config.target_lang == "zh-Hans"
 
     await harness.module.stop()  # 重复调用没有效果
     harness.ctx.close()

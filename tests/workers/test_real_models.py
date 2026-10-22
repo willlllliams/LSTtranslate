@@ -5,7 +5,7 @@
 
 性能测量（test_hot_path_latency）在模型已加载后计时，从发出请求到收到 RequestDone，含进程间通信。
 CUDA 一档在子进程无法使用 CUDA（没有 CUDA 设备或缺少 cuBLAS）时跳过；环境变量 LST_TEST_CUDA_DLL_DIR
-可以指向一个含 cublas64_12.dll 的目录，测试会把它加到子进程的 PATH 最前面。
+可以指向一个含 cublas64_12.dll 与 cublasLt64_12.dll 的目录，测试把它作为 cuda_dll_dir 传给子进程。
 """
 
 import os
@@ -179,19 +179,20 @@ def measure(worker: WorkerProcess, source: str, target: str, text: str, runs: in
     return timings
 
 
-def cuda_env() -> dict[str, str]:
+def cuda_settings() -> dict[str, JsonValue]:
     dll_dir = os.environ.get("LST_TEST_CUDA_DLL_DIR")
-    return {"PATH": f"{dll_dir}{os.pathsep}{os.environ.get('PATH', '')}"} if dll_dir else {}
+    return {"cuda_dll_dir": dll_dir} if dll_dir else {}
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_hot_path_latency(device: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert 200 <= len(ZH_PARAGRAPH) <= 220 and 190 <= len(EN_PARAGRAPH.split()) <= 220
-    worker = WorkerProcess(REAL_BACKEND, env=cuda_env() if device == "cuda" else None)
+    worker = WorkerProcess(REAL_BACKEND)
     try:
         worker.start()
         try:
-            ready = worker.handshake(settings(device), timeout=60)
+            extra = cuda_settings() if device == "cuda" else {}
+            ready = worker.handshake(settings(device, **extra), timeout=60)
         except WorkerExited:
             code = worker.wait_exit()
             if device == "cuda" and code in (ExitCode.DEPENDENCY_ERROR, ExitCode.CONFIG_ERROR):

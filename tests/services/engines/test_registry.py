@@ -4,6 +4,7 @@ import copy
 import json
 import math
 from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -25,8 +26,11 @@ from lst.services.engines import (
 from lst.services.engines.baidu import BaiduSettings
 from lst.services.engines.common import EngineSettings
 from lst.services.engines.deepl import DeepLSettings
+from lst.services.engines.dictionary import DictionarySettings
 from lst.services.engines.google import GoogleSettings
+from lst.services.engines.google_free import GoogleFreeSettings
 from lst.services.engines.local_nmt import LocalNmtSettings
+from lst.services.engines.microsoft_free import MicrosoftFreeSettings
 from lst.services.engines.openai_compat import OpenAICompatSettings
 from tests.services.engines.mt_helpers import FakeSecrets
 
@@ -37,7 +41,10 @@ SETTINGS_MODELS: dict[str, type[EngineSettings]] = {
     "deepl": DeepLSettings,
     "google": GoogleSettings,
     "baidu": BaiduSettings,
+    "google_free": GoogleFreeSettings,
+    "microsoft_free": MicrosoftFreeSettings,
     "local_nmt": LocalNmtSettings,
+    "dictionary": DictionarySettings,
 }
 
 # 每类引擎一条合法配置，只写必填字段和少量非默认值。
@@ -72,6 +79,15 @@ VALID: dict[str, dict[str, Any]] = {
         "appid": "20150630000000001",
     },
     "local_nmt": {"kind": "local_nmt", "id": "argos", "name": "Argos", "priority": 5, "color": "#2E7D32"},
+    "dictionary": {"kind": "dictionary", "id": "dictionary", "name": "词典", "priority": 6},
+    "google_free": {"kind": "google_free", "id": "google_free", "name": "谷歌翻译（免费）", "priority": 7},
+    "microsoft_free": {
+        "kind": "microsoft_free",
+        "id": "microsoft_free",
+        "name": "微软翻译（免费）",
+        "priority": 8,
+        "endpoint": "https://edge.microsoft.com/translate/translatetext",
+    },
 }
 
 KINDS = sorted(VALID)
@@ -124,7 +140,7 @@ async def client() -> AsyncIterator[httpx.AsyncClient]:
 # ---------------------------------------------------------------- 注册表
 
 
-def test_registry_has_five_kinds_with_their_settings_models() -> None:
+def test_registry_has_eight_kinds_with_their_settings_models() -> None:
     assert set(ENGINE_KINDS) == set(SETTINGS_MODELS)
     for kind, spec in ENGINE_KINDS.items():
         assert spec.kind == kind
@@ -146,6 +162,9 @@ def test_schema_satisfies_list_section_protocol() -> None:
         (VALID["google"], True),
         (VALID["baidu"], True),
         (VALID["local_nmt"], False),
+        (VALID["dictionary"], False),
+        (VALID["google_free"], False),
+        (VALID["microsoft_free"], False),
     ],
 )
 def test_requires_key(raw: dict[str, Any], expected: bool) -> None:
@@ -154,15 +173,18 @@ def test_requires_key(raw: dict[str, Any], expected: bool) -> None:
     assert spec.requires_key(settings) is expected
 
 
-async def test_build_creates_each_kind(client: httpx.AsyncClient) -> None:
+async def test_build_creates_each_kind(client: httpx.AsyncClient, tmp_path: Path) -> None:
     secrets = FakeSecrets({"deepseek": "k1", "deepl": "k2", "google": "k3", "baidu": "k4"})
-    deps = EngineDeps(secrets=secrets, client=client, nmt=FakeChannel())
+    deps = EngineDeps(secrets=secrets, client=client, nmt=FakeChannel(), dict_dir=tmp_path / "dict")
     expected_kinds = {
         "openai_compat": EngineKind.ONLINE_LLM,
         "deepl": EngineKind.ONLINE_MT,
         "google": EngineKind.ONLINE_MT,
         "baidu": EngineKind.ONLINE_MT,
         "local_nmt": EngineKind.LOCAL_NMT,
+        "dictionary": EngineKind.LOCAL_NMT,
+        "google_free": EngineKind.ONLINE_MT,
+        "microsoft_free": EngineKind.ONLINE_MT,
     }
     for kind, raw in VALID.items():
         spec = ENGINE_KINDS[kind]
@@ -179,6 +201,15 @@ async def test_build_local_nmt_without_channel_raises_unavailable(client: httpx.
         spec.build(settings, EngineDeps(secrets=FakeSecrets(), client=client, nmt=None))
     assert info.value.code is ErrorCode.WORKER_CRASHED
     assert "NMT" in info.value.detail
+
+
+async def test_build_dictionary_without_directory_raises_unavailable(client: httpx.AsyncClient) -> None:
+    spec = ENGINE_KINDS["dictionary"]
+    settings = spec.settings_model.model_validate(without_kind(VALID["dictionary"]))
+    with pytest.raises(EngineUnavailableError) as info:
+        spec.build(settings, EngineDeps(secrets=FakeSecrets(), client=client))
+    assert info.value.code is ErrorCode.MODEL_MISSING
+    assert "词典目录" in info.value.detail
 
 
 async def test_build_rejects_settings_of_another_kind(client: httpx.AsyncClient) -> None:
@@ -408,10 +439,32 @@ def test_normalize_properties(specs: list[tuple[str, int, str]]) -> None:
 
 def test_default_items_pass_validation() -> None:
     items = SCHEMA.default_items()
-    assert len(items) == 1
-    (item,) = items
-    assert SCHEMA.validate_item(item) == item
-    assert (item["kind"], item["id"], item["priority"], item["enabled"]) == ("local_nmt", "argos", 1, True)
+    assert len(items) == 4
+    for item in items:
+        assert SCHEMA.validate_item(item) == item
+    nmt, google_free, microsoft_free, dictionary = items
+    assert (nmt["kind"], nmt["id"], nmt["priority"], nmt["enabled"]) == ("local_nmt", "argos", 1, True)
+    # 两个免费接口默认列出但不启用（需求 PRV-01），不需要 key，排在本地 NMT 之后、字典翻译之前。
+    for item, kind, priority in ((google_free, "google_free", 2), (microsoft_free, "microsoft_free", 3)):
+        assert (item["kind"], item["id"], item["priority"], item["enabled"], item["secret"]) == (
+            kind,
+            kind,
+            priority,
+            False,
+            None,
+        )
+        spec = ENGINE_KINDS[kind]
+        assert not spec.requires_key(spec.settings_model.model_validate(without_kind(item)))
+    # 字典翻译启用、不需要 API key，优先级数值最大（最低）：它先出粗译，其他引擎的译文到达后替换它。
+    assert (dictionary["kind"], dictionary["id"], dictionary["enabled"], dictionary["secret"]) == (
+        "dictionary",
+        "dictionary",
+        True,
+        None,
+    )
+    assert dictionary["priority"] == max(priority_of(item) for item in items)
+    settings = DictionarySettings.model_validate(without_kind(dictionary))
+    assert not ENGINE_KINDS["dictionary"].requires_key(settings)
     assert SCHEMA.normalize(items) == (items, [])
     # 每次调用得到新的列表，调用方修改它不影响下一次。
     items[0]["priority"] = 9

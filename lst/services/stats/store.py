@@ -4,14 +4,18 @@
 
 统计口径：
 
-- 执行过的尝试（executed）：已结束、started 为真、cached 为假，并且不是因实例被移除而结束的
-  （错误码 race.engine_removed）。命中缓存的尝试和在执行前被取消的尝试都不计入，节省模式大量取消
-  低优先级实例的排队尝试，计入会压低它们的胜出率（RACE-07）。实例被移除是用户改了配置，
-  与引擎本身的可靠性无关，计入会抬高失败率。
+- 执行过的尝试（executed）：started 为真、cached 为假、以 DONE 或 FAILED 结束，并且不是因实例被移除而
+  结束的（错误码 race.engine_removed）。命中缓存的尝试和被取消的尝试都不计入：调度器在更高优先级的实例
+  胜出后取消低优先级实例排队中和执行中的尝试（RACE-05），这些尝试没有给出结果，计入会压低它们的胜出率，
+  把执行中被取消的记成失败还会抬高失败率。实例被移除是用户改了配置，与引擎本身的可靠性无关，
+  计入会抬高失败率。
 - 胜出次数：以该实例为最终胜出者的段数，并且胜出的那个尝试本身是执行过的；以缓存结果胜出的段不计。
 - 首个结果耗时 P50、P95：每个实例最近 window 个执行过且成功（DONE）的尝试的 latency_ms，
   按 ``percentile`` 的线性插值计算。
 - 失败率：执行过的尝试中 FAILED 所占比例。
+
+库的版本历史：版本 2 把 segments 表的 winner、winner_executed 两列改名为 shown_engine、shown_executed，
+与契约里 SegmentView.shown_engine 的叫法一致；版本 1 的库打开时就地改名，数据不变。
 """
 
 import logging
@@ -29,9 +33,9 @@ from lst.services._shared.sqlite import SqliteThread, ensure_schema, transaction
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 # attempts 以 (会话, 段, 实例) 唯一：同一尝试重复记录时以最后一次为准，id 随之更新为最新。
-# segments 以 (会话, 段) 唯一：双语窗口晚加入会改变胜出者，以最后一次记录为准。
+# segments 以 (会话, 段) 唯一：同一段重复记录时以最后一次为准。
 _SCHEMA = """
 CREATE TABLE attempts (
     id INTEGER PRIMARY KEY,
@@ -50,15 +54,23 @@ CREATE INDEX attempts_by_engine ON attempts (engine_id, id);
 CREATE TABLE segments (
     session_id TEXT NOT NULL,
     segment_id TEXT NOT NULL,
-    winner TEXT,
-    winner_executed INTEGER NOT NULL,
+    shown_engine TEXT,
+    shown_executed INTEGER NOT NULL,
     chars INTEGER NOT NULL,
     recorded_at REAL NOT NULL,
     PRIMARY KEY (session_id, segment_id)
 ) WITHOUT ROWID;
 """
 
-_TERMINAL = (AttemptState.DONE.name, AttemptState.FAILED.name, AttemptState.CANCELLED.name)
+_MIGRATIONS: dict[int, str] = {
+    1: """
+ALTER TABLE segments RENAME COLUMN winner TO shown_engine;
+ALTER TABLE segments RENAME COLUMN winner_executed TO shown_executed;
+""",
+}
+"""旧版本号 → 升级到下一版本的 SQL（见模块说明的版本历史）。"""
+
+_TERMINAL = (AttemptState.DONE.name, AttemptState.FAILED.name)
 _EXECUTED = (
     f"started = 1 AND cached = 0 AND state IN ({', '.join(repr(s) for s in _TERMINAL)})"
     f" AND error_code IS NOT '{ErrorCode.ENGINE_REMOVED.value}'"
@@ -97,12 +109,12 @@ def percentile(values: Iterable[float], q: float) -> float:
     return xs[k] + (h - k) * (xs[k + 1] - xs[k])
 
 
-def _winner_executed(view: SegmentView) -> bool:
-    """胜出的尝试是否执行过：started 为真且不是缓存命中。"""
-    if view.winner is None:
+def _shown_executed(view: SegmentView) -> bool:
+    """胜出（当前显示）的尝试是否执行过：started 为真且不是缓存命中。"""
+    if view.shown_engine is None:
         return False
     for attempt in view.attempts:
-        if attempt.engine_id == view.winner:
+        if attempt.engine_id == view.shown_engine:
             return attempt.started and not attempt.cached
     return False
 
@@ -153,7 +165,7 @@ class SqliteStatsStore:
     async def record_segments(self, session_id: SessionId, views: Sequence[SegmentView]) -> int:
         """记录显示已定的段的胜出者，在一个事务里写入，返回写入的段数。未定的段跳过。
 
-        按 (会话, 段) 覆盖写入：晚加入让胜出者改变时以最后一次为准；winner 为 None 记为无胜出者。
+        按 (会话, 段) 覆盖写入，同一段以最后一次为准；shown_engine 为 None 记为无胜出者。
         只保存胜出实例号、胜出尝试是否执行过和原文的字符数。
         """
         now = time.time()
@@ -161,8 +173,8 @@ class SqliteStatsStore:
             (
                 session_id,
                 view.segment_id,
-                view.winner,
-                int(_winner_executed(view)),
+                view.shown_engine,
+                int(_shown_executed(view)),
                 len(view.source_text),
                 now,
             )
@@ -187,7 +199,7 @@ class SqliteStatsStore:
 
     @staticmethod
     def _prepare(conn: sqlite3.Connection) -> None:
-        ensure_schema(conn, _SCHEMA_VERSION, _SCHEMA)
+        ensure_schema(conn, _SCHEMA_VERSION, _SCHEMA, _MIGRATIONS)
 
     @staticmethod
     def _insert_attempt(conn: sqlite3.Connection, row: tuple[object, ...]) -> None:
@@ -201,10 +213,11 @@ class SqliteStatsStore:
     def _upsert_segments(conn: sqlite3.Connection, rows: Sequence[tuple[object, ...]]) -> None:
         with transaction(conn):
             conn.executemany(
-                "INSERT INTO segments (session_id, segment_id, winner, winner_executed, chars, recorded_at)"
+                "INSERT INTO segments"
+                " (session_id, segment_id, shown_engine, shown_executed, chars, recorded_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT (session_id, segment_id) DO UPDATE SET"
-                " winner = excluded.winner, winner_executed = excluded.winner_executed,"
+                " shown_engine = excluded.shown_engine, shown_executed = excluded.shown_executed,"
                 " chars = excluded.chars, recorded_at = excluded.recorded_at",
                 rows,
             )
@@ -217,10 +230,10 @@ class SqliteStatsStore:
         ):
             totals[str(engine_id)] = (int(executed), int(failed))
         wins: dict[str, int] = {
-            str(winner): int(n)
-            for winner, n in conn.execute(
-                "SELECT winner, COUNT(*) FROM segments"
-                " WHERE winner IS NOT NULL AND winner_executed = 1 GROUP BY winner"
+            str(engine_id): int(n)
+            for engine_id, n in conn.execute(
+                "SELECT shown_engine, COUNT(*) FROM segments"
+                " WHERE shown_engine IS NOT NULL AND shown_executed = 1 GROUP BY shown_engine"
             )
         }
         result: list[EngineStats] = []

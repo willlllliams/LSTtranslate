@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from lst.contracts.errors import ErrorCode
+from lst.contracts.nmt_runtime import NmtRuntimeErrorCode
 from lst.contracts.ocr_engines import OcrEngineErrorCode
 from lst.contracts.updates import UpdateErrorCode
 from lst.ui import i18n
@@ -19,8 +20,9 @@ def restore_language() -> object:
 
 
 def test_every_error_code_has_reason_and_suggestion_in_both_languages() -> None:
-    """翻译引擎、OCR 引擎、应用更新三类错误码都有中英文的原因与处理建议，且不退回到内部错误的文案。"""
-    families = (ErrorCode, OcrEngineErrorCode, UpdateErrorCode)
+    """翻译引擎、OCR 引擎、应用更新、显卡运行库四类错误码都有中英文的原因与处理建议，
+    且不退回到内部错误的文案。"""
+    families = (ErrorCode, OcrEngineErrorCode, UpdateErrorCode, NmtRuntimeErrorCode)
     assert families == i18n.ERROR_CODE_FAMILIES
     for language in i18n.SUPPORTED:
         i18n.set_language(language)

@@ -41,13 +41,35 @@ CATALOG: Final[Catalog] = {
         "Choose another language pair in Settings, or use an online engine.",
     },
     "onboarding.index.retry": {"zh-Hans": "重试(&R)", "en": "&Retry"},
+    # 词典（可选）
+    "onboarding.dicts.title": {"zh-Hans": "词典（可选）", "en": "Dictionaries (optional)"},
+    "onboarding.dicts.include": {"zh-Hans": "同时下载词典(&W)", "en": "Also do&wnload dictionaries"},
+    "onboarding.dicts.size": {"zh-Hans": "{size} · {license}", "en": "{size} · {license}"},
+    "onboarding.dicts.attribution": {"zh-Hans": "署名：{attribution}", "en": "Attribution: {attribution}"},
+    "onboarding.dicts.credit": {
+        "zh-Hans": "“词典”翻译引擎用这些词典包离线逐词查词，几毫秒给出粗略译文，"
+        "本地翻译模型的译文到达后替换它。词典数据改编自 Wiktionary（CC BY-SA 4.0）和 ECDICT（MIT）。",
+        "en": "The Dictionary engine looks words up offline in these packs and gives a rough translation "
+        "within milliseconds, replaced when the local model's translation arrives. Dictionary data is "
+        "adapted from Wiktionary (CC BY-SA 4.0) and ECDICT (MIT).",
+    },
+    "onboarding.dicts.loading": {
+        "zh-Hans": "正在获取可下载的词典列表…",
+        "en": "Fetching the list of available dictionaries…",
+    },
+    "onboarding.dicts.failed": {
+        "zh-Hans": "无法获取词典列表：{reason}",
+        "en": "Could not fetch the dictionary list: {reason}",
+    },
     # 底部
     "onboarding.download": {"zh-Hans": "下载(&D)", "en": "&Download"},
     "onboarding.download.total": {"zh-Hans": "下载(&D)（共 {size}）", "en": "&Download ({size})"},
     "onboarding.ocr.note": {
-        "zh-Hans": "文字识别（OCR）模型在第一次截屏翻译时自动下载，进度显示在托盘通知里。",
-        "en": "Text recognition (OCR) models download automatically the first time you use screenshot "
-        "translation; progress appears in tray notifications.",
+        "zh-Hans": "截屏翻译默认用 Windows 自带的文字识别（OCR），不需要下载；"
+        "RapidOCR 与 PaddleOCR 可以之后在设置的“截屏与识别”页下载。",
+        "en": "Screenshot translation uses the text recognition (OCR) built into Windows, "
+        "with nothing to download; RapidOCR and PaddleOCR can be downloaded later "
+        "on the Capture & recognition settings page.",
     },
     "onboarding.finish": {"zh-Hans": "完成(&F)", "en": "&Finish"},
     "onboarding.skip": {"zh-Hans": "跳过(&S)", "en": "&Skip"},

@@ -40,10 +40,16 @@ class UnsupportedLanguage(ValueError):
 
 
 def recognition_model(language: str, general_model: str) -> str:
-    """按识别语言选择识别模型名；general_model 是通用识别模型（auto 与中英日使用）。"""
+    """按识别语言选择识别模型名。
+
+    general_model 是配置选用的识别模型：auto 与中英日直接用它；其他语言时它本身就是该语言文字系统的专用模型
+    （名字以 ``<文字系统>_`` 开头）才用它，否则用 ``<文字系统>_PP-OCRv5_mobile_rec``。
+    """
     if language in GENERAL_LANGUAGES:
         return general_model
     script = _SCRIPT_OF_LANGUAGE.get(language)
     if script is None:
         raise UnsupportedLanguage(f"没有覆盖语言 {language!r} 的识别模型")
+    if general_model.startswith(f"{script}_"):
+        return general_model
     return f"{script}_PP-OCRv5_mobile_rec"

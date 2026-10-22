@@ -492,6 +492,7 @@ class WorkerSupervisor:
         self._state = WorkerState.STOPPED
         self._detail = ""
         self._capabilities: dict[str, JsonValue] | None = None
+        self._versions: dict[str, str] = {}
         self._pending: deque[SupervisedRequest] = deque()
         self._inflight: dict[str, SupervisedRequest] = {}
         self._proc: _Process | None = None
@@ -523,6 +524,11 @@ class WorkerSupervisor:
     def capabilities(self) -> Mapping[str, JsonValue] | None:
         """最近一次 Ready 消息里的能力清单；子进程从未就绪时为 None。"""
         return None if self._capabilities is None else MappingProxyType(self._capabilities)
+
+    @property
+    def versions(self) -> Mapping[str, str]:
+        """最近一次 Ready 消息里的版本与运行信息（例如 NMT 进程的 "device"）；从未就绪时为空。"""
+        return MappingProxyType(self._versions)
 
     @property
     def pid(self) -> int | None:
@@ -947,6 +953,7 @@ class WorkerSupervisor:
             proc.kill(_Termination.PROTOCOL_MISMATCH)
             return
         self._capabilities = dict(ready.capabilities)
+        self._versions = {str(key): str(value) for key, value in ready.versions.items()}
         proc.serving = True
         self._logger.info("推理进程 %s 就绪，依赖版本：%s", proc.label, ready.versions)
         self._set_state(WorkerState.READY)

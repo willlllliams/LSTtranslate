@@ -28,8 +28,8 @@ def done(engine_id: EngineId, latency_ms: float) -> AttemptView:
     return AttemptView(engine_id, AttemptState.DONE, "译文", None, latency_ms, started=True)
 
 
-def finished_view(winner: EngineId, *attempts: AttemptView) -> SegmentView:
-    return SegmentView(S1, "原文", "译文", winner, True, attempts)
+def finished_view(shown_engine: EngineId, *attempts: AttemptView) -> SegmentView:
+    return SegmentView(S1, "原文", "译文", shown_engine, True, attempts)
 
 
 @pytest.fixture

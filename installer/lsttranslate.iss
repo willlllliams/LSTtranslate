@@ -9,6 +9,10 @@
 ; （lst/app/paths.py）。卸载程序以当前用户身份运行，读得到同一个环境变量，两个目录都删。
 ; LST_DATA_DIR 指定的目录只有在是绝对路径、不是驱动器根目录、并且里面有 config\settings.toml 时才删，
 ; 免得变量指错地方时删掉别的东西。
+; 用户在设置里另选的数据目录记在 %APPDATA%\LSTtranslate\location.json，另选的模型目录记在数据目录的配置里
+; （[storage].models_dir）。这两个目录可能还放着用户自己的文件，卸载脚本不整个删除它们，而是运行
+; launcher\worker.py purge-data，只删程序创建的条目，再删位置文件（lst/app/uninstall.py 的 purge_user_data）。
+; 选“保留用户数据”时位置文件也保留，重新安装后程序继续使用选好的目录。
 ;
 ; 应用内更新（lst/services/updates）用 /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=yes 启动新安装包，随后程序退出：
 ; - InitializeSetup 在 AppMutex 检查之前执行（Inno Setup 6 实测）。带 /RELAUNCH=yes 时在这里最多等 120 秒，
@@ -17,7 +21,7 @@
 ; - 带 /RELAUNCH=yes 但没有装完（等待超时、AppMutex 检查不过、安装出错）时，DeinitializeSetup 在旧程序
 ;   已经退出的情况下重新启动它，用户不会在更新失败后发现程序消失了。
 ;
-; 安装包不捆绑 PaddleOCR：运行环境与模型由程序按需下载到数据目录（lst/services/ocr_engines），
+; 安装包不捆绑 PaddleOCR：运行环境与模型由程序按需下载到模型目录（lst/services/ocr_engines），
 ; tools\uv.exe 用来安装运行环境，app\ocr-paddle-requirements.txt 是它的版本清单。
 
 #define AppName "LSTtranslate"
@@ -244,11 +248,20 @@ begin
         Log(Format('purge-secrets exit code: %d', [ResultCode]))
       else
         Log(Format('purge-secrets failed to start: %s', [SysErrorMessage(ResultCode)]));
+      { 设置里另选的数据目录与模型目录：只删程序创建的条目（launcher\worker.py 的 purge-data）。 }
+      if Exec(ExpandConstant('{app}\runtime\python.exe'),
+              '-I -X utf8 "' + ExpandConstant('{app}\launcher\worker.py') + '" purge-data',
+              ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Log(Format('purge-data exit code: %d', [ResultCode]))
+      else
+        Log(Format('purge-data failed to start: %s', [SysErrorMessage(ResultCode)]));
     end;
   end;
   if (CurUninstallStep = usPostUninstall) and DeleteUserData then
   begin
     DelTree(UserDataDir(), True, True, True);
+    { 位置文件所在的目录只放本程序的位置文件；purge-data 没能删掉时在这里补删。 }
+    DelTree(ExpandConstant('{userappdata}\{#AppName}'), True, True, True);
     CustomDir := CustomDataDir();
     if (CustomDir <> '') and (CompareText(CustomDir, UserDataDir()) <> 0) then
     begin

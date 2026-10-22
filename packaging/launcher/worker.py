@@ -4,14 +4,21 @@ r"""安装版的推理子进程与维护命令启动器（架构文档第 15 章
 - nmt：NMT 进程，依赖在 site\main\；
 - ocr：OCR 进程。依赖所在的目录由启动器参数 ``--ocr-site <目录>`` 指定，其余参数原样传给
   ``python -m lst.workers.ocr_worker``（包括 --backend、--address、--log-level）：
-  - PaddleOCR：``--ocr-site <数据目录>\engines\paddle\site``，即 services.ocr_engines 用 uv 装好的运行环境；
+  - PaddleOCR：``--ocr-site <模型目录>\engines\paddle\site``，即 services.ocr_engines 用 uv 装好的运行环境；
     只把 app\ 与这个目录放进模块搜索路径，PaddlePaddle 与主进程的依赖不在同一个进程里加载；
+  - RapidOCR：``--ocr-site <模型目录>\engines\rapid\site``，机制与 PaddleOCR 相同，
+    并传 ``--backend lst.workers.ocr_worker.rapid_backend:RapidBackend``；
+  - 两个引擎的 CPU、DirectML、CUDA 版运行环境装在同一个 site 目录（换版本即重装），启动器不区分版本。
+    CUDA 版的 CUDA 与 cuDNN 运行库是 site 里的 nvidia-* 包，paddle 与 onnxruntime 在导入时按自己包目录的
+    相对位置（site\nvidia\...\bin）加载这些 DLL，所以启动器只需把 site 放进模块搜索路径；
   - Windows OCR：``--ocr-site main``，用主环境 site\main（pywinrt 装在主环境里），
     并传 ``--backend lst.workers.ocr_worker.winocr_backend:WinOcrBackend``；
   - 没有 ``--ocr-site`` 时取环境变量 LST_OCR_SITE；也没有时以退出码 65（ExitCode.DEPENDENCY_ERROR）退出，
     监管器不再重启；
 - purge-secrets：卸载时删除凭据管理器中本程序保存的 API key。全部删掉（或本来就没有）时退出码为 0，
-  枚举或删除失败时为 1，卸载程序把退出码记进日志。
+  枚举或删除失败时为 1，卸载程序把退出码记进日志；
+- purge-data：卸载时删除用户在设置里选的数据目录与模型目录中由程序创建的内容，以及记录数据目录的位置文件
+  （lst/app/uninstall.py 的 purge_user_data）。全部删掉时退出码为 0，有条目没删掉时为 1。
 
 启动器在设好模块搜索路径之前不能导入 lst，退出码直接写数字（值见 lst/contracts/worker_protocol.py）。
 """
@@ -23,7 +30,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_COMMANDS = ("nmt", "ocr", "purge-secrets")
+_COMMANDS = ("nmt", "ocr", "purge-secrets", "purge-data")
 _MODULES = {"nmt": "lst.workers.nmt_worker", "ocr": "lst.workers.ocr_worker"}
 OCR_SITE_OPTION = "--ocr-site"
 OCR_SITE_ENV = "LST_OCR_SITE"
@@ -89,6 +96,12 @@ def main() -> None:
 
         result = purge_secrets()
         sys.exit(0 if result.ok else EXIT_PURGE_FAILED)
+
+    if command == "purge-data":
+        from lst.app.uninstall import purge_user_data
+
+        data = purge_user_data()
+        sys.exit(0 if data.ok else EXIT_PURGE_FAILED)
 
     sys.argv = [_MODULES[command], *args]
     runpy.run_module(_MODULES[command], run_name="__main__", alter_sys=True)

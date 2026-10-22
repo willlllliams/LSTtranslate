@@ -270,3 +270,47 @@ async def test_falls_back_to_the_reverse_pair(harness: Harness) -> None:
     job = spec_built["fake"][-1].jobs[-1]
     assert (job.source_lang, job.target_lang) == (Lang("zh-Hans"), Lang("en"))
     assert [segment.id for segment in job.segments] == [SegmentId("0")]
+
+
+@pytest.mark.parametrize(
+    ("engine_id", "reply", "path"),
+    [
+        ("google_free", ["你好"], "/translate_a/t"),
+        (
+            "microsoft_free",
+            [{"translations": [{"text": "你好", "to": "zh-Hans"}]}],
+            "/translate/translatetext",
+        ),
+    ],
+)
+async def test_free_endpoints_can_be_checked_while_disabled(
+    bus: EventBus, engine_id: str, reply: JsonValue, path: str
+) -> None:
+    """默认列表里未启用的免费接口实例也能测试连接：不读 key，发一次请求，用固定的短词。"""
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=reply)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    module = EnginesModule(EngineDeps(secrets=FakeSecrets({}), client=client), kinds=KINDS)
+    ctx = ModuleContext(bus, logging.getLogger("lst.engines"))
+    await module.start(ctx)
+    try:
+        harness = Harness(bus, FakeSecrets({}), requests)
+        defaults = SCHEMA.default_items()
+        assert all(item["enabled"] is False for item in defaults if item["id"] == engine_id)
+        await publish_config(
+            harness, *[item for item in defaults if item["kind"] in ("google_free", "microsoft_free")]
+        )
+
+        result = await harness.check(engine_id)
+
+        assert result.ok and result.error_code is None
+        assert len(requests) == 1 and requests[0].url.path == path
+        assert b"Hello" in requests[0].content
+    finally:
+        await module.stop()
+        ctx.close()
+        await client.aclose()

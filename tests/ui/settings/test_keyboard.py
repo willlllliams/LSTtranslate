@@ -21,9 +21,17 @@ from PySide6.QtWidgets import (
 
 from lst.contracts.events import EngineHealth, EngineStatus, EngineStatuses
 from lst.contracts.ids import EngineId
+from lst.contracts.ocr_engines import (
+    OcrEngineCatalog,
+    OcrEngineInfo,
+    OcrEngineKind,
+    OcrEngineState,
+    OcrStage,
+)
 from lst.ui import i18n
 from lst.ui.settings.controls import ChoiceEditor, HotkeyButton, ToggleSwitch
 from lst.ui.settings.page_engines import AddEngineDialog, EnginesPage
+from lst.ui.settings.page_ocr_engine import OcrEnginePage
 from lst.ui.settings.pages import SettingsPage
 from lst.ui.settings.window import SettingsWindow
 from tests.ui.settings.conftest import Harness
@@ -31,8 +39,6 @@ from tests.ui.settings.support import default_config
 
 ROW_TOLERANCE = 14
 """两个控件的顶边相差不超过这个像素数，就算在同一行。"""
-
-PAGE_IDS = ["general", "hotkeys", "capture", "engines", "race", "models", "about"]
 
 
 def tab_stops(window: SettingsWindow, scope: QWidget) -> list[QWidget]:
@@ -76,6 +82,13 @@ async def shown(harness: Harness) -> SettingsWindow:
     await harness.publish(
         EngineStatuses({EngineId("deepseek"): EngineStatus(EngineHealth.READY)}, {}, {}),
         default_config(revision=2),
+        OcrEngineCatalog(
+            tuple(
+                OcrEngineInfo(kind, OcrEngineState.INSTALLED, needs_download=False, languages=("en",))
+                for kind in OcrEngineKind
+            ),
+            OcrEngineKind.WINDOWS,
+        ),
     )
     window = await harness.open()
     window.resize(980, 760)
@@ -95,6 +108,10 @@ def pages_with_selection(window: SettingsWindow) -> Iterator[SettingsPage]:
 async def test_tab_order_follows_the_visual_order_on_every_page(shown: SettingsWindow) -> None:
     for page in pages_with_selection(shown):
         stops = tab_stops(shown, page)
+        if page.page_id == "models.dicts":
+            # 词典在没有模型目录时列表不显示，页面上只有说明文字。
+            assert not stops
+            continue
         assert stops, f"{page.page_id} 页没有可以用键盘到达的控件"
         assert_visual_order(shown, stops, page.page_id)
 
@@ -131,10 +148,11 @@ async def test_the_nav_list_works_with_arrow_keys(shown: SettingsWindow) -> None
     shown.show_page("general")
     shown.nav.setFocus()
     QTest.keyClick(shown.nav, Qt.Key.Key_Down)
-    assert shown.current_page.page_id == "hotkeys"
+    assert shown.current_page.page_id == "hotkeys.global"
     QTest.keyClick(shown.nav, Qt.Key.Key_Down)
+    assert shown.current_page.page_id == "hotkeys.capture"
     QTest.keyClick(shown.nav, Qt.Key.Key_Up)
-    assert shown.current_page.page_id == "hotkeys"
+    assert shown.current_page.page_id == "hotkeys.global"
 
 
 INTERACTIVE = (
@@ -227,13 +245,11 @@ async def test_dropdown_changes_with_arrow_keys(harness: Harness) -> None:
 
 
 async def test_switch_works_with_the_space_key(harness: Harness) -> None:
-    await harness.publish(
-        default_config({"ocr": {"engine": "paddle"}}, revision=2)
-    )  # 表格等开关只对 PaddleOCR 可用
     window = await harness.open()
-    window.show_page("capture")
-    editor = next(b.editor for b in window.page("capture").bindings if b.location == ("ocr", "formula"))
-    switch = editor.focus_widget()
+    window.show_page("capture.paddle")
+    page = window.page("capture.paddle")
+    assert isinstance(page, OcrEnginePage)
+    switch = page.pipeline.toggles[OcrStage.FORMULA].editor.focus_widget()
     assert isinstance(switch, ToggleSwitch)
     switch.setFocus()
     QTest.keyClick(switch, Qt.Key.Key_Space)

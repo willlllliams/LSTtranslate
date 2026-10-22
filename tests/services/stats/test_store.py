@@ -72,7 +72,7 @@ def cache_hit(engine_id: EngineId) -> AttemptView:
 
 def segment(
     segment_id: SegmentId,
-    winner: EngineId | None,
+    shown_engine: EngineId | None,
     attempts: tuple[AttemptView, ...],
     *,
     finished: bool = True,
@@ -80,16 +80,15 @@ def segment(
 ) -> SegmentView:
     display = source_text
     for a in attempts:
-        if a.engine_id == winner and a.text is not None:
+        if a.engine_id == shown_engine and a.text is not None:
             display = a.text
     return SegmentView(
         segment_id=segment_id,
         source_text=source_text,
         display_text=display,
-        winner=winner,
+        shown_engine=shown_engine,
         finished=finished,
         attempts=attempts,
-        complete=finished,
     )
 
 
@@ -161,6 +160,20 @@ async def test_running_attempt_ended_by_engine_removal_does_not_count(store: Sql
     assert (stats.executed, stats.failure_rate) == (1, 0.0)
 
 
+async def test_cancelled_attempts_count_neither_as_executed_nor_as_failed(store: SqliteStatsStore) -> None:
+    """更高优先级胜出后被取消的尝试，排队中的（started 为假）和执行中的（started 为真）都不计入执行数，
+    也不算失败（RACE-05、RACE-07）。"""
+    await record(
+        store,
+        attempt(ARGOS, CANCELLED, 5.0, started=False),
+        attempt(ARGOS, CANCELLED, 120.0, started=True),
+        done(ARGOS, 80.0),
+        attempt(ARGOS, FAILED, 90.0, error_code=ErrorCode.SERVER),
+    )
+    stats = by_engine(await store.summary())[ARGOS]
+    assert (stats.executed, stats.failure_rate, stats.p50_ms) == (2, 0.5, 80.0)
+
+
 async def test_engine_with_only_unexecuted_attempts(store: SqliteStatsStore) -> None:
     await record(store, cache_hit(ARGOS), attempt(ARGOS, CANCELLED, 1.0, started=False))
     assert await store.summary() == [
@@ -206,8 +219,8 @@ async def test_all_executed_failed(store: SqliteStatsStore) -> None:
 # ---------------------------------------------------------------- 胜出次数
 
 
-async def test_winner_change_keeps_last_record(store: SqliteStatsStore) -> None:
-    """双语窗口晚加入让胜出者从 Argos 变成 DeepSeek，以最后一次记录为准。"""
+async def test_repeated_segment_record_keeps_last_one(store: SqliteStatsStore) -> None:
+    """同一段记录了两次（例如胜出者从 Argos 换成 DeepSeek 之后再写一次），以最后一次记录为准。"""
     seg = next_segment()
     argos, deepseek = done(ARGOS, 80.0), done(DEEPSEEK, 600.0)
     await store.record_attempt(SESSION, seg, argos)
@@ -225,12 +238,12 @@ async def test_unfinished_segment_is_not_recorded(store: SqliteStatsStore) -> No
     argos, deepseek = done(ARGOS, 80.0), done(DEEPSEEK, 600.0)
     await record(store, argos, deepseek)
     await store.record_segments(SESSION, [segment(seg, DEEPSEEK, (deepseek, argos))])
-    # 晚加入后段变回未定，此时的快照不覆盖已有记录。
+    # 未定的快照不覆盖已有记录。
     await store.record_segments(SESSION, [segment(seg, ARGOS, (argos,), finished=False)])
     assert by_engine(await store.summary())[DEEPSEEK].wins == 1
 
 
-async def test_segment_without_winner(store: SqliteStatsStore) -> None:
+async def test_segment_without_shown_engine(store: SqliteStatsStore) -> None:
     seg = next_segment()
     failed = attempt(ARGOS, FAILED, 50.0, error_code=ErrorCode.SERVER)
     await store.record_attempt(SESSION, seg, done(ARGOS, 40.0))
@@ -240,7 +253,7 @@ async def test_segment_without_winner(store: SqliteStatsStore) -> None:
     assert by_engine(await store.summary())[ARGOS].wins == 0
 
 
-async def test_cached_winner_does_not_count(store: SqliteStatsStore) -> None:
+async def test_cached_shown_engine_does_not_count(store: SqliteStatsStore) -> None:
     hit = cache_hit(DEEPSEEK)
     executed = done(DEEPSEEK, 300.0)
     cached_seg, executed_seg = next_segment(), next_segment()
@@ -406,7 +419,7 @@ async def test_no_text_is_stored(db_path: Path) -> None:
             conn.execute(
                 "SELECT engine_id, state, latency_ms, cached, started, error_code FROM attempts ORDER BY id"
             ).fetchall(),
-            conn.execute("SELECT segment_id, winner, winner_executed, chars FROM segments").fetchall(),
+            conn.execute("SELECT segment_id, shown_engine, shown_executed, chars FROM segments").fetchall(),
         )
     )
     assert attempts == [
@@ -422,6 +435,87 @@ async def test_no_text_is_stored(db_path: Path) -> None:
         for secret in (source, translation, error_detail, "私密原文", "私密译文"):
             assert secret.encode() not in data
         assert engine.encode() in data  # 对照：读到的字节里确实有这几条记录
+
+
+# ---------------------------------------------------------------- 从版本 1 迁移
+
+_V1_SCHEMA = """
+CREATE TABLE attempts (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    engine_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    latency_ms REAL,
+    cached INTEGER NOT NULL,
+    started INTEGER NOT NULL,
+    error_code TEXT,
+    recorded_at REAL NOT NULL,
+    UNIQUE (session_id, segment_id, engine_id)
+);
+CREATE INDEX attempts_by_engine ON attempts (engine_id, id);
+CREATE TABLE segments (
+    session_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    winner TEXT,
+    winner_executed INTEGER NOT NULL,
+    chars INTEGER NOT NULL,
+    recorded_at REAL NOT NULL,
+    PRIMARY KEY (session_id, segment_id)
+) WITHOUT ROWID;
+PRAGMA user_version = 1;
+"""
+
+
+async def test_version_1_database_is_migrated_in_place(db_path: Path) -> None:
+    """版本 1 的库（胜出列叫 winner）就地改名为版本 2，已有的胜出记录与尝试都保留。"""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_V1_SCHEMA)
+    conn.execute(
+        "INSERT INTO attempts (session_id, segment_id, engine_id, state, latency_ms, cached, started,"
+        " error_code, recorded_at) VALUES ('old', 's1', 'argos', 'DONE', 50.0, 0, 1, NULL, 0)"
+    )
+    conn.execute("INSERT INTO segments VALUES ('old', 's1', 'argos', 1, 4, 0)")
+    conn.commit()
+    conn.close()
+
+    store = await open_store(db_path)
+    try:
+        assert not store._db.in_memory
+        assert list(db_path.parent.glob(f"{db_path.name}.corrupt-*")) == []
+        version, columns = await store._db.run(
+            lambda c: (
+                c.execute("PRAGMA user_version").fetchone()[0],
+                [row[1] for row in c.execute("PRAGMA table_info(segments)")],
+            )
+        )
+        assert version == 2
+        assert columns == [
+            "session_id",
+            "segment_id",
+            "shown_engine",
+            "shown_executed",
+            "chars",
+            "recorded_at",
+        ]
+        assert await store.summary() == [
+            EngineStats(ARGOS, executed=1, wins=1, p50_ms=50.0, p95_ms=50.0, failure_rate=0.0)
+        ]
+    finally:
+        await store.close()
+
+
+async def test_newer_database_version_is_quarantined(db_path: Path) -> None:
+    """版本号高于程序认识的版本时按文件不可用处理：改名保留，原路径新建一个库。"""
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA user_version = 9")
+    conn.close()
+    store = await open_store(db_path)
+    try:
+        assert len(list(db_path.parent.glob(f"{db_path.name}.corrupt-*"))) == 1
+        assert await store.summary() == []
+    finally:
+        await store.close()
 
 
 # ---------------------------------------------------------------- 线程与健壮性

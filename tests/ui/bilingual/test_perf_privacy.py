@@ -20,7 +20,10 @@ BUDGET_S = 0.050  # 需求是 16 毫秒；测试机器负载不定，断言放�
 
 
 def _views(stage: int) -> tuple[SegmentView, ...]:
-    """100 段、每段 4 个参赛实例的快照。stage 0：都在排队；1：Argos 胜出；2：DeepSeek 胜出。"""
+    """100 段、每段 4 个实例的快照（服务列表只用一个，快照的规模按截屏翻译的最坏情况估）。
+
+    stage 0：都在排队；1：Argos 的译文显示；2：换成 DeepSeek 的译文。
+    """
     views: list[SegmentView] = []
     for i in range(SEGMENTS):
         source = f"Paragraph {i}: the quick brown fox jumps over the lazy dog."
@@ -34,7 +37,7 @@ def _views(stage: int) -> tuple[SegmentView, ...]:
                 attempt("deepl", R),
                 attempt("google", R),
             )
-            views.append(segment(f"p{i}", source, *attempts, winner="argos"))
+            views.append(segment(f"p{i}", source, *attempts, shown_engine="argos"))
         else:
             attempts = (
                 attempt("deepseek", D, f"第 {i} 段：那只敏捷的棕色狐狸跃过了那条懒狗。", latency=1500 + i),
@@ -42,7 +45,7 @@ def _views(stage: int) -> tuple[SegmentView, ...]:
                 attempt("google", D, f"第 {i} 段：快速棕色狐狸跳过了懒狗。", latency=400 + i),
                 attempt("argos", D, f"第 {i} 段：敏捷的棕色狐狸跳过了懒狗。", latency=120 + i),
             )
-            views.append(segment(f"p{i}", source, *attempts, winner="deepseek", finished=True))
+            views.append(segment(f"p{i}", source, *attempts, shown_engine="deepseek", finished=True))
     return tuple(views)
 
 
@@ -88,7 +91,6 @@ async def test_hundred_segment_update_stays_within_frame_budget(harness: Harness
         print(f"{name}：处理 {handled * 1000:.2f} 毫秒，随后布局与绘制 {painted * 1000:.2f} 毫秒")
     assert pane.segment_count() == SEGMENTS
     assert pane.segment_text(99).startswith("第 99 段：那只")
-    assert harness.presenter.engine_rows()[0].engine_id == "deepseek"
     for name, (handled, _) in results.items():
         assert handled < BUDGET_S, f"{name} 耗时 {handled * 1000:.1f} 毫秒"
 
@@ -111,7 +113,7 @@ async def test_logs_contain_no_source_or_translation(
             attempt(
                 "deepl", AttemptState.FAILED, code=ErrorCode.BAD_REQUEST, error=secret_detail, latency=80
             ),
-            winner="argos",
+            shown_engine="argos",
         ),
     )
     harness.window.copy_button.click()

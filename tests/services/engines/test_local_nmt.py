@@ -24,6 +24,7 @@ from lst.contracts.translation import (
     Engine,
     EngineInfo,
     EngineKind,
+    Job,
     Segment,
     SegmentOutcome,
     SegmentView,
@@ -910,7 +911,7 @@ class TestWithScheduler:
 
         for segment_id, text in ((S1, "alpha"), (S4, "delta")):
             view = sink.latest[(SESSION, segment_id)]
-            assert view.winner == engine.info.id
+            assert view.shown_engine == engine.info.id
             assert view.display_text == translated(text)
             assert view.finished
         assert sink.latest[(SESSION, S5)].skip_reason is SkipReason.NO_ENGINE
@@ -946,6 +947,47 @@ class TestWithScheduler:
         assert new.cancel_calls == 0
         assert sink.latest[(new_id, S1)].display_text == translated("new text")
         assert old_id not in {session_id for session_id, _, _ in sink.records}
+
+    async def test_higher_priority_result_cancels_running_request(self) -> None:
+        """更高优先级的实例先给出译文：正在推理的 NMT 请求经 cancel 通路取消，尝试记为已取消（RACE-05）。"""
+
+        class Top:
+            def __init__(self) -> None:
+                self.go = asyncio.Event()
+                self._info = EngineInfo(
+                    id=EngineId("top"), name="Top", kind=EngineKind.ONLINE_LLM, priority=1, billing=True
+                )
+
+            @property
+            def info(self) -> EngineInfo:
+                return self._info
+
+            def supports(self, source: Lang, target: Lang) -> bool:
+                return True
+
+            async def translate(self, job: Job) -> AsyncIterator[SegmentOutcome]:
+                await self.go.wait()
+                for segment in job.segments:
+                    yield SegmentOutcome(segment.id, text="top")
+
+        channel = FakeChannel()
+        top = Top()
+        engine = engine_for(channel)
+        sink = Sink()
+        scheduler = RaceScheduler([top, engine], sink, frame_interval=0)
+        try:
+            await scheduler.start_session(Entry.SCREENSHOT, SESSION, (Segment(S1, "hello"),), {S1: (EN, ZH)})
+            handle = await wait_reading(channel, 1)
+            top.go.set()
+            await channel.signal.wait_until(lambda: handle.cancel_calls == 1)
+            await scheduler.drain()
+        finally:
+            await scheduler.aclose()
+
+        view = sink.latest[(SESSION, S1)]
+        assert (view.shown_engine, view.display_text) == (EngineId("top"), "top")
+        (nmt,) = [a for _, _, a in sink.records if a.engine_id == engine.info.id]
+        assert (nmt.state, nmt.started, nmt.error_code) == (AttemptState.CANCELLED, True, None)
 
     async def test_job_timeout_cancels_request(self) -> None:
         channel = FakeChannel()

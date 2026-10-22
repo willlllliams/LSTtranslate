@@ -1,9 +1,12 @@
-"""窗口的显示与隐藏、状态保存与恢复、置顶、键盘操作和布局（需求 BI-01、BI-02、BI-07、UI-07、CFG-05）。"""
+"""窗口的显示与隐藏、关闭按钮、任务栏、状态保存与恢复、置顶、键盘操作和布局。
+
+对应需求 BI-01、BI-02、BI-07、UI-07、CFG-05。
+"""
 
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QSettings, QSize, Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QWindow
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
@@ -12,11 +15,14 @@ from lst.contracts.events import SegmentsUpdated, ToggleBilingualWindow
 from lst.contracts.ids import Lang, SessionId
 from lst.contracts.translation import AttemptState
 from lst.ui import i18n
+from lst.ui.bilingual import BilingualWindow
 from lst.ui.bilingual.state import GROUP
 from lst.ui.common.window import fit_on_screens
 from tests.ui.bilingual.conftest import Harness, StartHarness, attempt, config, segment, statuses
 
 _ON_TOP = Qt.WindowType.WindowStaysOnTopHint
+_CLOSE = Qt.WindowType.WindowCloseButtonHint
+_MINIMIZE = Qt.WindowType.WindowMinimizeButtonHint
 
 
 async def _toggle(harness: Harness) -> None:
@@ -76,6 +82,60 @@ async def test_escape_and_close_button_hide_the_window(harness: Harness) -> None
     assert not window.isVisible()
     await _toggle(harness)
     assert window.isVisible()
+
+
+async def test_title_bar_close_button_survives_pin_toggles(harness: Harness) -> None:
+    """置顶开了又关之后，标题栏的关闭按钮仍然可用。
+
+    旧实现用 flags & ~WindowStaysOnTopHint 去掉置顶标志。PySide6 的枚举取反只覆盖 0x1FFFFFF 以内的位，
+    结果顺带清掉了 WindowCloseButtonHint（0x08000000），Windows 上的关闭按钮因此变灰。
+    """
+    window = harness.window
+    await _toggle(harness)
+    assert window.windowFlags() & _CLOSE
+    for _ in range(2):
+        window.pin_button.click()
+        assert window.windowFlags() & _ON_TOP and window.windowFlags() & _CLOSE
+        window.pin_button.click()
+        assert not window.windowFlags() & _ON_TOP
+        assert window.windowFlags() & _CLOSE, "取消置顶不能丢掉关闭按钮"
+        handle = window.windowHandle()
+        assert handle is not None and handle.flags() & _CLOSE
+
+
+async def test_window_has_no_taskbar_button(harness: Harness) -> None:
+    """窗口不占任务栏：显示前挂上一个隐藏的所有者窗口，没有最小化按钮，标题栏的关闭按钮照常可用。"""
+    window = harness.window
+    flags = window.windowFlags()
+    window_type = Qt.WindowType(int(flags.value) & int(Qt.WindowType.WindowType_Mask.value))
+    assert window_type == Qt.WindowType.Window, "不用工具窗口（Qt.Tool）：它会让窗口从 Alt+Tab 里消失"
+    assert not flags & _MINIMIZE
+    assert flags & _CLOSE
+    assert window.owner_window is None
+    await _toggle(harness)
+    owner = window.owner_window
+    assert isinstance(owner, QWindow)
+    assert not owner.isVisible()
+    handle = window.windowHandle()
+    assert handle is not None and handle.transientParent() is owner
+    # 隐藏再显示不会换一个所有者。
+    await _toggle(harness)
+    await _toggle(harness)
+    assert window.owner_window is owner
+
+
+def test_secondary_window_keeps_taskbar_by_default(qapp: object) -> None:
+    """只有双语窗口不占任务栏；设置窗口等其他次要窗口仍是普通的顶层窗口，有最小化按钮。"""
+    from lst.ui.common.window import SecondaryWindow
+
+    plain = SecondaryWindow()
+    try:
+        assert plain.windowFlags() & _MINIMIZE
+        plain.present_window(None)
+        assert plain.owner_window is None
+    finally:
+        plain.close_for_good()
+    assert isinstance(BilingualWindow(), SecondaryWindow)
 
 
 async def test_geometry_saved_on_hide_and_restored_after_restart(start_harness: StartHarness) -> None:
@@ -202,58 +262,25 @@ async def test_language_choice_is_restored(start_harness: StartHarness) -> None:
 
 
 async def test_tab_order_matches_visual_order(harness: Harness) -> None:
-    session = (await harness.type_and_wait("one")).session_id
-    await harness.updates(
-        session,
-        segment(
-            "a",
-            "one",
-            attempt("deepl", AttemptState.DONE, "一", latency=20),
-            attempt("argos", AttemptState.DONE, "壹", latency=5),
-            winner="deepl",
-        ),
-    )
     window = harness.window
-    rows = window.engine_list.rows()
     expected: list[QWidget] = [
         window.source_combo,
         window.swap_button,
         window.target_combo,
+        window.engine_combo,
         window.pin_button,
         window.input_edit,
         window.clear_button,
         window.translation,
         window.copy_button,
-        rows[0].copy_button,
-        rows[1].copy_button,
     ]
-
-    def chain() -> list[QWidget]:
-        """从源语言下拉框出发绕焦点链一圈，收集能用 Tab 到达的可见控件。"""
-        found: list[QWidget] = [window.source_combo]
-        widget = window.source_combo.nextInFocusChain()
-        while widget is not None and widget is not window.source_combo:
-            if widget.focusPolicy() & Qt.FocusPolicy.TabFocus and widget.isVisibleTo(window):
-                found.append(widget)
-            widget = widget.nextInFocusChain()
-        return found
-
-    assert chain() == expected
-
-    # 胜出者变化导致行重新排序后，焦点顺序跟着变。
-    await harness.updates(
-        session,
-        segment(
-            "a",
-            "one",
-            attempt("argos", AttemptState.DONE, "壹", latency=5),
-            attempt("deepl", AttemptState.DONE, "一", latency=20),
-            winner="argos",
-        ),
-    )
-    rows = window.engine_list.rows()
-    assert [row.engine_id for row in rows] == ["argos", "deepl"]
-    assert chain()[-2:] == [rows[0].copy_button, rows[1].copy_button]
+    found: list[QWidget] = [window.source_combo]
+    widget = window.source_combo.nextInFocusChain()
+    while widget is not None and widget is not window.source_combo:
+        if widget.focusPolicy() & Qt.FocusPolicy.TabFocus and widget.isVisibleTo(window):
+            found.append(widget)
+        widget = widget.nextInFocusChain()
+    assert found == expected
 
 
 async def test_input_tab_moves_focus_instead_of_inserting(harness: Harness) -> None:
@@ -276,7 +303,7 @@ async def test_interface_language_switch_retranslates(harness: Harness) -> None:
     session = (await harness.type_and_wait("hello")).session_id
     await harness.updates(
         session,
-        segment("s", "hello", attempt("argos", AttemptState.DONE, "你好", latency=30), winner="argos"),
+        segment("s", "hello", attempt("argos", AttemptState.DONE, "你好", latency=30), shown_engine="argos"),
     )
     window = harness.window
     assert window.copy_button.text() == "复制译文"
@@ -286,9 +313,7 @@ async def test_interface_language_switch_retranslates(harness: Harness) -> None:
     assert window.copy_button.text() == "Copy translation"
     assert window.source_combo.itemText(0) == "Auto"
     assert window.target_combo.itemText(window.target_combo.findData("ja")) == "Japanese"
-    row = window.engine_list.rows()[0]
-    assert (row.status_label.text(), row.latency_label.text()) == ("Done", "30 ms")
-    assert row.copy_button.text() == "Copy"
+    assert window.engine_label.text() == "Translation service"
 
 
 async def test_stop_closes_window_and_cancels_nothing_else(start_harness: StartHarness) -> None:

@@ -7,6 +7,7 @@ Configure 的设置项：
 | model_dir | 必填 | 存放 .argosmodel 的目录 |
 | extract_dir | `<model_dir>/.extracted` | 模型包的解压目录 |
 | cuda_cache_dir | 见下 | CUDA 即时编译缓存目录 |
+| cuda_dll_dir | 空 | cuBLAS 12 的 DLL 所在目录（设置里下载的显卡运行库），见下 |
 | device | "auto" | "auto"、"cpu" 或 "cuda"；auto 在有 CUDA 设备且 cuBLAS 可加载时用 cuda |
 | compute_type | "auto" | CTranslate2 的计算类型；auto 在 CPU 上取 int8，在 GPU 上取 float16 |
 | beam_size | 2 | 集束搜索宽度 |
@@ -16,11 +17,22 @@ Configure 的设置项：
 
 cuda_cache_dir 不设时沿用环境变量 CUDA_CACHE_PATH，环境变量也没有时为 `<model_dir>/.cuda-cache`。
 
+cuBLAS 的加载（需求 MOD-06）：CTranslate2 的显卡路径延迟加载 ``cublas64_12.dll``。这里在选择设备时，
+从 cuda_dll_dir 与模块搜索路径里 pip 安装的 ``nvidia/cublas/bin``（源码运行时的开发环境）中找到同时有
+``cublasLt64_12.dll`` 与 ``cublas64_12.dll`` 的第一个目录，按完整路径先后加载这两个文件；CTranslate2 之后
+按同名取到的就是已加载的模块。不按 PATH 搜索：进程继承了“重分析点信任”策略时，PATH 上由用户创建的目录联接
+会让按名称搜索直接失败（WinError 448，本机实测 PATH 上的 Codex\\bin 就是这样的联接），PATH 上别的 CUDA
+版本也可能被误用。
+
 预热的原因：在 RTX 5080 上，第一次在 CUDA 上翻译要先由驱动即时编译内核，本机实测约 7 秒，超过监管器
 每批 5 秒的处理时限（架构文档 8.2 节第 3 条），第一个真实请求会被误判为卡死。所以实际设备是 cuda 时，
 load 在返回能力清单之前加载语言对排序后的第一个模型，翻译一句固定的短句，把编译放在加载阶段完成
 （监管器等待 Ready 不计处理时限）。预热加载的模型留在 LRU 缓存里，占用的是正常的常驻名额。
-预热失败只记一条警告，照常就绪。CPU 冷启动只是解压和加载，约 0.5 秒，不预热。
+
+CPU 不预热：第一次用到某个语言对时要先解压模型包（en→zh 约 0.45 秒）再加载模型（约 0.2 秒），
+这一次翻译慢一些（用户实测一个单词 1077 毫秒），用户接受。之后模型常驻 LRU 缓存，推理每段约 10 毫秒；
+要保证的是之后不再退回冷启动，见架构文档 8.3 节“保持热态”。
+
 
 调用 CTranslate2 的细节。第 1、2、4 条与 argostranslate 的做法相同，第 3、5、6 条是本项目加的；
 每一条都用本机的 en→zh、zh→en 两个模型验证过：
@@ -90,8 +102,8 @@ _COMPUTE_TYPES = frozenset(
     }
 )
 _KNOWN_KEYS = frozenset(
-    {"model_dir", "extract_dir", "cuda_cache_dir", "device", "compute_type", "beam_size", "intra_threads",
-     "max_loaded_models", "warmup"}
+    {"model_dir", "extract_dir", "cuda_cache_dir", "cuda_dll_dir", "device", "compute_type", "beam_size",
+     "intra_threads", "max_loaded_models", "warmup"}
 )  # fmt: skip
 _CUBLAS_DLLS = ("cublasLt64_12.dll", "cublas64_12.dll")
 # 预热用的固定短句。预热只为触发内核编译，译文不用。
@@ -131,6 +143,7 @@ class Ct2Settings:
     model_dir: Path
     extract_dir: Path
     cuda_cache_dir: Path | None
+    cuda_dll_dir: Path | None
     device: Literal["auto", "cpu", "cuda"]
     compute_type: str
     beam_size: int
@@ -150,6 +163,7 @@ class Ct2Settings:
         root = Path(model_dir).absolute()
         extract_dir = _get_str(raw, "extract_dir", None)
         cuda_cache_dir = _get_str(raw, "cuda_cache_dir", None)
+        cuda_dll_dir = _get_str(raw, "cuda_dll_dir", None)
         device = _get_str(raw, "device", "auto")
         if device not in ("auto", "cpu", "cuda"):
             raise ConfigError(f"device 应为 auto、cpu 或 cuda，实际为 {device!r}")
@@ -160,6 +174,7 @@ class Ct2Settings:
             model_dir=root,
             extract_dir=Path(extract_dir).absolute() if extract_dir else root / ".extracted",
             cuda_cache_dir=Path(cuda_cache_dir).absolute() if cuda_cache_dir else None,
+            cuda_dll_dir=Path(cuda_dll_dir).absolute() if cuda_dll_dir else None,
             device=device,
             compute_type=compute_type,
             beam_size=_get_int(raw, "beam_size", 2, 1),
@@ -211,29 +226,33 @@ class _SpModule(Protocol):
     def SentencePieceProcessor(self, *, model_file: str) -> _SpProcessor: ...
 
 
-def _add_nvidia_dll_dirs() -> None:
-    """把 pip 安装的 nvidia-cublas-cu12 等包的 DLL 目录加入搜索路径（PATH 和 add_dll_directory 都加）。"""
-    for entry in sys.path:
-        nvidia = Path(entry, "nvidia")
-        if not nvidia.is_dir():
-            continue
-        for bin_dir in sorted(nvidia.glob("*/bin")):
-            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-            with contextlib.suppress(OSError):
-                os.add_dll_directory(str(bin_dir))
+def cublas_dirs(configured: Path | None) -> list[Path]:
+    """可能放着 cuBLAS 12 的目录，按优先顺序：设置里给出的目录，然后是模块搜索路径里的 nvidia/cublas/bin。"""
+    dirs = [configured] if configured is not None else []
+    dirs.extend(Path(entry, "nvidia", "cublas", "bin") for entry in sys.path if entry)
+    return dirs
 
 
-def _load_cublas() -> None:
-    """预先加载 cuBLAS，失败时抛 OSError。
+def _load_cublas(dirs: Sequence[Path]) -> Path | None:
+    """按完整路径预先加载 cuBLAS，返回 DLL 所在目录；不是 Windows 时什么也不做，返回 None。
 
     CTranslate2 的 CUDA 路径在第一次翻译时才加载 cuBLAS。缺少 cuBLAS 时，float16 翻译报错，
     int8 翻译则会一直卡住（本机实测超过 400 秒没有返回），所以在选择设备时就要确认它能加载。
-    这里按标准搜索顺序（含 PATH）加载，之后 CTranslate2 按同名取到的就是已加载的模块。
+    在 dirs 里找同时有两个 DLL 的第一个目录，先加载 cublasLt64_12.dll（cublas64_12.dll 依赖它），
+    之后 CTranslate2 按同名取到的就是已加载的模块。哪个目录都没有时抛 FileNotFoundError（OSError 的子类）。
     """
     if sys.platform != "win32":
-        return
-    for name in _CUBLAS_DLLS:
-        ctypes.WinDLL(name, winmode=0)
+        return None
+    for directory in dirs:
+        files = [directory / name for name in _CUBLAS_DLLS]
+        if not all(path.is_file() for path in files):
+            continue
+        with contextlib.suppress(OSError):
+            os.add_dll_directory(str(directory))
+        for path in files:
+            ctypes.WinDLL(str(path))
+        return directory
+    raise FileNotFoundError("没有找到 cuBLAS 12（cublas64_12.dll），需要在设置里下载显卡运行库")
 
 
 # ---------------------------------------------------------------- 译文清理
@@ -319,7 +338,7 @@ class Ct2Backend:
         parsed = Ct2Settings.parse(settings)
         self._prepare_cuda_cache(parsed)
         ct2, spm = self._ct2, self._spm = self._import_runtime()
-        device = self._resolve_device(ct2, parsed.device)
+        device = self._resolve_device(ct2, parsed.device, parsed.cuda_dll_dir)
         compute_type = self._resolve_compute_type(ct2, device, parsed.compute_type)
 
         if self._models is not None:
@@ -391,28 +410,32 @@ class Ct2Backend:
     def _import_runtime(self) -> tuple[_Ct2Module, _SpModule]:
         """导入推理库。ImportError、OSError（例如 DLL 加载失败）原样抛出，进程以 DEPENDENCY_ERROR 退出。"""
         if self._ct2 is None or self._spm is None:
-            _add_nvidia_dll_dirs()
             self._ct2 = cast(_Ct2Module, importlib.import_module("ctranslate2"))
             self._spm = cast(_SpModule, importlib.import_module("sentencepiece"))
         return self._ct2, self._spm
 
     @staticmethod
-    def _resolve_device(ct2: _Ct2Module, requested: Literal["auto", "cpu", "cuda"]) -> Device:
+    def _resolve_device(
+        ct2: _Ct2Module, requested: Literal["auto", "cpu", "cuda"], cuda_dll_dir: Path | None = None
+    ) -> Device:
         if requested == "cpu":
             return "cpu"
         count = ct2.get_cuda_device_count()
+        dirs = cublas_dirs(cuda_dll_dir)
         if requested == "cuda":
             if count == 0:
                 raise ConfigError("device 设为 cuda，但没有可用的 CUDA 设备")
-            _load_cublas()  # 失败抛 OSError，进程以 DEPENDENCY_ERROR 退出
+            loaded = _load_cublas(dirs)  # 失败抛 OSError，进程以 DEPENDENCY_ERROR 退出
+            log.info("已从 %s 加载 cuBLAS", loaded)
             return "cuda"
         if count == 0:
             return "cpu"
         try:
-            _load_cublas()
+            loaded = _load_cublas(dirs)
         except OSError as exc:
             log.warning("有 CUDA 设备，但 cuBLAS 无法加载（%s），改用 CPU", exc)
             return "cpu"
+        log.info("已从 %s 加载 cuBLAS", loaded)
         return "cuda"
 
     @staticmethod

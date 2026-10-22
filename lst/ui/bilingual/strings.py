@@ -21,45 +21,55 @@ CATALOG: Catalog = {
     "bilingual.source.label": {"zh-Hans": "源语言", "en": "Source language"},
     "bilingual.target.label": {"zh-Hans": "目标语言", "en": "Target language"},
     "bilingual.swap": {"zh-Hans": "交换", "en": "Swap"},
-    "bilingual.swap.tip": {
-        "zh-Hans": "交换源语言与目标语言（Ctrl+Shift+S）",
-        "en": "Swap source and target languages (Ctrl+Shift+S)",
-    },
+    "bilingual.swap.tip": {"zh-Hans": "交换源语言与目标语言", "en": "Swap source and target languages"},
     "bilingual.pin": {"zh-Hans": "置顶", "en": "Pin"},
-    "bilingual.pin.tip": {
-        "zh-Hans": "让窗口保持在最前（Ctrl+Shift+T）",
-        "en": "Keep the window on top (Ctrl+Shift+T)",
-    },
+    "bilingual.pin.tip": {"zh-Hans": "让窗口保持在最前", "en": "Keep the window on top"},
     "bilingual.clear": {"zh-Hans": "清空", "en": "Clear"},
-    "bilingual.clear.tip": {
-        "zh-Hans": "清空输入和译文（Ctrl+Shift+L）",
-        "en": "Clear the input and the translation (Ctrl+Shift+L)",
-    },
+    "bilingual.clear.tip": {"zh-Hans": "清空输入和译文", "en": "Clear the input and the translation"},
     "bilingual.copy": {"zh-Hans": "复制译文", "en": "Copy translation"},
-    "bilingual.copy.tip": {
-        "zh-Hans": "复制全部译文（Ctrl+Shift+C）",
-        "en": "Copy the whole translation (Ctrl+Shift+C)",
-    },
+    "bilingual.copy.tip": {"zh-Hans": "复制全部译文", "en": "Copy the whole translation"},
+    # 按钮提示与占位文字里的键位按当前配置填入（UI-09），没有绑定的操作不提键位。
+    # 占位文字由三句拼成，英文的后两句以空格开头。
+    "bilingual.tip.keys": {"zh-Hans": "{tip}（{keys}）", "en": "{tip} ({keys})"},
     "bilingual.input.label": {"zh-Hans": "原文", "en": "Source text"},
     "bilingual.input.placeholder": {
-        "zh-Hans": "输入要翻译的文字。停顿后自动翻译，按 Ctrl+Enter 同时调用计费引擎，按 Esc 隐藏窗口。",
-        "en": "Type text to translate. Translation starts when you pause; "
-        "Ctrl+Enter also runs paid engines; Esc hides the window.",
+        "zh-Hans": "输入要翻译的文字，停顿后自动翻译。",
+        "en": "Type text to translate. Translation starts when you pause.",
+    },
+    "bilingual.input.placeholder.translate": {
+        "zh-Hans": "按 {keys} 立即翻译。",
+        "en": " {keys} translates now.",
+    },
+    "bilingual.input.placeholder.close": {
+        "zh-Hans": "按 {keys} 隐藏窗口。",
+        "en": " {keys} hides the window.",
     },
     "bilingual.output.label": {"zh-Hans": "译文", "en": "Translation"},
     "bilingual.output.placeholder": {"zh-Hans": "译文显示在这里", "en": "The translation appears here"},
-    "bilingual.engines.title": {"zh-Hans": "引擎结果", "en": "Engine results"},
-    # 引擎结果列表的状态（需求 RACE-06）
-    "bilingual.state.queued": {"zh-Hans": "排队", "en": "Queued"},
-    "bilingual.state.running": {"zh-Hans": "翻译中", "en": "Translating"},
-    "bilingual.state.done": {"zh-Hans": "完成", "en": "Done"},
-    "bilingual.state.failed": {"zh-Hans": "失败", "en": "Failed"},
-    "bilingual.state.cancelled": {"zh-Hans": "已取消", "en": "Cancelled"},
-    "bilingual.latency.ms": {"zh-Hans": "{ms} 毫秒", "en": "{ms} ms"},
-    "bilingual.latency.cached": {"zh-Hans": "缓存", "en": "Cached"},
-    "bilingual.row.copy": {"zh-Hans": "复制", "en": "Copy"},
-    "bilingual.row.copy.name": {"zh-Hans": "复制 {name} 的译文", "en": "Copy the translation from {name}"},
-    "bilingual.row.error": {"zh-Hans": "{reason}。{suggestion}", "en": "{reason}. {suggestion}"},
+    # 翻译服务下拉框与状态行（需求 BI-04）
+    "bilingual.engine.label": {"zh-Hans": "翻译服务", "en": "Translation service"},
+    "bilingual.engine.billing": {"zh-Hans": "{name}（计费）", "en": "{name} (paid)"},
+    "bilingual.engine.error": {"zh-Hans": "{name}（出错）", "en": "{name} (error)"},
+    "bilingual.engine.tip": {
+        "zh-Hans": "只用选中的服务翻译。计费服务在每次输入停顿时都会产生请求。",
+        "en": "Only the selected service translates. A paid service is called at every pause in typing.",
+    },
+    "bilingual.engine.none": {
+        "zh-Hans": "没有可用的翻译服务，请在设置的“翻译引擎”页启用一个。",
+        "en": "No translation service is available. Enable one on the Translation engines page in Settings.",
+    },
+    "bilingual.engine.fallback": {
+        "zh-Hans": "“{old}”现在不可用，暂时改用“{new}”。",
+        "en": "“{old}” is not available, so “{new}” is used for now.",
+    },
+    "bilingual.status.failed": {
+        "zh-Hans": "翻译失败：{reason}。{suggestion}",
+        "en": "Translation failed: {reason}. {suggestion}",
+    },
+    "bilingual.status.unsupported": {
+        "zh-Hans": "“{name}”不支持这段文字的语言对，显示原文。",
+        "en": "“{name}” does not support this language pair; the source text is shown.",
+    },
 }
 
 register_catalog(CATALOG)

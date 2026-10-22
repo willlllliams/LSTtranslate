@@ -18,18 +18,28 @@ from lst.contracts.ocr_engines import (
     OcrEngineInfo,
     OcrEngineKind,
     OcrEngineState,
+    OcrStage,
     UninstallOcrEngine,
 )
 from lst.ui import i18n
 from lst.ui.common.text import LANGUAGES
 from lst.ui.settings.ocr_engine_rows import Tone, build_view
-from lst.ui.settings.page_capture import PADDLE_ONLY, CapturePage, OcrEngineCard
+from lst.ui.settings.page_capture import (
+    ENGINE_PAGES,
+    PADDLE_ONLY,
+    CaptureEnginesPage,
+    CaptureOptionsPage,
+    OcrEngineCard,
+)
+from lst.ui.settings.page_ocr_engine import OcrEnginePage
 from lst.ui.theme import Glyph
 from tests.ui.settings.conftest import Harness, StartSettings
 from tests.ui.settings.support import FakeDialogs, default_config
 from tests.ui.settings.test_keyboard import assert_visual_order, tab_stops
 
 PADDLE_BYTES = 1_288_490_188  # 约 1.2 GB
+RAPID_BYTES = 111_164_637  # 约 106.0 MB
+RAPID_LANGUAGES = ("zh-Hans", "zh-Hant", "en", "ja", "de", "fr")
 
 
 def windows_info(
@@ -65,17 +75,45 @@ def paddle_info(
     )
 
 
+def rapid_info(
+    state: OcrEngineState = OcrEngineState.NOT_INSTALLED,
+    progress: float | None = None,
+    error_code: OcrEngineErrorCode | None = None,
+) -> OcrEngineInfo:
+    return OcrEngineInfo(
+        OcrEngineKind.RAPID,
+        state,
+        needs_download=True,
+        download_bytes=RAPID_BYTES,
+        progress=progress,
+        languages=RAPID_LANGUAGES,
+        features=("text",),
+        error_code=error_code,
+    )
+
+
 def catalog(
     windows: OcrEngineInfo | None = None,
     paddle: OcrEngineInfo | None = None,
     active: OcrEngineKind | None = OcrEngineKind.WINDOWS,
+    rapid: OcrEngineInfo | None = None,
 ) -> OcrEngineCatalog:
-    return OcrEngineCatalog((windows or windows_info(), paddle or paddle_info()), active)
+    return OcrEngineCatalog(
+        (windows or windows_info(), rapid or rapid_info(), paddle or paddle_info()), active
+    )
 
 
-def capture_page(harness: Harness) -> CapturePage:
-    page = harness.window.page("capture")
-    assert isinstance(page, CapturePage)
+def capture_page(harness: Harness) -> CaptureEnginesPage:
+    """OCR 引擎页。"""
+    page = harness.window.page("capture.engines")
+    assert isinstance(page, CaptureEnginesPage)
+    return page
+
+
+def options_page(harness: Harness) -> CaptureOptionsPage:
+    """截图与识别选项页。"""
+    page = harness.window.page("capture.options")
+    assert isinstance(page, CaptureOptionsPage)
     return page
 
 
@@ -104,7 +142,7 @@ async def shown(harness: Harness) -> Harness:
     await harness.publish(catalog())
     window = await harness.open()
     window.resize(1000, 760)
-    window.show_page("capture")
+    window.show_page("capture.engines")
     QApplication.processEvents()
     return harness
 
@@ -114,7 +152,7 @@ async def shown(harness: Harness) -> Harness:
 
 async def test_without_a_catalog_the_cards_are_hidden_and_a_notice_explains(harness: Harness) -> None:
     window = await harness.open()
-    window.show_page("capture")
+    window.show_page("capture.engines")
     page = capture_page(harness)
     assert page.engines_missing.isVisibleTo(page)
     assert "OCR 引擎的状态" in page.engines_missing.text()
@@ -321,7 +359,7 @@ async def test_uninstall_asks_for_confirmation(start_settings: StartSettings) ->
 
 
 async def test_paddle_only_cards_are_disabled_while_windows_is_current(shown: Harness) -> None:
-    page = capture_page(shown)
+    page = options_page(shown)
     paddle_only = page.paddle_only_bindings()
     assert {b.location[-1] for b in paddle_only} == PADDLE_ONLY
     for binding in paddle_only:
@@ -346,18 +384,21 @@ async def test_paddle_only_cards_are_disabled_while_windows_is_current(shown: Ha
 
 async def test_disabled_cards_keep_the_configured_values(start_settings: StartSettings) -> None:
     harness = await start_settings(config=default_config({"ocr": {"mode": "text", "formula": True}}))
-    page = capture_page(harness)
-    mode, formula = page.binding(("ocr", "mode")), page.binding(("ocr", "formula"))
-    assert mode is not None and formula is not None
-    assert mode.editor.json_value() == "text" and formula.editor.json_value() is True
+    page = options_page(harness)
+    mode = page.binding(("ocr", "mode"))
+    assert mode is not None
+    assert mode.editor.json_value() == "text"
     assert not mode.card.isEnabled()
+    paddle = harness.window.page("capture.paddle")
+    assert isinstance(paddle, OcrEnginePage)
+    assert paddle.pipeline.toggles[OcrStage.FORMULA].editor.json_value() is True
 
 
 # ---------------------------------------------------------------- 识别语言
 
 
 async def test_language_dropdown_lists_only_windows_ocr_languages(shown: Harness) -> None:
-    page = capture_page(shown)
+    page = options_page(shown)
     assert page.language_codes() == ["auto", "zh-Hans", "en"]
     language = page.binding(("ocr", "language"))
     assert language is not None and language.card.desc_label.text().startswith(
@@ -377,7 +418,7 @@ async def test_configured_language_missing_from_windows_is_kept_and_marked(
 ) -> None:
     harness = await start_settings(config=default_config({"ocr": {"language": "fr"}}))
     await harness.publish(catalog())
-    page = capture_page(harness)
+    page = options_page(harness)
     assert page.language_codes() == ["auto", "zh-Hans", "en", "fr"]
     language = page.binding(("ocr", "language"))
     assert language is not None
@@ -389,7 +430,7 @@ async def test_configured_language_missing_from_windows_is_kept_and_marked(
 
 
 async def test_choosing_a_windows_language_commits_it(shown: Harness) -> None:
-    page = capture_page(shown)
+    page = options_page(shown)
     language = page.binding(("ocr", "language"))
     assert language is not None
     combo = language.editor.focus_widget()
@@ -400,7 +441,7 @@ async def test_choosing_a_windows_language_commits_it(shown: Harness) -> None:
 
 async def test_language_list_survives_a_language_switch(shown: Harness) -> None:
     await shown.publish(default_config({"ui": {"language": "en"}}, revision=3))
-    page = capture_page(shown)
+    page = options_page(shown)
     assert page.language_codes() == ["auto", "zh-Hans", "en"]
     windows = card(shown, OcrEngineKind.WINDOWS)
     assert windows.title_label.text() == "Windows built-in OCR"
@@ -416,17 +457,29 @@ async def test_language_list_survives_a_language_switch(shown: Harness) -> None:
 # ---------------------------------------------------------------- 键盘
 
 
-async def test_tab_order_reaches_engine_buttons_before_the_ocr_settings(shown: Harness) -> None:
+async def test_tab_order_reaches_the_engine_buttons_in_order(shown: Harness) -> None:
     await shown.publish(catalog(paddle=paddle_info(OcrEngineState.INSTALLED)))
     QApplication.processEvents()
     window, page = shown.window, capture_page(shown)
     stops = tab_stops(window, page)
     paddle = card(shown, OcrEngineKind.PADDLE)
+    assert (
+        stops.index(paddle.uninstall_button)
+        < stops.index(paddle.use_button)
+        < stops.index(paddle.manage_button)
+    )
+    assert_visual_order(window, stops, "capture.engines")
+
+
+async def test_tab_order_on_the_options_page_skips_disabled_cards(shown: Harness) -> None:
+    window = shown.window
+    window.show_page("capture.options")
+    QApplication.processEvents()
+    page = options_page(shown)
+    stops = tab_stops(window, page)
     enabled = page.binding(("ocr", "enabled"))
-    assert enabled is not None
-    switch = enabled.editor.focus_widget()
-    assert stops.index(paddle.uninstall_button) < stops.index(paddle.use_button) < stops.index(switch)
-    assert_visual_order(window, stops, "capture")
+    assert enabled is not None and enabled.editor.focus_widget() in stops
+    assert_visual_order(window, stops, "capture.options")
     mode = page.binding(("ocr", "mode"))
     assert mode is not None and mode.editor.focus_widget() not in stops  # 不可用的卡片不在 Tab 顺序里
 
@@ -435,10 +488,162 @@ def test_view_for_every_state_is_consistent() -> None:
     """每种状态都给出非空的状态文字；“取消”可用时一定显示；当前引擎不提供“设为当前引擎”。"""
     i18n.set_language("zh-Hans")
     for state in OcrEngineState:
-        for info in (paddle_info(state), windows_info(state)):
+        for info in (paddle_info(state), windows_info(state), rapid_info(state)):
             for current in (False, True):
                 view = build_view(info, current=current)
                 assert view.status, (state, info.kind)
                 assert view.can_cancel or not view.cancel_enabled
                 assert not (current and view.can_use)
                 assert not (view.can_download and view.can_uninstall)
+
+
+# ---------------------------------------------------------------- RapidOCR
+
+
+async def test_rapid_card_describes_the_engine(shown: Harness) -> None:
+    rapid = card(shown, OcrEngineKind.RAPID)
+    assert not rapid.isHidden()
+    assert rapid.title_label.text() == "RapidOCR"
+    assert "轻量，按行给出位置，只有文本模式。" in rapid.desc_label.text()
+    assert "能力：文本；需要下载约 106.0 MB" in rapid.desc_label.text()
+    assert rapid.icon_label.text() == Glyph.LIGHTNING
+    assert rapid.status_label.text() == "未安装"
+    assert visible_buttons(rapid) == ["download"]
+    assert rapid.languages_label.isHidden()  # 语言很多，列在识别语言的下拉框里，卡片上不重复
+
+
+async def test_rapid_card_follows_install_states_and_sends_commands(shown: Harness) -> None:
+    rapid = card(shown, OcrEngineKind.RAPID)
+    rapid.download_button.click()
+    await shown.publish(catalog(rapid=rapid_info(OcrEngineState.DOWNLOADING, 0.5)))
+    assert rapid.status_label.text() == "正在下载 50%"
+    assert visible_buttons(rapid) == ["cancel"] and rapid.progress_bar.value() == 500
+    rapid.cancel_button.click()
+    await shown.publish(
+        catalog(rapid=rapid_info(OcrEngineState.ERROR, error_code=OcrEngineErrorCode.INSTALL_FAILED))
+    )
+    assert visible_buttons(rapid) == ["retry", "uninstall"]
+    rapid.retry_button.click()
+    await shown.publish(catalog(rapid=rapid_info(OcrEngineState.INSTALLED)))
+    assert rapid.status_label.text() == "已安装"
+    assert visible_buttons(rapid) == ["uninstall", "use"]
+    await shown.flush()
+    assert shown.recorded.commands == [
+        InstallOcrEngine(OcrEngineKind.RAPID),
+        CancelOcrEngineInstall(OcrEngineKind.RAPID),
+        InstallOcrEngine(OcrEngineKind.RAPID),
+    ]
+    rapid.use_button.click()
+    await shown.flush()
+    assert shown.recorded.updates[-1].patch == {"ocr": {"engine": "rapid"}}
+
+
+async def test_rapid_current_disables_paddle_only_cards_and_lists_its_languages(shown: Harness) -> None:
+    await shown.publish(catalog(rapid=rapid_info(OcrEngineState.READY), active=OcrEngineKind.RAPID))
+    await shown.publish(default_config({"ocr": {"engine": "rapid"}}, revision=2))
+    page = options_page(shown)
+    rapid = card(shown, OcrEngineKind.RAPID)
+    assert rapid.current and rapid.status_label.text() == "就绪"
+    for binding in page.paddle_only_bindings():
+        assert not binding.card.isEnabled(), binding.location
+        assert binding.card.desc_label.text().endswith("。仅 PaddleOCR 可用。"), binding.location
+    assert page.language_codes() == ["auto", *RAPID_LANGUAGES]
+    language = page.binding(("ocr", "language"))
+    assert language is not None
+    assert language.card.desc_label.text().startswith("RapidOCR 的识别模型覆盖中文、日文、英文")
+    assert language.card.isEnabled()
+
+    await shown.publish(default_config({"ocr": {"engine": "rapid", "language": "ko"}}, revision=3))
+    assert page.language_codes() == ["auto", *RAPID_LANGUAGES, "ko"]
+    combo = language.editor.focus_widget()
+    assert combo.property("currentText") == "韩语（当前引擎不支持）"
+
+    await shown.publish(default_config({"ocr": {"engine": "paddle"}}, revision=4))
+    assert page.language_codes() == ["auto", *LANGUAGES]
+    for binding in page.paddle_only_bindings():
+        assert binding.card.isEnabled(), binding.location
+
+
+async def test_rapid_texts_in_english(shown: Harness) -> None:
+    await shown.publish(default_config({"ui": {"language": "en"}, "ocr": {"engine": "rapid"}}, revision=3))
+    rapid = card(shown, OcrEngineKind.RAPID)
+    assert "Lightweight. Gives the position of each line; text mode only." in rapid.desc_label.text()
+    assert "about 106.0 MB to download" in rapid.desc_label.text()
+    language = options_page(shown).binding(("ocr", "language"))
+    assert language is not None
+    assert language.card.desc_label.text().startswith("RapidOCR's recognition model covers")
+
+
+async def test_catalog_without_rapid_hides_its_card(shown: Harness) -> None:
+    await shown.publish(OcrEngineCatalog((windows_info(), paddle_info()), OcrEngineKind.WINDOWS))
+    assert card(shown, OcrEngineKind.RAPID).isHidden()
+    assert not card(shown, OcrEngineKind.PADDLE).isHidden()
+
+
+# ---------------------------------------------------------------- 引擎卡片与子页的跳转
+
+
+async def test_manage_button_is_shown_for_installed_engines_and_opens_the_engine_page(shown: Harness) -> None:
+    await shown.publish(
+        catalog(paddle=paddle_info(OcrEngineState.INSTALLED), rapid=rapid_info(OcrEngineState.NOT_INSTALLED))
+    )
+    window = shown.window
+    windows, rapid, paddle = (card(shown, kind) for kind in OcrEngineKind)
+    assert not windows.manage_button.isHidden() and not paddle.manage_button.isHidden()
+    assert rapid.manage_button.isHidden()  # 没安装的引擎没有“管理”
+    paddle.manage_button.click()
+    assert window.current_page.page_id == "capture.paddle"
+    window.show_page("capture.engines")
+    windows.manage_button.click()
+    assert window.current_page.page_id == "capture.windows"
+    assert ENGINE_PAGES == {
+        OcrEngineKind.WINDOWS: "capture.windows",
+        OcrEngineKind.RAPID: "capture.rapid",
+        OcrEngineKind.PADDLE: "capture.paddle",
+    }
+
+
+async def test_engine_page_of_an_uninstalled_engine_explains_and_jumps_back(shown: Harness) -> None:
+    window = shown.window
+    window.show_page("capture.paddle")
+    page = window.page("capture.paddle")
+    assert isinstance(page, OcrEnginePage)
+    QApplication.processEvents()
+    assert not page.install_card.isHidden()
+    assert page.install_card.title_label.text() == "PaddleOCR 尚未安装"
+    assert "请先在“OCR 引擎”页下载 PaddleOCR" in page.install_card.desc_label.text()
+    assert not page.goto_button.isHidden()
+    page.goto_button.click()
+    assert window.current_page.page_id == "capture.engines"
+
+    # 装好以后，说明和按钮消失。
+    await shown.publish(catalog(paddle=paddle_info(OcrEngineState.INSTALLED)))
+    window.show_page("capture.paddle")
+    assert page.install_card.isHidden()
+    assert page.runtime_card.title_label.text() == "PaddleOCR"
+    assert page.runtime_card.desc_label.text() == "已安装"
+
+
+async def test_windows_page_shows_only_what_the_engine_has(shown: Harness) -> None:
+    window = shown.window
+    window.show_page("capture.windows")
+    page = window.page("capture.windows")
+    assert isinstance(page, OcrEnginePage)
+    QApplication.processEvents()
+    assert page.install_card.isHidden()  # 不需要下载
+    assert "可识别的语言：简体中文、英语" in page.runtime_card.desc_label.text()
+    # 流程图照常显示 Windows OCR 的步骤，下面一句说明它没有可选的模型和参数。
+    assert not page.pipeline.isHidden() and not page.empty_label.isHidden()
+    assert page.pipeline.visible_stages() == []
+    assert page.pipeline.toggles == {}
+    assert page.heading.text() == "截屏与识别 › Windows OCR"
+
+
+async def test_engine_page_notes_that_the_engine_is_not_current(shown: Harness) -> None:
+    await shown.publish(catalog(paddle=paddle_info(OcrEngineState.INSTALLED)))
+    shown.window.show_page("capture.paddle")
+    page = shown.window.page("capture.paddle")
+    assert isinstance(page, OcrEnginePage)
+    assert not page.note_label.isHidden() and "不是当前引擎" in page.note_label.text()
+    await shown.publish(default_config({"ocr": {"engine": "paddle"}}, revision=2))
+    assert page.note_label.isHidden()

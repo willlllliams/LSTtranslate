@@ -2,6 +2,9 @@
 
 视图按展示器给出的 OnboardingScreen 更新控件。模型行的集合不变时只更新文字和进度，不重建控件，
 下载进度每秒刷新几次也不会闪烁，焦点也不会丢。
+
+词典部分（标题、说明、“同时下载词典”勾选框、词典行）放在本地翻译模型的列表与“下载”按钮之间，
+只在画面模型的 show_dicts 为真时显示。词典行与模型行是同一种控件，多一行署名。
 """
 
 from collections.abc import Callable, Sequence
@@ -10,6 +13,7 @@ from itertools import pairwise
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,7 +28,8 @@ from lst.ui.i18n import tr
 from lst.ui.onboarding.presenter import ModelRow, OnboardingIntents, OnboardingScreen
 from lst.ui.theme import TOKENS
 
-DEFAULT_SIZE = QSize(600, 520)
+DEFAULT_SIZE = QSize(600, 680)
+"""默认大小：列出两个本地翻译模型和两个词典包时不需要拉大窗口。"""
 
 
 class ModelRowWidget(QFrame):
@@ -43,6 +48,10 @@ class ModelRowWidget(QFrame):
         self.size_label = QLabel()
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
+        self.attribution_label = QLabel()
+        self.attribution_label.setWordWrap(True)
+        self.attribution_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.attribution_label.hide()
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMaximumHeight(TOKENS.spacing_s)
@@ -68,12 +77,15 @@ class ModelRowWidget(QFrame):
         layout.setSpacing(TOKENS.spacing_xs)
         layout.addLayout(header)
         layout.addLayout(status)
+        layout.addWidget(self.attribution_label)
         layout.addWidget(self.progress_bar)
 
     def update_row(self, row: ModelRow, cancel_text: str, retry_text: str) -> None:
         self.title_label.setText(row.title)
         self.size_label.setText(row.size)
         self.status_label.setText(row.status)
+        self.attribution_label.setText(row.attribution)
+        self.attribution_label.setVisible(bool(row.attribution))
         self.progress_bar.setVisible(row.show_progress)
         if row.progress is None:
             self.progress_bar.setRange(0, 0)  # 没有刻度的忙碌指示
@@ -97,6 +109,7 @@ class OnboardingWindow(SecondaryWindow):
         self._intents: OnboardingIntents | None = None
         self._placed = False
         self._rows: list[ModelRowWidget] = []
+        self._dict_rows: list[ModelRowWidget] = []
 
         self.heading_label = QLabel()
         heading_font = QFont(self.heading_label.font())
@@ -120,6 +133,16 @@ class OnboardingWindow(SecondaryWindow):
         self.ocr_note = QLabel()
         self.ocr_note.setWordWrap(True)
         self.finish_button = QPushButton()
+        self.dicts_title = QLabel()
+        self.dicts_title.setFont(models_font)
+        self.dict_credit = QLabel()
+        self.dict_credit.setWordWrap(True)
+        self.dict_rows_layout = QVBoxLayout()
+        self.dict_rows_layout.setSpacing(TOKENS.spacing_s)
+        self.dict_notice_label = QLabel()
+        self.dict_notice_label.setWordWrap(True)
+        # 勾选框最后创建：没有词典时它留在焦点链末尾，不打断模型行、重试、下载、完成的顺序。
+        self.include_dicts_box = QCheckBox()
 
         notice = QHBoxLayout()
         notice.setSpacing(TOKENS.spacing_s)
@@ -144,12 +167,19 @@ class OnboardingWindow(SecondaryWindow):
         root.addWidget(self.models_title)
         root.addLayout(self.rows_layout)
         root.addLayout(notice)
+        root.addWidget(self.dicts_title)
+        root.addWidget(self.dict_credit)
+        root.addWidget(self.include_dicts_box)
+        root.addLayout(self.dict_rows_layout)
+        root.addWidget(self.dict_notice_label)
         root.addLayout(download)
         root.addWidget(self.ocr_note)
         root.addStretch(1)
         root.addLayout(bottom)
 
         self.retry_index_button.hide()
+        for widget in (self.dicts_title, self.dict_credit, self.include_dicts_box, self.dict_notice_label):
+            widget.hide()
         self.resize(DEFAULT_SIZE)
 
     # ------------------------------------------------------------------ 绑定展示器
@@ -159,6 +189,7 @@ class OnboardingWindow(SecondaryWindow):
         self.download_button.clicked.connect(intents.download)
         self.retry_index_button.clicked.connect(intents.retry_index)
         self.finish_button.clicked.connect(intents.finish)
+        self.include_dicts_box.toggled.connect(intents.set_include_dicts)
 
     def _cancel(self, model_id: str) -> None:
         if self._intents is not None:
@@ -175,7 +206,11 @@ class OnboardingWindow(SecondaryWindow):
         return list(self._rows)
 
     def row(self, model_id: str) -> ModelRowWidget | None:
-        return next((row for row in self._rows if row.model_id == model_id), None)
+        return next((row for row in (*self._rows, *self._dict_rows) if row.model_id == model_id), None)
+
+    def dict_rows(self) -> list[ModelRowWidget]:
+        """词典行，按显示顺序排列。"""
+        return list(self._dict_rows)
 
     def show_screen(self, screen: OnboardingScreen) -> None:
         self.setWindowTitle(screen.window_title)
@@ -183,7 +218,10 @@ class OnboardingWindow(SecondaryWindow):
         self.intro_label.setText(screen.intro)
         self.pair_label.setText(screen.pair)
         self.models_title.setText(screen.models_title)
-        self._render_rows(screen.rows, screen.cancel_text, screen.retry_text)
+        rebuilt = self._render_rows(screen.rows, screen.cancel_text, screen.retry_text)
+        rebuilt = self._render_dicts(screen) or rebuilt
+        if rebuilt:
+            self._fix_tab_order()
         self.notice_label.setText(screen.notice)
         self.notice_label.setVisible(bool(screen.notice))
         self.notice_label.setProperty("error", screen.notice_is_error)
@@ -195,26 +233,63 @@ class OnboardingWindow(SecondaryWindow):
         self.finish_button.setText(screen.finish_text)
         self.finish_button.setToolTip(screen.finish_tip)
 
-    def _render_rows(self, rows: Sequence[ModelRow], cancel_text: str, retry_text: str) -> None:
-        if [row.model_id for row in rows] != [widget.model_id for widget in self._rows]:
-            for widget in self._rows:
-                self.rows_layout.removeWidget(widget)
-                widget.deleteLater()
-            self._rows = [ModelRowWidget(row.model_id, self._cancel, self._retry) for row in rows]
-            for widget in self._rows:
-                self.rows_layout.addWidget(widget)
-                # 窗口已经显示时，布局只会在下一轮 Qt 事件循环里显示新加入的控件，这里直接显示。
-                widget.show()
-            self._fix_tab_order()
+    def _render_rows(self, rows: Sequence[ModelRow], cancel_text: str, retry_text: str) -> bool:
+        """更新模型行，返回是否重建了控件。"""
+        self._rows, rebuilt = self._sync_widgets(self._rows, self.rows_layout, rows)
         for widget, row in zip(self._rows, rows, strict=True):
             widget.update_row(row, cancel_text, retry_text)
+        return rebuilt
+
+    def _render_dicts(self, screen: OnboardingScreen) -> bool:
+        """更新词典部分，返回是否重建了词典行。"""
+        for widget in (self.dicts_title, self.dict_credit, self.include_dicts_box):
+            widget.setVisible(screen.show_dicts)
+        self.dicts_title.setText(screen.dicts_title)
+        self.dict_credit.setText(screen.dict_attribution)
+        self.include_dicts_box.setText(screen.include_dicts_text)
+        self.include_dicts_box.setVisible(screen.show_dicts and bool(screen.dict_rows))
+        blocked = self.include_dicts_box.blockSignals(True)
+        self.include_dicts_box.setChecked(screen.include_dicts)
+        self.include_dicts_box.blockSignals(blocked)
+        self.dict_notice_label.setText(screen.dict_notice)
+        self.dict_notice_label.setVisible(screen.show_dicts and bool(screen.dict_notice))
+        self._dict_rows, rebuilt = self._sync_widgets(
+            self._dict_rows, self.dict_rows_layout, screen.dict_rows
+        )
+        for widget, row in zip(self._dict_rows, screen.dict_rows, strict=True):
+            widget.update_row(row, screen.cancel_text, screen.retry_text)
+        return rebuilt
+
+    def _sync_widgets(
+        self, widgets: list[ModelRowWidget], layout: QVBoxLayout, rows: Sequence[ModelRow]
+    ) -> tuple[list[ModelRowWidget], bool]:
+        """行的集合变了时重建控件，返回（控件，是否重建）。"""
+        if [row.model_id for row in rows] == [widget.model_id for widget in widgets]:
+            return widgets, False
+        for widget in widgets:
+            layout.removeWidget(widget)
+            widget.deleteLater()
+        fresh = [ModelRowWidget(row.model_id, self._cancel, self._retry) for row in rows]
+        for widget in fresh:
+            layout.addWidget(widget)
+            # 窗口已经显示时，布局只会在下一轮 Qt 事件循环里显示新加入的控件，这里直接显示。
+            widget.show()
+        return fresh, True
 
     def _fix_tab_order(self) -> None:
-        """Tab 顺序与视觉顺序一致（需求 UI-07）：各行的按钮、重试获取、下载、完成。"""
+        """Tab 顺序与视觉顺序一致（需求 UI-07）。
+
+        依次是各模型行的按钮、重试获取、词典的勾选框与各词典行的按钮（有词典时）、下载、完成。
+        """
         chain: list[QWidget] = []
         for widget in self._rows:
             chain.extend((widget.cancel_button, widget.retry_button))
-        chain.extend((self.retry_index_button, self.download_button, self.finish_button))
+        chain.append(self.retry_index_button)
+        if self._dict_rows:
+            chain.append(self.include_dicts_box)
+            for widget in self._dict_rows:
+                chain.extend((widget.cancel_button, widget.retry_button))
+        chain.extend((self.download_button, self.finish_button))
         for first, second in pairwise(chain):
             QWidget.setTabOrder(first, second)
 

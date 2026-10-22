@@ -66,8 +66,9 @@ CATALOG: Final[Catalog] = {
     # 通知
     "tray.notify.hotkey_failed.title": {"zh-Hans": "热键注册失败", "en": "Hotkey registration failed"},
     "tray.notify.hotkey_failed.message": {
-        "zh-Hans": "热键 {hotkey} 注册失败：{reason}。请在设置 → 热键中换一个组合。",
-        "en": "Hotkey {hotkey} could not be registered: {reason}. Choose another one in Settings → Hotkeys.",
+        "zh-Hans": "热键 {hotkey} 注册失败：{reason}。请在“设置 › 热键与键位 › 全局热键”里换一个组合。",
+        "en": "Hotkey {hotkey} could not be registered: {reason}. "
+        "Choose another one in Settings › Hotkeys & bindings › Global hotkeys.",
     },
     "tray.notify.config_rejected.title": {"zh-Hans": "配置有误", "en": "Invalid settings"},
     "tray.notify.config_rejected.message_one": {

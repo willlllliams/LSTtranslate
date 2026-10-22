@@ -1,14 +1,16 @@
 """竞速模块：把 RaceScheduler 接到事件总线上（架构文档 4.3、5.3、6.5、11.6 节）。
 
-模块订阅四类消息：
+模块订阅五类消息：
 
-- AppConfig：解析 race、screenshot、bilingual 三节，竞速模式变化时切换调度器的模式；
+- AppConfig：解析 screenshot、bilingual 两节（[race] 节只有覆盖窗口的来源标记，由界面读取）；
 - EngineRoster：更新调度器的引擎实例集合；
-- TranslateText：双语窗口的翻译请求。按段落切段、检测语言、按互译对确定目标语言后开始会话；
-  Ctrl+Enter 且文本未变时，让计费实例加入当前会话（需求 BI-03 至 BI-06，RACE-10）；
-- CaptureCompleted：保存最近一次截屏的截图，并为接收截图的实例在线程池里开始缩小与编码（需求 ENG-07）。
-
-截屏翻译的入口是 start_screenshot_session，由 M4 在收到 OcrCompleted 时调用。
+- TranslateText：双语窗口的翻译请求。按段落切段、检测语言、按互译对确定目标语言后开始会话，
+  会话只交给请求里选中的那一个服务（需求 BI-03 至 BI-06，RACE-10）；
+- CaptureCompleted：取消上一次截屏翻译的会话（CAP-06），保存最近一次截屏的截图，并为接收截图的实例
+  在线程池里开始缩小与编码（需求 ENG-07）；
+- OcrCompleted：识别完成，用其中的段以同一会话号调用 start_screenshot_session，开始截屏翻译
+  （架构文档第 7 章第 6 步）。会话号不是最近一次截屏的会话时直接丢弃（CAP-06）：OCR 模块已经丢弃旧会话的
+  迟到结果，这里再判断一次，旧结果不会取消新截屏的会话。没有段的识别结果不开始会话。
 
 附带截图的编码放在本模块，在 CaptureCompleted 到达时就开始：编码与 OCR 识别同时进行，识别完成时
 截图通常已经编好，不增加出译文的延迟；需要的尺寸由引擎名册里各实例的 EngineInfo.image_max_side 决定，
@@ -38,14 +40,14 @@ from lst.contracts.events import (
     TranslateText,
 )
 from lst.contracts.ids import Entry, Lang, SegmentId, SessionId
-from lst.contracts.ocr import CaptureCompleted, RawImage
+from lst.contracts.ocr import CaptureCompleted, OcrCompleted, RawImage
 from lst.contracts.ports import TranslationCache
 from lst.contracts.translation import AttemptView, Engine, JobImage, Segment, SegmentView
 from lst.kernel import EventBus, ModuleContext
-from lst.services.race.config import BilingualConfig, RaceConfig, ScreenshotConfig
-from lst.services.race.langid import LanguageDetector, SupportsLanguageDetection, normalize_lang
+from lst.services.race.config import BilingualConfig, ScreenshotConfig
+from lst.services.race.langid import LanguageDetector, SupportsLanguageDetection, has_text, normalize_lang
 from lst.services.race.paragraphs import split_paragraphs
-from lst.services.race.scheduler import LangPair, RaceMode, RaceScheduler
+from lst.services.race.scheduler import LangPair, RaceScheduler
 from lst.services.race.screenshot import encode_screenshot
 
 ImageEncoder = Callable[[RawImage, int], JobImage]
@@ -61,7 +63,7 @@ def bilingual_langs(
     - 目标语言：手动指定的 target 优先；否则按互译对，源语言是 pair[0] 时译成 pair[1]，
       是 pair[1] 时译成 pair[0]，两者都不是时译成 pair[0]。
     - 源语言为自动且检测不出时，源语言取 pair[0]。此时目标语言若也是自动，就取源语言本身，
-      该段按“源语言与目标语言相同”跳过竞速，界面显示原文（RACE-09）；手动指定了目标语言时照常翻译。
+      该段按“源语言与目标语言相同”跳过，界面显示原文（RACE-09）；手动指定了目标语言时照常翻译。
     """
     resolved = source if source is not None else detected
     if resolved is None:
@@ -104,15 +106,6 @@ class _Capture:
     encodings: dict[int, asyncio.Task[JobImage | None]]
 
 
-@dataclass(frozen=True, slots=True)
-class _BilingualSession:
-    """双语窗口的当前会话：会话号、各段文本与各段语言对，用来判断 Ctrl+Enter 时文本是否未变。"""
-
-    session_id: SessionId
-    texts: tuple[str, ...]
-    langs: tuple[LangPair, ...]
-
-
 class RaceModule:
     """竞速模块（实现 kernel 的 Module 协议）。
 
@@ -140,25 +133,14 @@ class RaceModule:
         self._clock = clock if clock is not None else time.monotonic
         self._frame_interval = frame_interval if frame_interval is not None else 1 / 60
         self._logger = logging.getLogger(__name__)
-        self._race = RaceConfig()
         self._screenshot = ScreenshotConfig()
         self._bilingual_config = BilingualConfig()
         self._scheduler: RaceScheduler | None = None
         self._running = False
         self._generation: dict[Entry, int] = dict.fromkeys(Entry, 0)
-        self._bilingual: _BilingualSession | None = None
         self._warm_up: asyncio.Task[None] | None = None
 
     # ---- 查询 ----
-
-    @property
-    def mode(self) -> RaceMode:
-        """调度器当前的竞速模式；模块启动前为配置中的模式。"""
-        return self._scheduler.mode if self._scheduler is not None else self._race.mode
-
-    @property
-    def race_config(self) -> RaceConfig:
-        return self._race
 
     @property
     def screenshot_config(self) -> ScreenshotConfig:
@@ -183,7 +165,6 @@ class RaceModule:
         self._scheduler = RaceScheduler(
             (),
             _BusSink(ctx.bus),
-            mode=self._race.mode,
             cache=self._cache,
             clock=self._clock,
             frame_interval=self._frame_interval,
@@ -199,6 +180,7 @@ class RaceModule:
         ctx.subscribe(EngineRoster, self._on_roster)
         ctx.subscribe(TranslateText, self._on_translate)
         ctx.subscribe(CaptureCompleted, self._on_capture)
+        ctx.subscribe(OcrCompleted, self._on_ocr_completed)
         self._warm_up = asyncio.create_task(self._warm_up_detector(), name="race-langid-warm-up")
 
     async def stop(self) -> None:
@@ -208,7 +190,6 @@ class RaceModule:
         self._running = False
         for entry in Entry:
             self._generation[entry] += 1
-        self._bilingual = None
         capture, self._capture = self._capture, None
         if capture is not None:
             # 模块停止后编码结果没有用处。线程里的编码无法中断，取消只是不再等待它，免得任务在
@@ -229,12 +210,13 @@ class RaceModule:
     # ---- 截屏入口 ----
 
     async def start_screenshot_session(self, session_id: SessionId, segments: Sequence[Segment]) -> None:
-        """开始一个截屏翻译会话（M4 在收到 OcrCompleted 时调用）。
+        """开始一个截屏翻译会话（收到 OcrCompleted 时由 _on_ocr_completed 调用）。
 
-        每段检测语言，目标语言为 screenshot.target_lang，检测不出的段按同语言跳过；
-        计费实例直接参赛。同一入口的旧会话被取消（CAP-06、RACE-01）。
+        各段的语言按同一张截屏的上下文检测（langid.resolve_with_context），目标语言为 screenshot.target_lang；
+        没有可翻译文字的段按“无需翻译”跳过，检测不出的段按同语言跳过。全部可用实例都参加（RACE-02）。
+        同一入口的旧会话被取消（CAP-06、RACE-01）。
         会话号与最近一次 CaptureCompleted 相同时，接收截图的实例随任务收到缩小后的截图（ENG-07）；
-        语言检测与等待截图编码同时进行。编码失败时这些实例照常参赛，只是不带图。
+        语言检测与等待截图编码同时进行。编码失败时这些实例照常翻译，只是不带图。
         检测期间又开始了新的截屏会话时，这次请求作废。模块停止后调用没有效果；
         段号重复等非法参数抛出 ValueError。
         """
@@ -248,13 +230,15 @@ class RaceModule:
         detected, images = await asyncio.gather(self._detect(batch), self._screenshot_images(session_id))
         if not self._is_current(Entry.SCREENSHOT, generation):
             return
-        langs = {s.id: screenshot_langs(lang, target) for s, lang in zip(batch, detected, strict=True)}
+        langs: dict[SegmentId, LangPair | None] = {
+            s.id: screenshot_langs(lang, target) if has_text(s.text) else None
+            for s, lang in zip(batch, detected, strict=True)
+        }
         await self._scheduler.start_session(
             Entry.SCREENSHOT,
             session_id,
             batch,
             langs,
-            include_billing=True,
             context=_context(batch),
             images=images,
         )
@@ -270,17 +254,43 @@ class RaceModule:
             self._apply_roster(roster)
 
     def _on_capture(self, event: CaptureCompleted) -> None:
-        """保存截图，为名册里接收截图的实例开始编码。之前保存的截图和未完成的编码丢弃。"""
+        """新的截屏完成：取消上一次截屏翻译的会话（CAP-06），保存截图，为名册里接收截图的实例开始编码。
+
+        之前保存的截图丢弃，但未完成的编码不取消（见 _drop_capture）。上一次截屏的会话此时已经没有用处：
+        覆盖窗口只显示最新的截屏，继续翻译只会占用引擎和费用，所以在识别新截图的同时就取消它。
+        """
         if not self._running:
             return
+        if self._scheduler is not None:
+            self._scheduler.cancel_session(Entry.SCREENSHOT)
         self._drop_capture()
         capture = _Capture(event.session_id, event.image, {})
         self._capture = capture
         for side in self._image_sides():
             self._encoding(capture, side)
 
+    async def _on_ocr_completed(self, event: OcrCompleted) -> None:
+        """识别完成：以同一会话号开始截屏翻译会话（架构文档第 7 章第 6 步）。
+
+        最近一次截屏不是这个会话时丢弃结果（CAP-06）；没有收到过截屏（例如模块在截屏之后才启动）时照常开始。
+        没有段时不开始会话，覆盖窗口显示“没有识别到文字”。参数非法（段号重复）只记日志，不让异常传到总线。
+        """
+        if not self._running:
+            return
+        capture = self._capture
+        if capture is not None and capture.session_id != event.session_id:
+            self._logger.info("会话 %s 的识别结果晚于新的截屏，已丢弃", event.session_id)
+            return
+        if not event.segments:
+            self._logger.info("会话 %s 没有识别到文字，不开始竞速", event.session_id)
+            return
+        try:
+            await self.start_screenshot_session(event.session_id, [s.segment for s in event.segments])
+        except ValueError:
+            self._logger.exception("会话 %s 的截屏翻译无法开始", event.session_id)
+
     async def _on_translate(self, command: TranslateText) -> None:
-        """双语窗口的翻译请求（架构文档 11.6 节）。"""
+        """双语窗口的翻译请求（架构文档 11.6 节）：开始新会话，只交给请求里选中的服务。"""
         scheduler = self._scheduler
         if scheduler is None or not self._running:
             return
@@ -289,7 +299,6 @@ class RaceModule:
         segments = split_paragraphs(command.text)
         if not segments:
             scheduler.cancel_session(Entry.BILINGUAL)
-            self._bilingual = None
             return
         settings = self._bilingual_config
         source = self._manual_lang(command.source, "源语言")
@@ -297,46 +306,25 @@ class RaceModule:
         detected = await self._detect(segments) if source is None else [None] * len(segments)
         if not self._is_current(Entry.BILINGUAL, generation):
             return
-        texts = tuple(s.text for s in segments)
-        langs = tuple(bilingual_langs(lang, source, target, settings.pair) for lang in detected)
-
-        current = self._bilingual
-        if (
-            command.include_billing
-            and current is not None
-            and command.session_id == current.session_id
-            and (current.texts, current.langs) == (texts, langs)
-        ):
-            # Ctrl+Enter 且窗口沿用了会话号：计费实例加入当前会话（6.3 节“晚加入”）。
-            # 会话号相同而切段结果不同只会出自窗口的缺陷，此时按新会话处理，结果至少与输入一致。
-            await scheduler.extend_session(current.session_id)
-            return
-
-        new = _BilingualSession(command.session_id, texts, langs)
-        previous, self._bilingual = self._bilingual, new
-        try:
-            await scheduler.start_session(
-                Entry.BILINGUAL,
-                command.session_id,
-                segments,
-                {s.id: pair for s, pair in zip(segments, langs, strict=True)},
-                include_billing=command.include_billing or settings.auto_billing,
-                context=_context(segments),
-            )
-        except ValueError:
-            # 参数非法时调度器不改动旧会话（例如会话号与截屏会话重复），当前会话的记录也恢复原样。
-            if self._bilingual is new:
-                self._bilingual = previous
-            raise
+        langs: dict[SegmentId, LangPair | None] = {
+            s.id: bilingual_langs(lang, source, target, settings.pair) if has_text(s.text) else None
+            for s, lang in zip(segments, detected, strict=True)
+        }
+        engines = () if command.engine_id is None else (command.engine_id,)
+        await scheduler.start_session(
+            Entry.BILINGUAL,
+            command.session_id,
+            segments,
+            langs,
+            engines=engines,
+            context=_context(segments),
+        )
 
     # ---- 内部 ----
 
     def _apply_config(self, config: AppConfig) -> None:
-        self._race = self._parse(config, "race", RaceConfig, self._race)
         self._screenshot = self._parse(config, "screenshot", ScreenshotConfig, self._screenshot)
         self._bilingual_config = self._parse(config, "bilingual", BilingualConfig, self._bilingual_config)
-        if self._scheduler is not None and self._scheduler.mode is not self._race.mode:
-            self._scheduler.set_mode(self._race.mode)
 
     def _parse[T: BaseModel](self, config: AppConfig, name: str, model: type[T], previous: T) -> T:
         """解析一节配置：缺失时用默认值。配置服务已经校验过，解析失败说明组合根没有注册这一节的模型，

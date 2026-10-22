@@ -240,3 +240,60 @@ def test_cpu_engine_config_is_complete() -> None:
     }
     assert sub(cpu_engine_config("PP-OCRv5_mobile_det", 8), "paddle_static")["run_mode"] == "paddle"
     assert "PP-OCRv5_mobile_det" not in ONEDNN_MODELS
+
+
+def test_onednn_off_runs_every_model_the_plain_way() -> None:
+    """enable_mkldnn 为 false 时（旧版 pp_structure_ocr_enable_mkldnn 的对应项）全部模型用 paddle。"""
+    for name in ("PP-OCRv5_mobile_rec", "PP-LCNet_x1_0_doc_ori", "PP-OCRv5_mobile_det"):
+        assert sub(cpu_engine_config(name, 8, onednn=False), "paddle_static")["run_mode"] == "paddle"
+    enabled = cpu_engine_config("PP-OCRv5_mobile_rec", 8, onednn=True)
+    assert sub(enabled, "paddle_static")["run_mode"] == "mkldnn"
+
+
+def test_every_stage_model_comes_from_settings() -> None:
+    """[ocr_paddle] 的 <环节>_model 字段经 Configure 进入产线配置（OCRE-08）。"""
+    settings = OcrSettings.parse(
+        {
+            "model_cache_dir": "unused",
+            "detection_model": "PP-OCRv5_server_det",
+            "recognition_model": "PP-OCRv5_server_rec",
+            "layout_model": "PP-DocLayout-S",
+            "region_model": "PP-DocBlockLayout",
+            "table_model": "SLANeXt_wireless",
+            "formula_model": "PP-FormulaNet_plus-S",
+            "chart_model": "PP-Chart2Table",
+            "textline_orientation_model": "PP-LCNet_x0_25_textline_ori",
+            "doc_orientation_model": "PP-LCNet_x1_0_doc_ori",
+            "doc_unwarping_model": "UVDoc",
+        }
+    )
+    features = frozenset(
+        {"table", "formula", "chart", "doc_orientation", "doc_unwarping", "textline_orientation"}
+    )
+    config = structure_config(BASE_STRUCTURE, settings, features)
+    ocr = sub(config, "SubPipelines", "GeneralOCR", "SubModules")
+    assert sub(ocr, "TextDetection")["model_name"] == "PP-OCRv5_server_det"
+    assert sub(ocr, "TextRecognition")["model_name"] == "PP-OCRv5_server_rec"
+    assert sub(ocr, "TextLineOrientation")["model_name"] == "PP-LCNet_x0_25_textline_ori"
+    assert sub(config, "SubModules", "LayoutDetection")["model_name"] == "PP-DocLayout-S"
+    assert sub(config, "SubModules", "RegionDetection")["model_name"] == "PP-DocBlockLayout"
+    table = sub(config, "SubPipelines", "TableRecognition", "SubModules")
+    assert sub(table, "WirelessTableStructureRecognition")["model_name"] == "SLANeXt_wireless"
+    assert sub(table, "WiredTableStructureRecognition")["model_name"] == "SLANeXt_wired"
+    formula = sub(config, "SubPipelines", "FormulaRecognition", "SubModules", "FormulaRecognition")
+    assert formula["model_name"] == "PP-FormulaNet_plus-S"
+    names = model_names(config)
+    assert "PP-OCRv5_server_det" in names and "SLANet_plus" not in names
+
+
+def test_legacy_det_model_key_still_works() -> None:
+    settings = OcrSettings.parse({"model_cache_dir": "unused", "det_model": "PP-OCRv3_mobile_det"})
+    assert settings.det_model == "PP-OCRv3_mobile_det"
+    settings = OcrSettings.parse(
+        {
+            "model_cache_dir": "unused",
+            "det_model": "PP-OCRv3_mobile_det",
+            "detection_model": "PP-OCRv5_server_det",
+        }
+    )
+    assert settings.det_model == "PP-OCRv5_server_det"

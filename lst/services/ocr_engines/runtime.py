@@ -1,13 +1,14 @@
-r"""PaddleOCR 运行环境的安装：uv 命令行、环境变量、外部命令运行器与失败分类。
+r"""需要下载的 OCR 引擎的运行环境安装：uv 命令行、环境变量、外部命令运行器与失败分类。
 
 安装版里没有 pip，运行环境用随安装包分发的 ``tools\uv.exe`` 安装：
 
     uv.exe pip install --python runtime\python.exe --target <site.part> --no-deps
-        --no-build [--require-hashes] [--index-url <镜像>] -r app\ocr-paddle-requirements.txt
+        --no-build [--require-hashes] [--index-url <镜像>] -r app\ocr-<引擎>-<版本>-requirements.txt
 
 - ``--no-build``：只装预编译的 wheel。从源码包构建要执行包里的构建脚本，用户机器上也没有编译器；
   清单里某个包没有 Windows wheel 时安装直接失败，而不是尝试构建；
-- ``--no-deps``：版本清单是构建时按 .venv-ocr 冻结的完整清单，不再解析依赖，装出的版本与开发环境一致；
+- ``--no-deps``：版本清单是构建时按 .venv-ocr 冻结（GPU 版另外解析过推理库的依赖）的完整清单，不再解析依赖，
+  装出的版本与开发环境一致；清单带 RESOLVE_MARKER 时例外，见该常量；
 - ``--require-hashes``：清单带 ``--hash=`` 时加上，任何一个包的哈希不符都整体失败；
 - ``--no-config``：不读用户机器上的 uv.toml / pyproject.toml，安装结果只由命令行决定；
 - 缓存目录 ``UV_CACHE_DIR`` 指向引擎目录下的 uv-cache：一来与运行环境在同一个卷上，uv 可以用硬链接；
@@ -32,6 +33,7 @@ from lst.services._shared.download import file_sha256
 from lst.services.ocr_engines.net import scrub
 
 __all__ = [
+    "RESOLVE_MARKER",
     "CommandResult",
     "CommandRunner",
     "classify_uv_failure",
@@ -39,6 +41,7 @@ __all__ = [
     "failure_detail",
     "file_sha256",
     "requires_hashes",
+    "requires_resolution",
     "run_command",
     "uv_environment",
     "uv_install_args",
@@ -175,9 +178,22 @@ async def run_command(args: Sequence[str], env: Mapping[str, str]) -> CommandRes
     return CommandResult(returncode, "\n".join(tail))
 
 
+RESOLVE_MARKER: Final = "# lst: resolve-dependencies"
+"""版本清单里这一行表示安装时要解析依赖（不加 --no-deps）。
+
+构建机离线、无法在构建时解析 GPU 版依赖（CUDA 运行库）时，scripts/build_installer.py 写出不带哈希、带这一行的
+清单：清单里的包仍是精确版本，uv 只补上清单没有列出的依赖（例如 paddlepaddle-gpu 需要的 nvidia-*-cu12）。
+"""
+
+
 def requires_hashes(requirements: str) -> bool:
     """版本清单是否带哈希（uv pip compile --generate-hashes 的输出带 ``--hash=sha256:``）。"""
     return "--hash=" in requirements
+
+
+def requires_resolution(requirements: str) -> bool:
+    """版本清单是否要求安装时解析依赖（带 RESOLVE_MARKER 这一行）。"""
+    return any(line.strip() == RESOLVE_MARKER for line in requirements.splitlines())
 
 
 def uv_install_args(
@@ -188,14 +204,15 @@ def uv_install_args(
     *,
     hashed: bool,
     index_url: str | None = None,
+    resolve: bool = False,
 ) -> list[str]:
-    """安装运行环境的 uv 命令行，见模块说明。"""
+    """安装运行环境的 uv 命令行，见模块说明。resolve 为真时不加 --no-deps（见 RESOLVE_MARKER）。"""
     args = [
         str(uv), "pip", "install",
         "--no-config", "--no-progress", "--color", "never",
         "--python", str(python),
         "--target", str(target),
-        "--no-deps", "--no-build",
+        *(() if resolve else ("--no-deps",)), "--no-build",
     ]  # fmt: skip
     if hashed:
         args.append("--require-hashes")

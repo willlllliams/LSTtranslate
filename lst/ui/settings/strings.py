@@ -4,7 +4,7 @@
 按钮文案带 Qt 助记符 ``&``，按 Alt 加字母即可触发（需求 UI-07）。设置卡片的标题与说明按“设置项的位置”取键：
 
 - 配置节里的设置项：``settings.f.<节>.<字段>.title`` 与 ``.desc``，嵌套字段用点连接，例如
-  ``settings.f.race.show_source_marker.bilingual.title``；
+  ``settings.f.race.show_source_marker.overlay.title``；
 - 引擎实例的参数：``settings.ef.<字段>.title`` 与 ``.desc``；
 - 取值的显示名：``settings.choice.<节>.<字段>.<取值>``，引擎参数用 ``settings.choice.engine.<字段>.<取值>``。
 
@@ -15,7 +15,7 @@
 from datetime import UTC, datetime
 from typing import Final
 
-from lst.ui.i18n import Catalog, register_catalog, tr
+from lst.ui.i18n import Catalog, is_registered, register_catalog, tr
 
 
 def _field(key: str, zh: tuple[str, str], en: tuple[str, str]) -> Catalog:
@@ -33,15 +33,6 @@ def _choices(prefix: str, values: dict[str, tuple[str, str]]) -> Catalog:
 CATALOG: Final[Catalog] = {
     # 窗口与导航
     "settings.window.title": {"zh-Hans": "设置", "en": "Settings"},
-    "settings.nav.label": {"zh-Hans": "设置页面", "en": "Settings pages"},
-    "settings.nav.general": {"zh-Hans": "常规", "en": "General"},
-    "settings.nav.hotkeys": {"zh-Hans": "热键", "en": "Hotkeys"},
-    "settings.nav.capture": {"zh-Hans": "截屏与识别", "en": "Capture & recognition"},
-    "settings.nav.engines": {"zh-Hans": "翻译引擎", "en": "Translation engines"},
-    "settings.nav.race": {"zh-Hans": "竞速", "en": "Racing"},
-    "settings.nav.models": {"zh-Hans": "模型", "en": "Models"},
-    "settings.nav.about": {"zh-Hans": "关于与诊断", "en": "About & diagnostics"},
-    "settings.nav.tip": {"zh-Hans": "{name}（Ctrl+{number}）", "en": "{name} (Ctrl+{number})"},
     "settings.notice.rejected": {
         "zh-Hans": "有设置没有保存：{where}：{reason}",
         "en": "A setting was not saved: {where}: {reason}",
@@ -55,9 +46,9 @@ CATALOG: Final[Catalog] = {
     "settings.section.ocr_features": {"zh-Hans": "识别内容", "en": "What to recognize"},
     "settings.section.preprocess": {"zh-Hans": "截图预处理", "en": "Screenshot preprocessing"},
     "settings.section.translation": {"zh-Hans": "翻译", "en": "Translation"},
-    "settings.section.race_mode": {"zh-Hans": "竞速方式", "en": "Race mode"},
     "settings.section.bilingual": {"zh-Hans": "双语窗口", "en": "Bilingual window"},
     "settings.section.models_dir": {"zh-Hans": "存放位置", "en": "Location"},
+    "settings.section.race_mode": {"zh-Hans": "来源标记", "en": "Source marker"},
     "settings.section.stats": {"zh-Hans": "竞速统计", "en": "Race statistics"},
     # 通用控件
     "settings.default_value": {"zh-Hans": "默认", "en": "Default"},
@@ -79,6 +70,8 @@ CATALOG: Final[Catalog] = {
     "settings.dir.placeholder": {"zh-Hans": "默认位置", "en": "Default location"},
     "settings.confirm.yes": {"zh-Hans": "确定(&Y)", "en": "&Yes"},
     "settings.confirm.no": {"zh-Hans": "取消(&N)", "en": "&No"},
+    "settings.confirm.continue": {"zh-Hans": "继续(&C)", "en": "&Continue"},
+    "settings.confirm.cancel": {"zh-Hans": "取消", "en": "Cancel"},
     "settings.pair.second": {"zh-Hans": "第二种语言", "en": "Second language"},
     # 热键录入
     "settings.hotkey.record": {
@@ -146,6 +139,11 @@ CATALOG: Final[Catalog] = {
         "zh-Hans": "随系统提供，识别速度快。只识别文字，不分析版面；可识别的语言取决于系统安装的 OCR 语言。",
         "en": "Comes with Windows and is fast. Reads text only, without layout; "
         "the languages depend on the OCR languages installed in Windows.",
+    },
+    "settings.ocr_engine.rapid.title": {"zh-Hans": "RapidOCR", "en": "RapidOCR"},
+    "settings.ocr_engine.rapid.desc": {
+        "zh-Hans": "轻量，按行给出位置，只有文本模式。",
+        "en": "Lightweight. Gives the position of each line; text mode only.",
     },
     "settings.ocr_engine.paddle.title": {"zh-Hans": "PaddleOCR", "en": "PaddleOCR"},
     "settings.ocr_engine.paddle.desc": {
@@ -223,6 +221,12 @@ CATALOG: Final[Catalog] = {
         "自动：按 Windows 的显示语言选择。",
         "en": "Windows built-in OCR only reads languages whose OCR feature is installed, so only those are listed. "
         "Auto picks one from the Windows display language.",
+    },
+    "settings.ocr.language.rapid": {
+        "zh-Hans": "RapidOCR 的识别模型覆盖中文、日文、英文和常见的拉丁字母语言，这里只列出这些语言。"
+        "这些语言用同一个识别模型，自动与指定语言的识别效果相同。",
+        "en": "RapidOCR's recognition model covers Chinese, Japanese, English and common Latin-script languages, "
+        "so only those are listed. They share one model, so Auto works as well as choosing a language.",
     },
     # 截屏与识别
     **_field(
@@ -337,35 +341,9 @@ CATALOG: Final[Catalog] = {
     ),
     # 竞速
     **_field(
-        "settings.f.race.mode",
-        (
-            "结束方式",
-            "节省模式：优先级更低的排队任务在开始前取消，节省算力和费用。"
-            "完整模式：所有引擎都跑完，便于比较速度和质量。两种模式最终显示的译文相同。",
-        ),
-        (
-            "How a race ends",
-            "Saver mode cancels queued lower-priority requests before they start, saving compute and cost. "
-            "Full mode lets every engine finish so you can compare speed and quality. "
-            "Both modes show the same final translation.",
-        ),
-    ),
-    **_choices(
-        "settings.choice.race.mode",
-        {"saver": ("节省模式", "Saver mode"), "full": ("完整模式", "Full mode")},
-    ),
-    **_field(
         "settings.f.race.show_source_marker.overlay",
         ("截屏翻译显示来源标记", "在每段译文旁显示当前胜出引擎的标识颜色。"),
         ("Source marker in the overlay", "Shows the colour of the engine whose translation is displayed."),
-    ),
-    **_field(
-        "settings.f.race.show_source_marker.bilingual",
-        ("双语窗口显示来源标记", "在每段译文旁显示当前胜出引擎的标识颜色。"),
-        (
-            "Source marker in the bilingual window",
-            "Shows the colour of the engine whose translation is displayed.",
-        ),
     ),
     **_field(
         "settings.f.bilingual.pair",
@@ -383,18 +361,6 @@ CATALOG: Final[Catalog] = {
     ),
     "settings.suffix.ms": {"zh-Hans": " 毫秒", "en": " ms"},
     **_field(
-        "settings.f.bilingual.auto_billing",
-        (
-            "计费引擎自动翻译",
-            "关闭时，计费引擎只在按 Ctrl+Enter 时参与；开启后输入停顿时也会参与，每次停顿都可能产生费用。",
-        ),
-        (
-            "Paid engines translate automatically",
-            "When off, paid engines only join when you press Ctrl+Enter. "
-            "When on, they also join whenever you pause typing, and every pause may cost money.",
-        ),
-    ),
-    **_field(
         "settings.f.bilingual.layout",
         ("窗口排列", "输入区与译文区上下排列，或左右排列。"),
         ("Layout", "Place the input and translation areas one above the other, or side by side."),
@@ -405,9 +371,9 @@ CATALOG: Final[Catalog] = {
     ),
     # 竞速统计
     "settings.stats.intro": {
-        "zh-Hans": "统计只计入真正执行过的请求，命中缓存和执行前被取消的不计入。用它判断各引擎的快慢与可靠程度，调整优先级。",
-        "en": "Only requests that actually ran are counted; cache hits and requests cancelled before "
-        "starting are not. Use it to judge how fast and reliable each engine is and to adjust priorities.",
+        "zh-Hans": "统计只计入执行完并给出结果的请求，命中缓存和被取消的不计入，取消也不算失败。用它判断各引擎的快慢与可靠程度，调整优先级。",
+        "en": "Only requests that ran to a result are counted; cache hits and cancelled requests are "
+        "not, and a cancellation is not a failure. Use it to judge how fast and reliable each engine is and to adjust priorities.",
     },
     "settings.stats.table": {"zh-Hans": "各引擎的竞速统计", "en": "Race statistics per engine"},
     "settings.stats.col.engine": {"zh-Hans": "引擎", "en": "Engine"},
@@ -509,6 +475,7 @@ CATALOG: Final[Catalog] = {
             "google": ("Google 翻译", "Google Translate"),
             "baidu": ("百度翻译", "Baidu Translate"),
             "local_nmt": ("本地翻译模型", "Local translation models"),
+            "dictionary": ("词典（逐词粗译）", "Dictionary (word-by-word)"),
         },
     ),
     **_choices(
@@ -540,8 +507,8 @@ CATALOG: Final[Catalog] = {
     ),
     **_field(
         "settings.ef.enabled",
-        ("启用", "关闭后这个实例不参与竞速。"),
-        ("Enabled", "A disabled engine does not join the race."),
+        ("启用", "关闭后这个实例不参与竞速，双语窗口的服务列表里也不再列出它。"),
+        ("Enabled", "A disabled engine does not join the race and is not listed in the bilingual window."),
     ),
     **_field(
         "settings.ef.color",
@@ -693,14 +660,33 @@ CATALOG: Final[Catalog] = {
             "If the local model takes longer, the translation component restarts. In seconds.",
         ),
     ),
+    **_field(
+        "settings.ef.pivot_via_english",
+        (
+            "经英语中转",
+            "两种语言都不是英语时，先用“源语言→英语”的词典，再用“英语→目标语言”的词典。"
+            "两次逐词替换的误差会叠加，译文更粗糙。简体与繁体中文之间不中转。",
+        ),
+        (
+            "Pivot through English",
+            "When neither language is English, translates with the source → English dictionary and then the "
+            "English → target dictionary. The errors of both passes add up, so the result is rougher. "
+            "Simplified and Traditional Chinese are never pivoted.",
+        ),
+    ),
     # 模型
     **_field(
         "settings.f.nmt.model_dir",
-        ("模型目录", "本地翻译模型的存放位置。留空使用默认位置。修改后程序会在新目录里重新查找模型。"),
         (
-            "Model folder",
-            "Where local translation models are stored. Leave empty for the default location. "
-            "After a change, models are looked up in the new folder.",
+            "本地翻译模型的单独目录",
+            "通常留空：本地翻译模型放在模型目录（常规 › 存储位置）下的 nmt 子目录里，输入框里的灰字就是这个位置。"
+            "要直接使用别处已有的 .argosmodel 文件时，在这里指定它们所在的目录；更改模型目录时不会移动这里的文件。",
+        ),
+        (
+            "Separate folder for local translation models",
+            "Usually left empty: local translation models are kept in the nmt subfolder of the model folder "
+            "(General › Storage locations), shown in grey in the box. To use .argosmodel files that already exist "
+            "elsewhere, set their folder here; changing the model folder does not move the files in it.",
         ),
     ),
     "settings.models.intro": {
@@ -878,8 +864,8 @@ register_catalog(CATALOG)
 
 
 def has_text(key: str) -> bool:
-    """文案键是否已经登记。"""
-    return key in CATALOG
+    """文案键是否已经登记：查全部界面模块登记的文案，设置窗口的子文案表（strings_free、strings_ocr 等）也算在内。"""
+    return is_registered(key)
 
 
 def text_or(key: str, fallback: str) -> str:

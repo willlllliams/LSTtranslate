@@ -18,6 +18,7 @@ from lst.contracts.events import WorkerStatus, WorkerStatuses
 from lst.contracts.ids import SessionId
 from lst.contracts.ocr import (
     BBox,
+    BlockCategory,
     CaptureCompleted,
     CaptureGeometry,
     OcrCompleted,
@@ -26,6 +27,7 @@ from lst.contracts.ocr import (
     RetryOcr,
     TextLine,
 )
+from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineKind
 from lst.contracts.ports import WorkerState
 from lst.contracts.worker_protocol import (
     CANCELLED,
@@ -368,7 +370,7 @@ async def test_payload_is_trimmed_to_stride_times_height(make: Factory) -> None:
         ({"mode": "text"}, 30),
         ({"engine": "paddle", "mode": "text"}, 30),
         ({"engine": "paddle", "mode": "structure", "table": False}, 60),
-        ({"engine": "paddle", "mode": "structure", "formula": True}, 180),
+        ({"engine": "paddle", "mode": "structure", "formula": True}, 120),
         ({"engine": "paddle", "mode": "structure", "table": True, "formula": True, "chart": True}, 240),
         ({"engine": "windows", "mode": "structure", "table": True, "formula": True}, 30),
     ],
@@ -478,6 +480,24 @@ async def test_windows_engine_result_is_converted_in_text_mode(make: Factory) ->
     harness.channel.last.result(text_mode_json())
     await harness.settle()
     assert [s.segment.id for s in harness.completed[0].segments] == ["p1", "p2"]
+
+
+async def test_requests_follow_the_engine_the_process_actually_runs(make: Factory) -> None:
+    """PaddleOCR 没装好，组合根让进程先跑 Windows OCR：请求按 Windows OCR 生成（OCRE-04）。"""
+    harness = await make()
+    harness.configure({"engine": "paddle", "mode": "structure"})
+    harness.bus.publish(OcrEngineCatalog(active=OcrEngineKind.PADDLE, running=OcrEngineKind.WINDOWS))
+    await harness.settle()
+    assert harness.module.config.engine is OcrEngineKind.WINDOWS
+    harness.capture("s1")
+    await harness.settle()
+    assert harness.channel.last.request.options["mode"] == "text"
+
+    # PaddleOCR 装好、进程换回后，请求按配置生成。
+    harness.bus.publish(OcrEngineCatalog(active=OcrEngineKind.PADDLE, running=OcrEngineKind.PADDLE))
+    await harness.settle()
+    assert harness.module.config.engine is OcrEngineKind.PADDLE
+    assert harness.module.config.mode.value == "structure"
 
 
 async def test_bad_blocks_do_not_fail_the_result(make: Factory) -> None:
@@ -945,5 +965,9 @@ async def test_text_lines_survive_into_segments_unchanged(make: Factory) -> None
     await harness.settle()
     harness.channel.last.result(text_mode_json())
     await harness.settle()
-    (block,) = harness.completed[0].blocks
-    assert block.lines[1] == TextLine(BBox(20, 20, 320, 40), "one", 0.95)
+    # 聚合步骤把文本行合并成段落块，成员行原样进入段落块的 lines。
+    blocks = harness.completed[0].blocks
+    assert all(block.category is BlockCategory.TEXT for block in blocks)
+    lines = [line for block in blocks for line in block.lines]
+    assert TextLine(BBox(20, 20, 320, 40), "one", 0.95) in lines
+    assert len(lines) == 5

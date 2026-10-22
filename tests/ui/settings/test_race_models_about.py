@@ -27,7 +27,7 @@ from lst.contracts.models import (
 )
 from lst.contracts.ports import WorkerState
 from lst.ui.settings.page_about import AboutPage
-from lst.ui.settings.page_models import ModelsPage
+from lst.ui.settings.page_models import NmtModelsPage
 from lst.ui.settings.pages import RacePage
 from tests.ui.settings.conftest import Harness, StartSettings
 from tests.ui.settings.support import default_config
@@ -192,15 +192,15 @@ def sample_catalog() -> ModelCatalog:
     )
 
 
-async def open_models(harness: Harness) -> ModelsPage:
+async def open_models(harness: Harness) -> NmtModelsPage:
     window = await harness.open()
-    window.show_page("models")
-    page = window.page("models")
-    assert isinstance(page, ModelsPage)
+    window.show_page("models.nmt")
+    page = window.page("models.nmt")
+    assert isinstance(page, NmtModelsPage)
     return page
 
 
-def tree_rows(page: ModelsPage) -> list[list[str]]:
+def tree_rows(page: NmtModelsPage) -> list[list[str]]:
     return [
         [page.tree.topLevelItem(row).text(col) for col in range(3)]  # type: ignore[union-attr]
         for row in range(page.tree.topLevelItemCount())

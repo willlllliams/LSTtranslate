@@ -4,8 +4,12 @@
 交给视图绘制；视图把按钮操作交回展示器，展示器转换成模型管理的命令。本模块不依赖 Qt，
 画面模型的内容（列出哪些模型、每行的状态和按钮）都可以在没有 Qt 对象的情况下检查。
 
-联网时机（需求 PRV-01）：引导窗口显示时，如果本次运行还没有获取过模型索引，展示器发送一次
-``RefreshModelCatalog``；模型的下载只在用户点击“下载”或“重试”后发生。
+联网时机（需求 PRV-01）：引导窗口显示时，如果本次运行还没有获取过模型索引（管理词典包时还有词典索引），
+展示器发送一次 ``RefreshModelCatalog``；模型的下载只在用户点击“下载”或“重试”后发生。
+
+词典：模型管理模块管理词典包时，引导在本地翻译模型下面列出互译对两个方向的词典包（``default_dict_ids``），
+每行带许可证与署名。“同时下载词典”默认勾选，勾选时“下载”一并下载这些词典包；词典是可选的，
+“完成”只看本地翻译模型是否装齐。
 """
 
 import logging
@@ -22,7 +26,9 @@ from lst.contracts.models import (
     DownloadProgress,
     ModelCatalog,
     ModelInfo,
+    ModelKind,
     RefreshModelCatalog,
+    default_dict_ids,
     default_model_ids,
 )
 from lst.kernel import EventBus
@@ -60,11 +66,16 @@ class ModelRow:
     progress: int | None
     can_cancel: bool
     can_retry: bool
+    attribution: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class OnboardingScreen:
-    """引导窗口的完整内容。notice 是模型列表下方的提示（获取中、获取失败、没有模型），没有时为空串。"""
+    """引导窗口的完整内容。notice 是模型列表下方的提示（获取中、获取失败、没有模型），没有时为空串。
+
+    词典部分：show_dicts 为假时整个部分不显示；dict_rows 是互译对需要的词典包，attribution 是每个包的署名；
+    include_dicts 是“同时下载词典”的勾选状态；dict_notice 是词典索引获取中或获取失败的提示。
+    """
 
     window_title: str
     heading: str
@@ -83,6 +94,13 @@ class OnboardingScreen:
     finish_tip: str
     cancel_text: str
     retry_text: str
+    show_dicts: bool = False
+    dicts_title: str = ""
+    dict_rows: tuple[ModelRow, ...] = ()
+    dict_notice: str = ""
+    include_dicts: bool = True
+    include_dicts_text: str = ""
+    dict_attribution: str = ""
 
 
 class OnboardingIntents(Protocol):
@@ -98,6 +116,10 @@ class OnboardingIntents(Protocol):
 
     def retry_index(self) -> None:
         """模型列表获取失败后点击“重试”。"""
+        ...
+
+    def set_include_dicts(self, include: bool) -> None:
+        """勾选或取消“同时下载词典”。"""
         ...
 
     def finish(self) -> None:
@@ -151,19 +173,37 @@ def read_pair(config: AppConfig | None) -> tuple[Lang, Lang]:
     return pair if pair[0] != pair[1] else DEFAULT_PAIR
 
 
+def _size_text(model: ModelInfo) -> str:
+    """大小一栏：词典包在大小后面写上许可证。"""
+    size = format_size(model.size_bytes)
+    if model.kind is ModelKind.DICT and model.license:
+        return tr(
+            "onboarding.dicts.size", size=size, license=_LICENSE_NAMES.get(model.license, model.license)
+        )
+    return size
+
+
+_LICENSE_NAMES: Final = {"CC-BY-SA-4.0": "CC BY-SA 4.0"}
+"""许可证 SPDX 标识的显示名，表里没有的原样显示。"""
+
+
 def build_row(model: ModelInfo, progress: DownloadProgress | None) -> ModelRow:
     """一个模型的显示内容。"""
     state = row_state(model, progress)
+    is_dict = model.kind is ModelKind.DICT
     return ModelRow(
         model_id=model.id,
         state=state,
         title=model_title(model),
-        size=format_size(model.size_bytes),
+        size=_size_text(model),
         status=model_status_text(model, state, progress),
         show_progress=state in ACTIVE_STATES,
         progress=download_percent(state, progress),
         can_cancel=state in CANCELLABLE_STATES,
         can_retry=state in (RowState.FAILED, RowState.CANCELLED),
+        attribution=tr("onboarding.dicts.attribution", attribution=model.attribution)
+        if is_dict and model.attribution
+        else "",
     )
 
 
@@ -177,6 +217,25 @@ def pair_models(catalog: ModelCatalog | None, pair: tuple[Lang, Lang]) -> list[M
         if model is not None:
             models.append(model)
     return models
+
+
+def pair_dicts(catalog: ModelCatalog | None, pair: tuple[Lang, Lang]) -> list[ModelInfo]:
+    """互译对需要的词典包，按 default_dict_ids 的规则与顺序。"""
+    if catalog is None or not catalog.dicts_enabled:
+        return []
+    found = (catalog.model(model_id) for model_id in default_dict_ids(catalog, pair))
+    return [model for model in found if model is not None]
+
+
+def _dict_notice(catalog: ModelCatalog | None) -> str:
+    """词典索引获取中或获取失败的提示。"""
+    if catalog is None or not catalog.dicts_enabled:
+        return ""
+    if catalog.dict_refreshing:
+        return tr("onboarding.dicts.loading")
+    if catalog.dict_index_error is not None or catalog.dict_index_error_code is not None:
+        return tr("onboarding.dicts.failed", reason=model_error_reason(catalog.dict_index_error_code))
+    return ""
 
 
 def _notice(catalog: ModelCatalog | None, pair: tuple[Lang, Lang], has_rows: bool) -> tuple[str, bool]:
@@ -194,13 +253,22 @@ def _notice(catalog: ModelCatalog | None, pair: tuple[Lang, Lang], has_rows: boo
     return "", False
 
 
-def build_screen(catalog: ModelCatalog | None, pair: tuple[Lang, Lang]) -> OnboardingScreen:
-    """按当前界面语言生成引导窗口的内容。"""
+def build_screen(
+    catalog: ModelCatalog | None, pair: tuple[Lang, Lang], *, include_dicts: bool = True
+) -> OnboardingScreen:
+    """按当前界面语言生成引导窗口的内容。include_dicts 是“同时下载词典”的勾选状态。"""
     models = pair_models(catalog, pair)
     downloads: Mapping[str, DownloadProgress] = catalog.downloads if catalog is not None else {}
     rows = tuple(build_row(model, downloads.get(model.id)) for model in models)
+    dicts = pair_dicts(catalog, pair)
+    dict_rows = tuple(build_row(model, downloads.get(model.id)) for model in dicts)
+    dict_notice = _dict_notice(catalog)
     notice, notice_is_error = _notice(catalog, pair, bool(rows))
     pending = [model for model, row in zip(models, rows, strict=True) if row.state in DOWNLOADABLE_STATES]
+    if include_dicts:
+        pending += [
+            model for model, row in zip(dicts, dict_rows, strict=True) if row.state in DOWNLOADABLE_STATES
+        ]
     sizes = [model.size_bytes for model in pending]
     if pending and all(size is not None for size in sizes):
         download_text = tr("onboarding.download.total", size=format_size(sum(size or 0 for size in sizes)))
@@ -226,6 +294,13 @@ def build_screen(catalog: ModelCatalog | None, pair: tuple[Lang, Lang]) -> Onboa
         finish_tip="" if all_installed else tr("onboarding.skip.tip"),
         cancel_text=tr("onboarding.row.cancel"),
         retry_text=tr("onboarding.row.retry"),
+        show_dicts=bool(dict_rows or dict_notice),
+        dicts_title=tr("onboarding.dicts.title"),
+        dict_rows=dict_rows,
+        dict_notice=dict_notice,
+        include_dicts=include_dicts,
+        include_dicts_text=tr("onboarding.dicts.include"),
+        dict_attribution=tr("onboarding.dicts.credit"),
     )
 
 
@@ -244,6 +319,7 @@ class OnboardingPresenter:
         self._logger = logger
         self._catalog: ModelCatalog | None = None
         self._pair = DEFAULT_PAIR
+        self._include_dicts = True
         self._screen: OnboardingScreen | None = None
         # 窗口显示时还没有收到 ModelCatalog：等收到第一份目录后再决定要不要获取索引。
         self._index_wanted = False
@@ -272,7 +348,7 @@ class OnboardingPresenter:
         """按当前状态和界面语言重新生成画面；与上次相同时不打扰视图。"""
         if self._closed:
             return
-        screen = build_screen(self._catalog, self._pair)
+        screen = build_screen(self._catalog, self._pair, include_dicts=self._include_dicts)
         if screen != self._screen:
             self._screen = screen
             self._view.show_screen(screen)
@@ -297,7 +373,11 @@ class OnboardingPresenter:
 
     def _request_index(self, catalog: ModelCatalog) -> None:
         self._index_wanted = False
-        if not catalog.index_loaded and not catalog.refreshing:
+        nmt_missing = not catalog.index_loaded and not catalog.refreshing
+        dicts_missing = (
+            catalog.dicts_enabled and not catalog.dict_index_loaded and not catalog.dict_refreshing
+        )
+        if nmt_missing or dicts_missing:
             self._bus.send(RefreshModelCatalog())
 
     # ------------------------------------------------------------ 消息处理
@@ -324,15 +404,19 @@ class OnboardingPresenter:
     def download(self) -> None:
         if self._closed:
             return
-        ids = tuple(
-            row.model_id
-            for row in (self._screen.rows if self._screen else ())
-            if row.state in DOWNLOADABLE_STATES
-        )
+        screen = self._screen
+        rows = (*screen.rows, *(screen.dict_rows if self._include_dicts else ())) if screen else ()
+        ids = tuple(row.model_id for row in rows if row.state in DOWNLOADABLE_STATES)
         if not ids:
             return
-        self._logger.info("首次运行引导：下载 %d 个本地翻译模型", len(ids))
+        self._logger.info("首次运行引导：下载 %d 个本地翻译模型或词典", len(ids))
         self._bus.send(DownloadModels(ids))
+
+    def set_include_dicts(self, include: bool) -> None:
+        if self._closed or include == self._include_dicts:
+            return
+        self._include_dicts = include
+        self.refresh()
 
     def cancel(self, model_id: str) -> None:
         if not self._closed:

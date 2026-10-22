@@ -1,4 +1,4 @@
-"""输入停顿、Ctrl+Enter、清空与语言切换时发出的 TranslateText（需求 BI-03、BI-04、BI-07）。"""
+"""输入停顿、立即翻译、清空、语言与服务切换时发出的 TranslateText（需求 BI-03、BI-04、BI-07）。"""
 
 import asyncio
 import re
@@ -7,7 +7,8 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
-from lst.contracts.ids import Lang, SessionId
+from lst.contracts.events import EngineHealth
+from lst.contracts.ids import EngineId, Lang, SessionId
 from lst.contracts.translation import AttemptState
 from lst.ui.bilingual.options import DEFAULT_DEBOUNCE_MS
 from tests.ui.bilingual.conftest import (
@@ -17,6 +18,7 @@ from tests.ui.bilingual.conftest import (
     attempt,
     config,
     segment,
+    statuses,
     wait_until,
 )
 
@@ -38,7 +40,7 @@ async def test_sends_once_after_pause(harness: Harness) -> None:
 
     command = harness.last
     assert command.text == "hello world"
-    assert (command.source, command.target, command.include_billing) == (None, None, False)
+    assert (command.source, command.target, command.engine_id) == (None, None, EngineId("argos"))
     assert re.fullmatch(r"[0-9a-f]{32}", command.session_id)
     assert harness.presenter.session_id == command.session_id
 
@@ -80,7 +82,7 @@ async def test_same_text_is_not_sent_again(harness: Harness) -> None:
     assert harness.sent == [first]
 
 
-async def test_ctrl_enter_sends_immediately_with_billing(start_harness: StartHarness) -> None:
+async def test_ctrl_enter_sends_immediately(start_harness: StartHarness) -> None:
     harness = await start_harness(with_config=False)
     edit = harness.window.input_edit
     QTest.keyClicks(edit, "hello")
@@ -89,17 +91,16 @@ async def test_ctrl_enter_sends_immediately_with_billing(start_harness: StartHar
     await harness.flush()
 
     assert len(harness.sent) == 1
-    assert harness.last.text == "hello"
-    assert harness.last.include_billing is True
+    assert (harness.last.text, harness.last.engine_id) == ("hello", EngineId("argos"))
     assert not harness.presenter.debounce_timer.isActive(), "Ctrl+Enter 先停止停顿计时器"
     assert edit.toPlainText() == "hello", "Ctrl+Enter 不往输入框里插入换行"
     await asyncio.sleep(DEFAULT_DEBOUNCE_MS / 1000 + 0.1)
     assert len(harness.sent) == 1
 
 
-async def test_ctrl_enter_keeps_session_for_same_text(harness: Harness) -> None:
+async def test_ctrl_enter_retranslates_same_text_in_a_new_session(harness: Harness) -> None:
+    """文本没变时按 Ctrl+Enter 也重新翻译（例如上次失败后重试），用新的会话号。"""
     auto = await harness.type_and_wait("hello")
-    assert auto.include_billing is False
     # 小键盘的 Enter 同样有效。
     QTest.keyClick(
         harness.window.input_edit,
@@ -108,9 +109,8 @@ async def test_ctrl_enter_keeps_session_for_same_text(harness: Harness) -> None:
     )
     await harness.flush()
     assert len(harness.sent) == 2
-    assert harness.last.session_id == auto.session_id
-    assert harness.last.include_billing is True
-    assert harness.last.text == "hello"
+    assert harness.last.session_id != auto.session_id
+    assert (harness.last.text, harness.last.engine_id) == ("hello", auto.engine_id)
 
 
 async def test_ctrl_enter_starts_new_session_for_new_text(harness: Harness) -> None:
@@ -121,7 +121,7 @@ async def test_ctrl_enter_starts_new_session_for_new_text(harness: Harness) -> N
     await harness.flush()
     assert len(harness.sent) == 2
     assert harness.last.session_id != auto.session_id
-    assert (harness.last.text, harness.last.include_billing) == ("hello world", True)
+    assert harness.last.text == "hello world"
     # 停顿计时器已停，不会再为同一段文字发一次。
     await asyncio.sleep(_PAUSE * 2)
     assert len(harness.sent) == 2
@@ -137,11 +137,10 @@ async def test_clear_button_sends_empty_text_and_clears_display(harness: Harness
     command = await harness.type_and_wait("hello")
     await harness.updates(
         command.session_id,
-        segment("s1", "hello", attempt("argos", AttemptState.DONE, "你好", latency=80), winner="argos"),
+        segment("s1", "hello", attempt("argos", AttemptState.DONE, "你好", latency=80), shown_engine="argos"),
     )
     window = harness.window
     assert window.translation.segment_count() == 1
-    assert len(window.engine_list.rows()) == 1
 
     window.clear_button.click()
     await harness.flush()
@@ -152,13 +151,14 @@ async def test_clear_button_sends_empty_text_and_clears_display(harness: Harness
     assert window.input_edit.toPlainText() == ""
     assert window.translation.segment_count() == 0
     assert window.translation.toPlainText() == ""
-    assert window.engine_list.rows() == []
     assert harness.presenter.translation_text() == ""
 
     # 旧会话迟到的刷新被丢弃。
     await harness.updates(
         command.session_id,
-        segment("s1", "hello", attempt("deepl", AttemptState.DONE, "您好", latency=300), winner="deepl"),
+        segment(
+            "s1", "hello", attempt("deepl", AttemptState.DONE, "您好", latency=300), shown_engine="deepl"
+        ),
     )
     assert window.translation.segment_count() == 0
     # 再清空一次（输入框已经是空的）不再发送。
@@ -194,7 +194,6 @@ async def test_language_change_resends_immediately(harness: Harness) -> None:
     second = harness.last
     assert (second.text, second.source, second.target) == ("hello", None, Lang("ja"))
     assert second.session_id != first.session_id
-    assert second.include_billing is False
 
     window.source_combo.setCurrentIndex(window.source_combo.findData("en"))
     await harness.flush()
@@ -286,6 +285,99 @@ async def test_debounce_comes_from_config_with_fallback(start_harness: StartHarn
     for invalid in ("fast", True, -1, 2.5, None):
         await harness.publish(config(debounce_ms=invalid, revision=3))
         assert presenter.debounce_timer.interval() == DEFAULT_DEBOUNCE_MS, invalid
+
+
+# ---------------------------------------------------------------- 翻译服务（BI-04）
+
+
+async def test_engine_list_shows_enabled_services_by_priority(harness: Harness) -> None:
+    """下拉框列出启用的服务，按优先级排列；计费的标“计费”，出错的标“出错”且不能选，未启用的不列出。"""
+    await harness.publish(
+        statuses(
+            {"deepseek": "DeepSeek", "argos": "Argos", "google": "Google", "baidu": "百度"},
+            billing={"deepseek", "baidu"},
+            health={"google": EngineHealth.DISABLED, "baidu": EngineHealth.ERROR},
+        )
+    )
+    combo = harness.window.engine_combo
+    labels = [combo.itemText(i) for i in range(combo.count())]
+    assert labels == ["DeepSeek（计费）", "Argos", "百度（出错）"]
+    model = combo.model()
+    assert [model.index(i, 0).flags() & Qt.ItemFlag.ItemIsEnabled for i in range(3)] == [
+        Qt.ItemFlag.ItemIsEnabled,
+        Qt.ItemFlag.ItemIsEnabled,
+        Qt.ItemFlag.NoItemFlags,
+    ]
+    # 用户还没有选过服务：用列表里第一个能用的，也就是优先级最高的那个。
+    assert harness.presenter.preferred_engine is None
+    assert combo.currentText() == "DeepSeek（计费）"
+    assert harness.presenter.engine == EngineId("deepseek")
+
+
+async def test_choosing_a_service_resends_and_is_remembered(start_harness: StartHarness) -> None:
+    first = await start_harness()
+    await first.publish(statuses({"argos": "Argos", "deepseek": "DeepSeek"}, billing={"deepseek"}))
+    command = await first.type_and_wait("hello")
+    assert command.engine_id == EngineId("argos")
+
+    combo = first.window.engine_combo
+    combo.setCurrentIndex(combo.findText("DeepSeek（计费）"))
+    await first.flush()  # 不等停顿
+    assert len(first.sent) == 2
+    assert (first.last.text, first.last.engine_id) == ("hello", EngineId("deepseek"))
+    assert first.last.session_id != command.session_id
+    # 选了计费服务之后，输入停顿照样自动翻译，并且只交给它。
+    QTest.keyClicks(first.window.input_edit, " there")
+    await wait_until(lambda: len(first.sent) == 3)
+    assert (first.last.text, first.last.engine_id) == ("hello there", EngineId("deepseek"))
+    await first.stop()
+
+    second = await start_harness(first.settings_path, with_engines=False)
+    await second.publish(statuses({"argos": "Argos", "deepseek": "DeepSeek"}, billing={"deepseek"}))
+    assert second.presenter.engine == EngineId("deepseek")
+    assert second.window.engine_combo.currentText() == "DeepSeek（计费）"
+
+
+async def test_unavailable_service_falls_back_with_notice(start_harness: StartHarness) -> None:
+    """记住的服务被停用或出错：改用列表里第一个能用的，状态行说明；它恢复后自动换回。"""
+    harness = await start_harness(with_engines=False)
+    await harness.publish(statuses({"argos": "Argos", "deepl": "DeepL"}))
+    combo = harness.window.engine_combo
+    combo.setCurrentIndex(combo.findText("DeepL"))
+    command = await harness.type_and_wait("hello")
+    assert command.engine_id == EngineId("deepl")
+
+    await harness.publish(
+        statuses({"argos": "Argos", "deepl": "DeepL"}, health={"deepl": EngineHealth.DISABLED})
+    )
+    assert harness.presenter.engine == EngineId("argos")
+    assert harness.presenter.preferred_engine == EngineId("deepl")
+    assert combo.currentText() == "Argos"
+    assert harness.presenter.status_text() == "“DeepL”现在不可用，暂时改用“Argos”。"
+    assert harness.window.status_label.text() == harness.presenter.status_text()
+    # 服务变了，当前文本立即按新服务重发。
+    assert (harness.last.text, harness.last.engine_id) == ("hello", EngineId("argos"))
+
+    await harness.publish(
+        statuses({"argos": "Argos", "deepl": "DeepL"}, health={"deepl": EngineHealth.ERROR})
+    )
+    assert harness.presenter.engine == EngineId("argos")
+
+    await harness.publish(statuses({"argos": "Argos", "deepl": "DeepL"}))
+    assert harness.presenter.engine == EngineId("deepl")
+    assert harness.presenter.status_text() == ""
+    assert not harness.window.status_label.isVisibleTo(harness.window)
+    assert harness.last.engine_id == EngineId("deepl")
+
+
+async def test_no_available_service(start_harness: StartHarness) -> None:
+    harness = await start_harness(with_engines=False)
+    await harness.publish(statuses({"argos": "Argos"}, health={"argos": EngineHealth.DISABLED}))
+    assert harness.window.engine_combo.count() == 0
+    assert not harness.window.engine_combo.isEnabled()
+    assert harness.presenter.status_text() == "没有可用的翻译服务，请在设置的“翻译引擎”页启用一个。"
+    command = await harness.type_and_wait("hello")
+    assert command.engine_id is None
 
 
 async def test_session_ids_are_unique(harness: Harness) -> None:

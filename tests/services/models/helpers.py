@@ -18,6 +18,8 @@ from lst.contracts.models import nmt_model_id
 
 INDEX_URL = "https://index.invalid/argospm-index/index.json"
 PACKAGE_HOST = "https://packages.invalid"
+DICT_INDEX_URL = "https://dicts.invalid/releases/download/dicts-v1/dict-index.json"
+"""词典索引的地址。词典包与它在同一个目录下：``https://dicts.invalid/releases/download/dicts-v1/<文件名>``。"""
 
 EN_ZH = nmt_model_id("en", "zh-Hans")
 ZH_EN = nmt_model_id("zh-Hans", "en")

@@ -1,0 +1,67 @@
+LSTtranslate 第三方声明 / Third-party notices
+==============================================
+
+本文件列出 LSTtranslate 使用的第三方数据的来源与许可证。
+This file lists the sources and licenses of third-party data used by LSTtranslate.
+
+
+1. 词典数据包 / Dictionary packs
+--------------------------------
+
+“词典”翻译引擎使用的词典包（dict-<src>-<tgt>.tsv.gz）不随程序分发。用户在设置的“模型”页
+或首次运行引导中选择下载后，程序从下面的 GitHub Release 获取，存放在数据目录的 models/dict 下：
+
+The dictionary packs (dict-<src>-<tgt>.tsv.gz) used by the Dictionary engine are not distributed
+with the program. They are downloaded on request from the GitHub Release below and stored under
+models/dict in the data folder:
+
+    https://github.com/willlllliams/thunderbird-translate/releases/tag/dicts-v1
+
+这些包是对下列数据源的改编（抽取、筛选和裁剪），构建规则见
+https://github.com/willlllliams/thunderbird-translate 的 docs/dictionary-packs.md。
+The packs are adaptations (extracted, filtered and trimmed) of the data sources below.
+
+
+1.1 Wiktionary（英语与其他语言互译的 21 个包 / 21 packs other than en -> zh-Hans）
+
+    Adapted (extracted, filtered and trimmed) from Wiktionary by Wiktionary contributors
+    (https://www.wiktionary.org/), extracted by wiktextract and published by kaikki.org
+    (https://kaikki.org/); CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)
+
+    许可证 / License: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+    https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+    由 Wiktionary 派生的词典包按相同方式共享条款以 CC BY-SA 4.0 发布。程序在设置的“模型”页
+    每个词典包的下一行和首次运行引导中显示上面的署名。
+    The packs derived from Wiktionary are released under CC BY-SA 4.0 (ShareAlike). The program
+    shows the attribution above next to each pack in Settings > Models and in the first-run guide.
+
+
+1.2 ECDICT（en -> zh-Hans）
+
+    Adapted (extracted, filtered and trimmed) from ECDICT (https://github.com/skywind3000/ECDICT),
+    Copyright (c) 2025 Linwei; MIT License
+
+    许可证全文 / Full license text: licenses/ECDICT.LICENSE.txt
+
+    MIT License
+
+    Copyright (c) 2025 Linwei
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

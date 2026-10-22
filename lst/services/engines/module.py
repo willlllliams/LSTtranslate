@@ -26,6 +26,7 @@ import logging
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Final
 
 from pydantic import ValidationError
@@ -60,6 +61,8 @@ from lst.services.engines.registry import (
 
 # WorkerStatuses 里 NMT 进程的键。
 NMT_WORKER: Final = "nmt"
+# 读词典目录的引擎类别：词典目录变化时只重建这类实例。
+_DICTIONARY_KIND: Final = "dictionary"
 
 # 连接测试翻译的固定词与语言对：先试英译中，实例不支持时再试中译英。
 _PROBE_TEXT: Final = "Hello"
@@ -189,6 +192,23 @@ class EnginesModule:
         """停止响应消息并释放实例。订阅由 ModuleContext.close 取消；HTTP 客户端由组合根关闭。"""
         self._running = False
         self._reset()
+
+    @property
+    def dict_dir(self) -> Path | None:
+        return self._deps.dict_dir
+
+    async def set_dict_dir(self, directory: Path | None) -> None:
+        """换词典目录（模型目录在运行中改变时由组合根调用，需求 MOD-04）。
+
+        字典翻译实例按新目录重建，其他实例不受影响。
+        """
+        if directory == self._deps.dict_dir:
+            return
+        self._deps = replace(self._deps, dict_dir=directory)
+        stale = {entry.settings.id for entry in self._entries or () if entry.spec.kind == _DICTIONARY_KIND}
+        self._built = {engine_id: built for engine_id, built in self._built.items() if engine_id not in stale}
+        if self._running and self._entries is not None:
+            await self._refresh()
 
     # ------------------------------------------------------------------ 消息处理
 
@@ -384,11 +404,14 @@ class EnginesModule:
         statuses: dict[EngineId, EngineStatus] = {}
         names: dict[EngineId, str] = {}
         colors: dict[EngineId, str] = {}
+        priorities: dict[EngineId, int] = {}
+        billing: dict[EngineId, bool] = {}
         for entry in entries:
             settings = entry.settings
             engine_id = EngineId(settings.id)
             names[engine_id] = settings.name
             colors[engine_id] = settings.color
+            priorities[engine_id] = settings.priority
             if not settings.enabled:
                 statuses[engine_id] = _DISABLED
                 continue
@@ -401,10 +424,14 @@ class EnginesModule:
             built[settings.id] = current
             if current.engine is not None:
                 ranked.append((settings.priority, entry.index, current.engine))
+                billing[engine_id] = current.engine.info.billing
             statuses[engine_id] = current.fault if current.fault is not None else self._live_status(entry)
         self._built = built
         ranked.sort(key=lambda item: (item[0], item[1]))
-        self._publish(tuple(engine for _, _, engine in ranked), EngineStatuses(statuses, names, colors))
+        self._publish(
+            tuple(engine for _, _, engine in ranked),
+            EngineStatuses(statuses, names, colors, priorities, billing),
+        )
 
     def _key_for(self, entry: _Entry) -> _BuildKey:
         if entry.spec.uses_nmt:

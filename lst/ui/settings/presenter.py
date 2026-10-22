@@ -7,8 +7,11 @@
 - ``ResetStats``、``ClearCache``、``CheckEngineConnection`` 与四个模型命令；
 - OCR 引擎的 ``InstallOcrEngine``、``CancelOcrEngineInstall``、``UninstallOcrEngine``，当前引擎经由
   ``UpdateConfig {"ocr": {"engine": ...}}`` 修改（需求 OCRE-01 至 OCRE-06）；
+- 本地翻译显卡运行库的 ``InstallNmtRuntime``、``CancelNmtRuntimeInstall``、``DeleteNmtRuntime``
+  （需求 MOD-06）；
 - 应用更新的 ``CheckForUpdates``、``DownloadUpdate``、``InstallUpdate``（需求 UPD-01 至 UPD-06）；
 - 出错的推理进程的 ``RestartWorker``（架构文档 8.2 节）；
+- 存储位置的 ``ChangeDataDir``、``ChangeModelsDir`` 与 ``RestartApp``（需求 CFG-06、CFG-07、MOD-04）；
 - 热键录入开始和结束时发布 ``HotkeyRecordingChanged``，热键模块在录入期间暂停全局热键。
 
 视图（pages、window）只负责绘制和收集输入：它们读展示器的属性，调用展示器的方法，
@@ -52,6 +55,12 @@ from lst.contracts.models import (
     ModelCatalog,
     RefreshModelCatalog,
 )
+from lst.contracts.nmt_runtime import (
+    CancelNmtRuntimeInstall,
+    DeleteNmtRuntime,
+    InstallNmtRuntime,
+    NmtRuntimeInfo,
+)
 from lst.contracts.ocr_engines import (
     CancelOcrEngineInstall,
     InstallOcrEngine,
@@ -60,6 +69,7 @@ from lst.contracts.ocr_engines import (
     OcrEngineKind,
     UninstallOcrEngine,
 )
+from lst.contracts.storage import ChangeDataDir, ChangeModelsDir, RestartApp, StorageLocations
 from lst.contracts.updates import (
     CheckForUpdates,
     DownloadUpdate,
@@ -117,8 +127,12 @@ class Topic(StrEnum):
     CACHE = "cache"
     OCR_ENGINES = "ocr_engines"
     """OCR 引擎目录（OcrEngineCatalog）有变化。"""
+    NMT_RUNTIME = "nmt_runtime"
+    """本地翻译的显卡运行库（NmtRuntimeInfo）有变化。"""
     UPDATES = "updates"
     """更新状态（UpdateStatus）或手动检查的反馈有变化。"""
+    STORAGE = "storage"
+    """数据目录、模型目录或它们的更改进度（StorageLocations）有变化。"""
     OPEN = "open"
     """收到 OpenSettings：视图应当显示并激活窗口。"""
 
@@ -205,7 +219,11 @@ class SettingsPresenter:
         self.stats: tuple[EngineStatsRow, ...] = ()
         self.last_cache_cleared: int | None = None
         self.ocr_engines: OcrEngineCatalog | None = None
+        self.nmt_runtime: NmtRuntimeInfo | None = None
+        """显卡运行库的状态；总线上还没有它（组合根没有装配显卡运行库模块）时为 None。"""
         self.update_status: UpdateStatus | None = None
+        self.storage: StorageLocations | None = None
+        """存储位置；组合根没有装配存储位置模块时为 None，常规页的存储位置卡片说明不可用。"""
         self.check_feedback: CheckFeedback | None = None
         """最近一次手动检查更新的反馈；没有手动检查过、或状态已经离开检查结果时为 None。"""
         self._feedback_state: UpdateState | None = None
@@ -230,7 +248,9 @@ class SettingsPresenter:
         self.worker_statuses = self._bus.latest(WorkerStatuses)
         self.catalog = self._bus.latest(ModelCatalog)
         self.ocr_engines = self._bus.latest(OcrEngineCatalog)
+        self.nmt_runtime = self._bus.latest(NmtRuntimeInfo)
         self.update_status = self._bus.latest(UpdateStatus)
+        self.storage = self._bus.latest(StorageLocations)
         snapshot = self._bus.latest(StatsSnapshot)
         if snapshot is not None:
             self.stats = snapshot.engines
@@ -287,6 +307,19 @@ class SettingsPresenter:
         self.clear_rejection(location)
         self._logger.info("设置窗口：提交设置项 %s", ".".join(location))
         self._bus.send(UpdateConfig({section: nested_patch(path, value)}))
+
+    def set_values(self, section: str, values: Mapping[str, JsonValue]) -> None:
+        """在一条 UpdateConfig 里提交同一节的几个顶层字段。
+
+        几个字段要一起改才合法时用它，例如把一个键位从一个操作移到另一个操作：配置服务先把整个修改合起来校验，
+        通过就一起生效。各字段之前的错误提示消失。
+        """
+        if self._closed or not values:
+            return
+        for name in values:
+            self.clear_rejection((section, name))
+        self._logger.info("设置窗口：提交设置项 %s", "、".join(f"{section}.{name}" for name in values))
+        self._bus.send(UpdateConfig({section: dict(values)}))
 
     def on_config(self, config: AppConfig) -> None:
         if self._closed:
@@ -636,11 +669,19 @@ class SettingsPresenter:
         self._notify(Topic.MODELS)
 
     def models_page_opened(self) -> None:
-        """第一次打开模型页时获取一次模型索引（需要联网，只在用户打开模型相关的界面时发生，需求 PRV-01）。"""
+        """第一次打开模型页时获取一次模型索引与词典索引（需要联网，只在打开模型相关的界面时发生，PRV-01）。
+
+        两个索引都已获取过（或正在获取）时不再请求。
+        """
         if self._closed or self._models_requested:
             return
         self._models_requested = True
-        if self.catalog is None or not (self.catalog.index_loaded or self.catalog.refreshing):
+        catalog = self.catalog
+        if (
+            catalog is None
+            or not (catalog.index_loaded or catalog.refreshing)
+            or (catalog.dicts_enabled and not (catalog.dict_index_loaded or catalog.dict_refreshing))
+        ):
             self._bus.send(RefreshModelCatalog())
 
     def refresh_models(self) -> None:
@@ -650,7 +691,7 @@ class SettingsPresenter:
 
     def download_models(self, ids: Sequence[str]) -> None:
         if not self._closed and ids:
-            self._logger.info("设置窗口：下载 %d 个本地翻译模型", len(ids))
+            self._logger.info("设置窗口：下载 %d 个模型或词典", len(ids))
             self._bus.send(DownloadModels(tuple(ids)))
 
     def cancel_download(self, model_id: str) -> None:
@@ -659,7 +700,7 @@ class SettingsPresenter:
 
     def delete_model(self, model_id: str) -> None:
         if not self._closed:
-            self._logger.info("设置窗口：删除本地翻译模型 %s", model_id)
+            self._logger.info("设置窗口：删除模型或词典 %s", model_id)
             self._bus.send(DeleteModel(model_id))
 
     # ------------------------------------------------------------------ OCR 引擎
@@ -705,6 +746,48 @@ class SettingsPresenter:
         if not self._closed:
             self._logger.info("设置窗口：卸载 OCR 引擎 %s", kind.value)
             self._bus.send(UninstallOcrEngine(kind))
+
+    # ------------------------------------------------------------------ 本地翻译的显卡运行库
+
+    def on_nmt_runtime(self, info: NmtRuntimeInfo) -> None:
+        if self._closed:
+            return
+        self.nmt_runtime = info
+        self._notify(Topic.NMT_RUNTIME)
+
+    @property
+    def nmt_device(self) -> str | None:
+        """配置里的推理设备（[nmt].device：auto、cpu、cuda）。组合根没有注入 [nmt] 节时为 None。"""
+        raw = self.value("nmt", ("device",))
+        return raw if isinstance(raw, str) else None
+
+    @property
+    def nmt_worker_device(self) -> str | None:
+        """NMT 进程实际使用的设备（"cuda" 或 "cpu"），取自进程握手时报告的 versions["device"]。
+
+        没有 NMT 进程的状态、或进程没有报告设备时为 None。
+        """
+        statuses = self.worker_statuses
+        status = statuses.statuses.get("nmt") if statuses is not None else None
+        if status is None:
+            return None
+        return status.versions.get("device") or None
+
+    def install_nmt_runtime(self) -> None:
+        """下载并安装显卡运行库（也用于出错后的重试）。需要联网，只在用户点按钮时发生（需求 PRV-01）。"""
+        if not self._closed:
+            self._logger.info("设置窗口：下载显卡运行库")
+            self._bus.send(InstallNmtRuntime())
+
+    def cancel_nmt_runtime_install(self) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：取消下载显卡运行库")
+            self._bus.send(CancelNmtRuntimeInstall())
+
+    def delete_nmt_runtime(self) -> None:
+        if not self._closed:
+            self._logger.info("设置窗口：删除显卡运行库")
+            self._bus.send(DeleteNmtRuntime())
 
     # ------------------------------------------------------------------ 应用更新
 
@@ -755,6 +838,31 @@ class SettingsPresenter:
         if not self._closed:
             self._logger.info("设置窗口：安装更新")
             self._bus.send(InstallUpdate())
+
+    # ------------------------------------------------------------------ 存储位置
+
+    def on_storage(self, locations: StorageLocations) -> None:
+        if self._closed:
+            return
+        self.storage = locations
+        self._notify(Topic.STORAGE)
+
+    def change_data_dir(self, target: str, *, copy: bool) -> None:
+        """把数据目录改到 target，重启程序后生效。copy 为真时先把现有数据复制过去。"""
+        if not self._closed and self.storage is not None:
+            self._logger.info("设置窗口：更改数据目录（复制现有数据：%s）", "是" if copy else "否")
+            self._bus.send(ChangeDataDir(target, copy))
+
+    def change_models_dir(self, target: str, *, move: bool) -> None:
+        """把模型目录改到 target（空串为默认位置）。move 为真时把现有模型移过去。"""
+        if not self._closed and self.storage is not None:
+            self._logger.info("设置窗口：更改模型目录（移动现有模型：%s）", "是" if move else "否")
+            self._bus.send(ChangeModelsDir(target, move))
+
+    def restart_app(self) -> None:
+        if not self._closed and self.storage is not None:
+            self._logger.info("设置窗口：重新启动程序")
+            self._bus.send(RestartApp())
 
     # ------------------------------------------------------------------ 推理进程
 

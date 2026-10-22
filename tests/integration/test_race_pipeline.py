@@ -27,7 +27,7 @@ from lst.services.engines.deepl import DeepLSettings, create_deepl_engine
 from lst.services.engines.google import GoogleSettings, create_google_engine
 from lst.services.engines.openai_compat import OpenAICompatSettings, create_openai_compat_engine
 from lst.services.engines.openai_compat.prompt import CONTEXT_SEPARATOR
-from lst.services.race import RaceMode, RaceScheduler
+from lst.services.race import RaceScheduler
 from lst.services.stats import SqliteStatsStore, StatsModule
 
 EN, ZH = Lang("en"), Lang("zh-Hans")
@@ -149,12 +149,12 @@ class BusSink:
     def attempt_recorded(self, session_id: SessionId, segment_id: SegmentId, attempt: AttemptView) -> None:
         self.bus.publish(AttemptRecorded(session_id, segment_id, attempt))
 
-    def winners(self, segment_id: SegmentId) -> list[EngineId | None]:
+    def shown_engines(self, segment_id: SegmentId) -> list[EngineId | None]:
         """该段每次显示变化后的胜出者序列（去掉连续重复）。"""
         seq: list[EngineId | None] = []
         for view in self.views:
-            if view.segment_id == segment_id and (not seq or seq[-1] != view.winner):
-                seq.append(view.winner)
+            if view.segment_id == segment_id and (not seq or seq[-1] != view.shown_engine):
+                seq.append(view.shown_engine)
         return seq
 
     async def wait_for(self, predicate: Callable[[], bool]) -> None:
@@ -222,9 +222,7 @@ async def harness(tmp_path: Path) -> AsyncIterator[Harness]:
     cache = SqliteTranslationCache(tmp_path / "cache.sqlite3")
     await cache.open()
     sink = BusSink(bus)
-    scheduler = RaceScheduler(
-        make_engines(client), sink, mode=RaceMode.SAVER, cache=cache, frame_interval=0.005
-    )
+    scheduler = RaceScheduler(make_engines(client), sink, cache=cache, frame_interval=0.005)
     yield servers, sink, scheduler, store, bus
     await scheduler.aclose()
     await bus.drain()
@@ -267,16 +265,16 @@ async def test_display_upgrades_by_priority_then_cache_short_circuits(
     for host, engine_id, _ in order:
         servers.gates[host].set()
         await sink.wait_for(
-            lambda e=engine_id: any(v.segment_id == first and v.winner == e for v in sink.views)
+            lambda e=engine_id: any(v.segment_id == first and v.shown_engine == e for v in sink.views)
         )
     await scheduler.drain()
     await bus.drain()
 
-    assert sink.winners(first) == [None, BAIDU, GOOGLE, DEEPL, DEEPSEEK]
+    assert sink.shown_engines(first) == [None, BAIDU, GOOGLE, DEEPL, DEEPSEEK]
     final = {v.segment_id: v for v in sink.views}
     for seg in segs:
         view = final[seg.id]
-        assert (view.winner, view.finished, view.display_text) == (DEEPSEEK, True, f"DS:{seg.text}")
+        assert (view.shown_engine, view.finished, view.display_text) == (DEEPSEEK, True, f"DS:{seg.text}")
         assert {a.engine_id for a in view.attempts} == {DEEPSEEK, DEEPL, GOOGLE, BAIDU}
     # 每个引擎对两段只发了一次批量请求。
     assert servers.requests == {"deepseek": 1, "deepl": 1, "google": 1, "baidu": 1}
@@ -289,7 +287,7 @@ async def test_display_upgrades_by_priority_then_cache_short_circuits(
     assert servers.requests == {"deepseek": 1, "deepl": 1, "google": 1, "baidu": 1}
     for seg in second:
         view = final_view(sink, seg.id)
-        assert (view.winner, view.display_text) == (DEEPSEEK, f"DS:{seg.text}")
+        assert (view.shown_engine, view.display_text) == (DEEPSEEK, f"DS:{seg.text}")
         top = next(a for a in view.attempts if a.engine_id == DEEPSEEK)
         assert (top.cached, top.latency_ms) == (True, 0.0)
 
@@ -325,7 +323,7 @@ async def test_failing_top_engine_does_not_block_race(harness: Harness) -> None:
 
     for seg in segs:
         view = final_view(sink, seg.id)
-        assert (view.winner, view.finished) == (DEEPL, True)
+        assert (view.shown_engine, view.finished) == (DEEPL, True)
         top = next(a for a in view.attempts if a.engine_id == DEEPSEEK)
         assert top.error_code is not None and top.error_code.value == "engine.auth"
         assert top.error is not None and "SECRET" not in top.error

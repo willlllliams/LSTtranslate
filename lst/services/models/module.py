@@ -1,20 +1,28 @@
-"""本地 NMT 模型管理模块（需求 MOD-01、MOD-04、INS-03、INS-07，架构文档 8.5 节）。
+"""本地模型管理模块：本地 NMT 模型与词典包（需求 MOD-01、MOD-04、INS-03、INS-07，架构文档 8.5 节）。
 
 模块维护三份数据，每次变化都发布一个完整的 ``ModelCatalog``：
 
-1. 已安装：模型目录下可用的 .argosmodel，启动时扫描，安装或删除后重新扫描；
-2. 可下载：最近一次成功获取的 Argos 模型索引。只在收到 ``RefreshModelCatalog`` 时联网获取，
-   程序启动时不发请求，只用本地模型时程序没有任何网络请求（需求 PRV-01）；
-3. 下载进度：同一时间只下载一个模型，其余排队。
+1. 已安装：模型目录下可用的 .argosmodel 与词典目录下的词典包，启动时扫描，安装或删除后重新扫描；
+2. 可下载：最近一次成功获取的 Argos 模型索引与词典索引。只在收到 ``RefreshModelCatalog`` 时联网获取，
+   两个索引同时获取、各自记录结果，一个失败不影响另一个。程序启动时不发请求，只用本地模型时程序没有任何
+   网络请求（需求 PRV-01）；
+3. 下载进度：NMT 模型与词典包共用一个队列，同一时间只下载一个，其余排队。
 
-下载流程：流式写入模型目录下的 ``<名>.part``（不用 tempfile，架构文档 2.9.5 节）→ 校验 → 用 ``os.replace``
-原子改名为 ``<名>.argosmodel`` → 删除同一语言对的旧版本 → 发布 ``ModelsInstalled``。失败或取消时删除临时文件。
+NMT 模型的下载流程：流式写入模型目录下的 ``<名>.part``（不用 tempfile，架构文档 2.9.5 节）→ 校验 →
+用 ``os.replace`` 原子改名为 ``<名>.argosmodel`` → 删除同一语言对的旧版本 → 发布 ``ModelsInstalled``。
+失败或取消时删除临时文件。
+
+词典包的下载流程相同：边下载边计算 SHA-256，写入词典目录下的 ``dict-<src>-<tgt>.tsv.gz.part`` →
+核对 SHA-256、完整解压一遍、核对包头的语言对 → 写说明文件（署名等）→ 原子改名为正式文件（替换旧版本）→
+发布 ``ModelsInstalled``。词典目录由组合根给出（模型目录下的 dict），没有给出时模块不管理词典包，
+目录里也没有词典的条目。
 
 线程：模块的状态只在事件循环线程上读写。扫描、校验、写文件、改名、删除这些磁盘操作都放进
 线程池（_shared.aio.blocking），网络用 httpx 的异步流式接口，下载大文件时事件循环照常运转（需求 REL-04）。
 """
 
 import asyncio
+import hashlib
 import itertools
 import json
 import logging
@@ -39,12 +47,15 @@ from lst.contracts.models import (
     ModelKind,
     ModelsInstalled,
     RefreshModelCatalog,
+    dict_model_id,
+    model_kind_of,
     nmt_model_id,
     version_key,
 )
 from lst.kernel import ModuleContext
 from lst.services._shared.aio import blocking
-from lst.services._shared.download import content_length, open_for_write, stream_to_file
+from lst.services._shared.download import Digest, content_length, open_for_write, stream_to_file
+from lst.services.models import dictionary as dicts
 from lst.services.models.argos import (
     PACKAGE_SUFFIX,
     PART_SUFFIX,
@@ -58,6 +69,13 @@ from lst.services.models.argos import (
     remove_partial_files,
     scan_installed,
     verify_download,
+)
+from lst.services.models.dictionary import (
+    DEFAULT_DICT_INDEX_URL,
+    DictIndexEntry,
+    DictIndexFormatError,
+    InstalledDictPack,
+    InvalidDictPack,
 )
 from lst.services.models.index import DEFAULT_INDEX_URL, IndexEntry, IndexFormatError, parse_index
 from lst.services.models.net import (
@@ -90,12 +108,14 @@ class _Failure(Exception):
 
 
 class ModelsModule:
-    """本地 NMT 模型的目录、下载与删除，实现 kernel 的 Module 协议。
+    """本地 NMT 模型与词典包的目录、下载与删除，实现 kernel 的 Module 协议。
 
     构造参数：
         models_dir：模型目录（需求 MOD-04），与 NMT 进程扫描的目录相同；
         client：共用的 httpx 客户端，测试注入 MockTransport；
         index_url：Argos 模型索引的地址；
+        dict_dir：词典目录，与字典翻译引擎读取的目录相同。为 None 时不管理词典包；
+        dict_index_url：词典索引（dict-index.json）的地址，包文件在同一个目录下；
         progress_interval：下载进度的最短发布间隔，单位秒；
         clock：单调时钟，测试注入假时钟检查进度节流；
         write_chunk_bytes：攒够多少字节交给线程写盘一次。
@@ -109,6 +129,8 @@ class ModelsModule:
         client: httpx.AsyncClient,
         index_url: str = DEFAULT_INDEX_URL,
         *,
+        dict_dir: Path | None = None,
+        dict_index_url: str = DEFAULT_DICT_INDEX_URL,
         progress_interval: float = PROGRESS_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         write_chunk_bytes: int = WRITE_CHUNK_BYTES,
@@ -134,11 +156,24 @@ class ModelsModule:
         self._installing = False
         self._worker: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[None] | None = None
+        self._dict_dir = Path(dict_dir) if dict_dir is not None else None
+        self._dict_index_url = dict_index_url
+        self._dicts: dict[Pair, InstalledDictPack] = {}
+        self._dict_index: dict[Pair, DictIndexEntry] = {}
+        self._dict_index_loaded = False
+        self._dict_refreshing = False
+        self._dict_index_error: str | None = None
+        self._dict_index_error_code: ModelErrorCode | None = None
+        self._dict_refresh_task: asyncio.Task[None] | None = None
         self._closed = False
 
     @property
     def models_dir(self) -> Path:
         return self._models_dir
+
+    @property
+    def dict_dir(self) -> Path | None:
+        return self._dict_dir
 
     # ------------------------------------------------------------------ 生命周期
 
@@ -153,6 +188,12 @@ class ModelsModule:
             self._logger.info("已删除 %d 个上次下载中断留下的临时文件", removed)
         self._installed = await blocking(scan_installed, self._models_dir, self._logger)
         self._logger.info("模型目录 %s 中有 %d 个可用的本地翻译模型", self._models_dir, len(self._installed))
+        if self._dict_dir is not None:
+            removed = await blocking(dicts.remove_partial_files, self._dict_dir, self._logger)
+            if removed:
+                self._logger.info("已删除 %d 个上次下载词典包中断留下的临时文件", removed)
+            self._dicts = await blocking(dicts.scan_dict_packs, self._dict_dir, self._logger)
+            self._logger.info("词典目录 %s 中有 %d 个可用的词典包", self._dict_dir, len(self._dicts))
         ctx.subscribe(RefreshModelCatalog, self._on_refresh)
         ctx.subscribe(DownloadModels, self._on_download)
         ctx.subscribe(CancelModelDownload, self._on_cancel)
@@ -165,7 +206,7 @@ class ModelsModule:
         self._queue.clear()
         tasks = [
             task
-            for task in (self._worker, self._current_task, self._refresh_task)
+            for task in (self._worker, self._current_task, self._refresh_task, self._dict_refresh_task)
             if task is not None and not task.done()
         ]
         for task in tasks:
@@ -184,10 +225,48 @@ class ModelsModule:
             refreshing=self._refreshing,
             index_error=self._index_error,
             index_error_code=self._index_error_code,
+            dicts_enabled=self._dict_dir is not None,
+            dict_index_loaded=self._dict_index_loaded,
+            dict_refreshing=self._dict_refreshing,
+            dict_index_error=self._dict_index_error,
+            dict_index_error_code=self._dict_index_error_code,
         )
 
     def _models(self) -> tuple[ModelInfo, ...]:
-        """合并已安装的包与索引：每个语言对一项，按 (source, target) 排序。"""
+        """先列 NMT 模型，再列词典包。各自合并已安装的包与索引，每个语言对一项，按 (source, target) 排序。"""
+        return (*self._nmt_models(), *self._dict_models())
+
+    def _dict_models(self) -> list[ModelInfo]:
+        infos: list[ModelInfo] = []
+        for pair in sorted(self._dicts.keys() | self._dict_index.keys()):
+            entry = self._dict_index.get(pair)
+            pack = self._dicts.get(pair)
+            if entry is not None:
+                license_id, attribution, size = entry.license, entry.attribution, entry.size_bytes
+            elif pack is not None:
+                license_id, attribution, size = pack.license, pack.attribution, pack.size
+            else:  # 不会发生：pair 来自两张表的并集
+                continue
+            infos.append(
+                ModelInfo(
+                    id=dict_model_id(*pair),
+                    kind=ModelKind.DICT,
+                    source=pair[0],
+                    target=pair[1],
+                    version=pack.version if pack is not None else "",
+                    size_bytes=size,
+                    installed=pack is not None,
+                    url=entry.url if entry is not None else "",
+                    installed_version=pack.version if pack is not None else None,
+                    license=license_id,
+                    attribution=attribution,
+                    differs_from_index=pack is not None and entry is not None and pack.sha256 != entry.sha256,
+                )
+            )
+        return infos
+
+    def _nmt_models(self) -> list[ModelInfo]:
+        """合并已安装的 NMT 模型包与 Argos 索引：每个语言对一项，按 (source, target) 排序。"""
         infos: list[ModelInfo] = []
         for pair in sorted(self._installed.keys() | self._index.keys()):
             entry = self._index.get(pair)
@@ -210,7 +289,13 @@ class ModelsModule:
                     installed_version=best.version if best is not None else None,
                 )
             )
-        return tuple(infos)
+        return infos
+
+    def _dict_pair_of(self, model_id: str) -> Pair | None:
+        for pair in itertools.chain(self._dicts, self._dict_index):
+            if dict_model_id(*pair) == model_id:
+                return pair
+        return None
 
     def _pair_of(self, model_id: str) -> Pair | None:
         for pair in itertools.chain(self._installed, self._index):
@@ -250,7 +335,7 @@ class ModelsModule:
     # ------------------------------------------------------------------ 模型索引
 
     async def _on_refresh(self, _command: RefreshModelCatalog) -> None:
-        """获取索引。已经在获取时不重复请求，等那一次结束。"""
+        """获取 Argos 索引与词典索引。某个索引已经在获取时不重复请求，等那一次结束。"""
         if self._closed:
             return
         task = self._refresh_task
@@ -258,7 +343,58 @@ class ModelsModule:
             task = self._refresh_task = self._spawn(self._refresh(), "models:refresh")
         else:
             self._logger.debug("模型索引正在获取，忽略重复的刷新命令")
-        await asyncio.wait({task})
+        tasks = {task}
+        if self._dict_dir is not None:
+            dict_task = self._dict_refresh_task
+            if dict_task is None or dict_task.done():
+                dict_task = self._dict_refresh_task = self._spawn(
+                    self._refresh_dicts(), "models:dict-refresh"
+                )
+            tasks.add(dict_task)
+        await asyncio.wait(tasks)
+
+    async def _refresh_dicts(self) -> None:
+        self._dict_refreshing = True
+        self._publish()
+        try:
+            entries = await self._fetch_dict_index()
+        except _Failure as failure:
+            self._dict_index_error, self._dict_index_error_code = failure.detail, failure.code
+            self._logger.warning("获取词典索引失败（%s）：%s", safe_url(self._dict_index_url), failure.detail)
+        except Exception as exc:
+            self._dict_index_error, self._dict_index_error_code = describe_error(exc), ModelErrorCode.INTERNAL
+            self._logger.exception("获取词典索引时出现未预期的错误")
+        else:
+            self._dict_index = {entry.pair: entry for entry in entries}
+            self._dict_index_loaded = True
+            self._dict_index_error = self._dict_index_error_code = None
+            self._logger.info("词典索引中有 %d 个可下载的词典包", len(entries))
+        finally:
+            self._dict_refreshing = False
+        self._publish()
+
+    async def _fetch_dict_index(self) -> list[DictIndexEntry]:
+        body = bytearray()
+        try:
+            async with self._client.stream(
+                "GET", self._dict_index_url, timeout=INDEX_TIMEOUT, follow_redirects=True
+            ) as response:
+                if response.status_code != _HTTP_OK:
+                    raise _Failure(ModelErrorCode.HTTP, f"HTTP {response.status_code}")
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > MAX_INDEX_BYTES:
+                        raise _Failure(ModelErrorCode.BAD_INDEX, "词典索引大小超出上限")
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            raise _Failure(classify_transport_error(exc), describe_error(exc)) from exc
+        try:
+            data: object = json.loads(bytes(body))
+        except ValueError as exc:
+            raise _Failure(ModelErrorCode.BAD_INDEX, "词典索引不是合法的 JSON") from exc
+        try:
+            return dicts.parse_dict_index(data, self._dict_index_url, self._logger)
+        except DictIndexFormatError as exc:
+            raise _Failure(ModelErrorCode.BAD_INDEX, str(exc)) from exc
 
     async def _refresh(self) -> None:
         self._refreshing = True
@@ -324,6 +460,8 @@ class ModelsModule:
         if progress is not None and progress.state in ACTIVE_DOWNLOAD_STATES:
             self._logger.debug("模型 %s 已在下载队列中", model_id)
             return False
+        if model_kind_of(model_id) is ModelKind.DICT:
+            return self._enqueue_dict(model_id)
         pair = self._pair_of(model_id)
         entry = self._index.get(pair) if pair is not None else None
         if entry is None:
@@ -342,10 +480,42 @@ class ModelsModule:
         self._queue.append(model_id)
         return True
 
+    def _dict_entry(self, model_id: str) -> DictIndexEntry | None:
+        pair = self._dict_pair_of(model_id)
+        return self._dict_index.get(pair) if pair is not None else None
+
+    def _dict_covered(self, entry: DictIndexEntry) -> bool:
+        """已经装有与索引里相同的词典包（SHA-256 相同）。"""
+        pack = self._dicts.get(entry.pair)
+        return pack is not None and pack.sha256 == entry.sha256
+
+    def _enqueue_dict(self, model_id: str) -> bool:
+        """把一个词典包放进队列，返回下载状态是否有变化。"""
+        entry = self._dict_entry(model_id) if self._dict_dir is not None else None
+        if entry is None:
+            if self._dict_dir is None:
+                detail = "没有配置词典目录"
+            else:
+                detail = "词典索引里没有这个词典包" if self._dict_index_loaded else "还没有获取词典索引"
+            self._logger.warning("无法下载词典包 %s：%s", model_id, detail)
+            self._downloads[model_id] = DownloadProgress(
+                DownloadState.FAILED, error=detail, error_code=ModelErrorCode.UNAVAILABLE
+            )
+            return True
+        if self._dict_covered(entry):
+            self._logger.info("已安装相同的词典包 %s，不重复下载", entry.file)
+            return False
+        self._downloads[model_id] = DownloadProgress(DownloadState.QUEUED, total_bytes=entry.size_bytes)
+        self._queue.append(model_id)
+        return True
+
     async def _run_queue(self) -> None:
         """逐个下载队列里的模型。每个模型在自己的任务里下载，取消一个不影响后面的。"""
         while self._queue and not self._closed:
             model_id = self._queue.popleft()
+            if model_kind_of(model_id) is ModelKind.DICT:
+                await self._run_dict(model_id)
+                continue
             pair = self._pair_of(model_id)
             entry = self._index.get(pair) if pair is not None else None
             if entry is None:
@@ -362,17 +532,39 @@ class ModelsModule:
             if self._covered(entry):
                 self._set(model_id, DownloadProgress(DownloadState.DONE))
                 continue
-            task = self._spawn(self._download(model_id, entry), f"models:download:{model_id}")
-            self._current, self._current_task = model_id, task
-            try:
-                await asyncio.wait({task})
-            finally:
-                self._current = None
-                self._current_task = None
-            progress = self._downloads.get(model_id)
-            if task.cancelled() and progress is not None and progress.state in ACTIVE_DOWNLOAD_STATES:
-                # 任务在第一次运行之前就被取消，_download 一行也没有执行，状态还停在“排队”。
-                self._set(model_id, DownloadProgress(DownloadState.CANCELLED))
+            await self._run_task(model_id, self._download(model_id, entry))
+
+    async def _run_dict(self, model_id: str) -> None:
+        """下载队列里的一个词典包。规则与 NMT 模型相同：排队期间索引里没有了、或者已经装好时不下载。"""
+        entry = self._dict_entry(model_id)
+        if entry is None:
+            self._set(
+                model_id,
+                DownloadProgress(
+                    DownloadState.FAILED,
+                    error="词典索引里没有这个词典包",
+                    error_code=ModelErrorCode.UNAVAILABLE,
+                ),
+            )
+            return
+        if self._dict_covered(entry):
+            self._set(model_id, DownloadProgress(DownloadState.DONE))
+            return
+        await self._run_task(model_id, self._download_dict(model_id, entry))
+
+    async def _run_task(self, model_id: str, download: Coroutine[Any, Any, None]) -> None:
+        """在自己的任务里下载一个模型，取消它不影响队列里后面的模型。"""
+        task = self._spawn(download, f"models:download:{model_id}")
+        self._current, self._current_task = model_id, task
+        try:
+            await asyncio.wait({task})
+        finally:
+            self._current = None
+            self._current_task = None
+        progress = self._downloads.get(model_id)
+        if task.cancelled() and progress is not None and progress.state in ACTIVE_DOWNLOAD_STATES:
+            # 任务在第一次运行之前就被取消，下载函数一行也没有执行，状态还停在“排队”。
+            self._set(model_id, DownloadProgress(DownloadState.CANCELLED))
 
     def _on_cancel(self, command: CancelModelDownload) -> None:
         model_id = command.id
@@ -438,17 +630,65 @@ class ModelsModule:
         if not self._closed and self._ctx is not None:
             self._ctx.bus.publish(ModelsInstalled((model_id,)))
 
+    async def _download_dict(self, model_id: str, entry: DictIndexEntry) -> None:
+        """下载、校验并安装一个词典包。失败只记录在下载状态里，不抛出；取消时清理后把取消传出去。"""
+        directory = self._dict_dir
+        if directory is None:  # 只有管理词典包时才会排进队列
+            raise RuntimeError("没有词典目录")
+        final = directory / entry.file
+        part = directory / f"{entry.file}{dicts.PART_SUFFIX}"
+        self._logger.info("开始下载词典包 %s：%s", entry.file, safe_url(entry.url))
+        self._set(model_id, DownloadProgress(DownloadState.DOWNLOADING, 0, entry.size_bytes))
+        done, total = 0, entry.size_bytes
+        try:
+            digest = hashlib.sha256()
+            done, total = await self._fetch_file(model_id, entry.url, entry.size_bytes, part, digest)
+            self._set(model_id, DownloadProgress(DownloadState.VERIFYING, done, total))
+            await blocking(dicts.verify_download, part, entry, digest.hexdigest())
+            # 从改名开始到重新扫描结束都不接受取消，理由与 NMT 模型相同。
+            self._installing = True
+            try:
+                await blocking(dicts.install_pack, part, final, entry)
+                self._dicts = await blocking(dicts.scan_dict_packs, directory, self._logger)
+            finally:
+                self._installing = False
+        except asyncio.CancelledError:
+            await self._discard(part)
+            self._logger.info("已取消词典包 %s 的下载", entry.file)
+            self._set(model_id, DownloadProgress(DownloadState.CANCELLED))
+            raise
+        except (_Failure, InvalidDictPack) as failure:
+            await self._fail(model_id, part, failure.code, failure.detail, done, total)
+            return
+        except OSError as exc:
+            await self._fail(model_id, part, ModelErrorCode.DISK, describe_error(exc), done, total)
+            return
+        except Exception as exc:
+            self._logger.exception("下载词典包 %s 时出现未预期的错误", model_id)
+            await self._fail(model_id, part, ModelErrorCode.INTERNAL, describe_error(exc), done, total)
+            return
+        self._logger.info("已安装词典包 %s", entry.file)
+        self._set(model_id, DownloadProgress(DownloadState.DONE, done, total))
+        if not self._closed and self._ctx is not None:
+            self._ctx.bus.publish(ModelsInstalled((model_id,)))
+
     async def _fetch_package(self, model_id: str, entry: IndexEntry, part: Path) -> tuple[int, int | None]:
         """把模型包流式写入临时文件，返回（收到的字节数，总字节数）。"""
-        await blocking(self._models_dir.mkdir, parents=True, exist_ok=True)
+        return await self._fetch_file(model_id, entry.url, entry.size_bytes, part)
+
+    async def _fetch_file(
+        self, model_id: str, url: str, size: int | None, part: Path, digest: Digest | None = None
+    ) -> tuple[int, int | None]:
+        """把一个文件流式写入临时文件，返回（收到的字节数，总字节数）。digest 不为 None 时同时计算摘要。"""
+        await blocking(part.parent.mkdir, parents=True, exist_ok=True)
         sink = await blocking(open_for_write, part)
         try:
             async with self._client.stream(
-                "GET", entry.url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
+                "GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
             ) as response:
                 if response.status_code != _HTTP_OK:
                     raise _Failure(ModelErrorCode.HTTP, f"HTTP {response.status_code}")
-                total = content_length(response) or entry.size_bytes
+                total = content_length(response) or size
                 self._set(model_id, DownloadProgress(DownloadState.DOWNLOADING, 0, total))
                 last = self._clock()
 
@@ -459,7 +699,9 @@ class ModelsModule:
                         last = now
                         self._set(model_id, DownloadProgress(DownloadState.DOWNLOADING, received, total))
 
-                done = await stream_to_file(response, sink, chunk_bytes=self._write_chunk, on_progress=report)
+                done = await stream_to_file(
+                    response, sink, chunk_bytes=self._write_chunk, on_progress=report, digest=digest
+                )
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise _Failure(classify_transport_error(exc), describe_error(exc)) from exc
         finally:
@@ -488,6 +730,9 @@ class ModelsModule:
         """删除该语言对的全部模型包，让 NMT 进程不再看到任何一个版本。"""
         if self._closed:
             return
+        if model_kind_of(command.id) is ModelKind.DICT:
+            await self._delete_dict(command.id)
+            return
         pair = self._pair_of(command.id)
         packages = self._installed.get(pair, []) if pair is not None else []
         if not packages:
@@ -502,3 +747,20 @@ class ModelsModule:
         self._publish()
         if deleted and not self._closed and self._ctx is not None:
             self._ctx.bus.publish(ModelsInstalled((), removed=(command.id,)))
+
+    async def _delete_dict(self, model_id: str) -> None:
+        """删除一个词典包与它的说明文件。字典引擎发现词典目录变了，不再使用这个包。"""
+        pair = self._dict_pair_of(model_id)
+        pack = self._dicts.get(pair) if pair is not None else None
+        if pack is None or self._dict_dir is None:
+            self._logger.warning("词典包 %s 没有安装，忽略删除命令", model_id)
+            return
+        deleted = await blocking(dicts.delete_pack, pack.path, self._logger)
+        self._dicts = await blocking(dicts.scan_dict_packs, self._dict_dir, self._logger)
+        progress = self._downloads.get(model_id)
+        if progress is not None and progress.state not in ACTIVE_DOWNLOAD_STATES:
+            del self._downloads[model_id]
+        self._logger.info("已删除词典包 %s", pack.path.name)
+        self._publish()
+        if deleted and not self._closed and self._ctx is not None:
+            self._ctx.bus.publish(ModelsInstalled((), removed=(model_id,)))

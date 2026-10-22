@@ -19,7 +19,10 @@ class WindowState:
 
     position: QPoint | None = None
     size: QSize | None = None
+    page_id: str | None = None
+    """上次停留的页面标识（二级页面是 capture.paddle 这样的形式）。"""
     page: int | None = None
+    """旧版本保存的页面序号（七个一级页面的序号）。新版本不再写，读到时按旧页面顺序映射。"""
 
 
 class WindowStateStore(GroupStore):
@@ -30,7 +33,9 @@ class WindowStateStore(GroupStore):
 
     def load(self) -> WindowState:
         position, size = self.load_geometry()
-        return WindowState(position=position, size=size, page=as_int(self.value("page")))
+        saved = self.value("page_id")
+        page_id = saved.strip() if isinstance(saved, str) and saved.strip() else None
+        return WindowState(position=position, size=size, page_id=page_id, page=as_int(self.value("page")))
 
-    def save_page(self, page: int) -> None:
-        self.write({"page": page})
+    def save_page(self, page_id: str) -> None:
+        self.write({"page_id": page_id})

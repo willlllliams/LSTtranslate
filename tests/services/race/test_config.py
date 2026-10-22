@@ -5,20 +5,18 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from lst.services.race import CONFIG_SECTIONS, BilingualConfig, RaceConfig, RaceMode, ScreenshotConfig
+from lst.services.race import CONFIG_SECTIONS, REMOVED_FIELDS, BilingualConfig, RaceConfig, ScreenshotConfig
 from lst.services.race.config import SourceMarkerConfig
 
 
 def test_defaults_match_architecture_example() -> None:
     """默认值与架构文档第 9 章的配置示例一致。"""
     race = RaceConfig()
-    assert race.mode is RaceMode.SAVER
-    assert race.show_source_marker == SourceMarkerConfig(overlay=False, bilingual=True)
+    assert race.show_source_marker == SourceMarkerConfig(overlay=False)
     assert ScreenshotConfig().target_lang == "zh-Hans"
     bilingual = BilingualConfig()
     assert bilingual.pair == ("zh-Hans", "en")
     assert bilingual.debounce_ms == 400
-    assert bilingual.auto_billing is False
 
 
 def test_config_sections_registry() -> None:
@@ -27,14 +25,25 @@ def test_config_sections_registry() -> None:
 
 
 def test_parse_toml_like_values() -> None:
+    race = RaceConfig.model_validate({"show_source_marker": {"overlay": True}})
+    assert race.show_source_marker.overlay is True
+
+
+def test_removed_fields_are_dropped_from_old_files() -> None:
+    """旧配置里的结束方式（mode）、双语窗口的来源标记与 auto_billing 读取时丢掉，同一节的其他字段照常生效。"""
+    assert {
+        "race": frozenset({"mode"}),
+        "show_source_marker": frozenset({"bilingual"}),
+        "bilingual": frozenset({"auto_billing"}),
+    } == REMOVED_FIELDS
     race = RaceConfig.model_validate(
         {"mode": "full", "show_source_marker": {"overlay": True, "bilingual": False}}
     )
-    assert race.mode is RaceMode.FULL
-    assert race.show_source_marker.overlay is True
-    assert race.show_source_marker.bilingual is False
-    # 内联表只写一部分字段时，其余字段取默认值
-    assert RaceConfig.model_validate({"show_source_marker": {"overlay": True}}).show_source_marker.bilingual
+    assert race == RaceConfig(show_source_marker=SourceMarkerConfig(overlay=True))
+    assert "mode" not in race.model_dump()
+    bilingual = BilingualConfig.model_validate({"auto_billing": True, "debounce_ms": 800})
+    assert bilingual.debounce_ms == 800
+    assert "auto_billing" not in bilingual.model_dump()
 
 
 @pytest.mark.parametrize(
@@ -71,9 +80,8 @@ def test_pair_is_normalized() -> None:
         (BilingualConfig, {"pair": ["zh-Hans", "en", "ja"]}, ("pair",)),
         (BilingualConfig, {"debounce_ms": 0}, ("debounce_ms",)),
         (BilingualConfig, {"debounce_ms": 60_000}, ("debounce_ms",)),
-        (BilingualConfig, {"auto_billing": "sometimes"}, ("auto_billing",)),
-        (RaceConfig, {"mode": "turbo"}, ("mode",)),
         (RaceConfig, {"show_source_marker": {"tray": True}}, ("show_source_marker", "tray")),
+        (RaceConfig, {"show_source_marker": {"overlay": "sometimes"}}, ("show_source_marker", "overlay")),
         (RaceConfig, {"speed": 1}, ("speed",)),
     ],
 )
@@ -117,6 +125,5 @@ def test_dump_uses_canonical_codes() -> None:
     assert config.model_dump(mode="json") == {
         "pair": ["ja", "zh-Hant"],
         "debounce_ms": 400,
-        "auto_billing": False,
         "layout": "vertical",
     }

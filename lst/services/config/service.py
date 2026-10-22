@@ -210,7 +210,19 @@ class ConfigService:
             if self._running:
                 await self._apply_patch(command.patch)
 
-    async def _apply_patch(self, patch: Mapping[str, JsonValue]) -> None:
+    async def update(self, patch: Mapping[str, JsonValue]) -> tuple[ConfigRejected, ...]:
+        """直接应用一次修改，等它写进配置文件后返回被拒绝的位置（空元组表示全部生效）。
+
+        与 UpdateConfig 走同一把锁、同一套校验与写回，同样发布 AppConfig 与 ConfigRejected。
+        组合根在需要确认修改已经落盘时用它，例如移动模型目录之后写 [storage].models_dir：
+        写不进去时要把模型移回原处。
+        """
+        async with self._lock:
+            if not self._running:
+                return (ConfigRejected((), "配置服务没有运行"),)
+            return await self._apply_patch(patch)
+
+    async def _apply_patch(self, patch: Mapping[str, JsonValue]) -> tuple[ConfigRejected, ...]:
         rejected: list[Issue] = []
         sections = dict(self._sections)
         lists = dict(self._lists)
@@ -249,11 +261,11 @@ class ConfigService:
             else:
                 self._sections = sections
                 self._lists = lists
-        for location, reason in rejected:
-            self._reject(location, reason)
+        events = tuple(self._reject(location, reason) for location, reason in rejected)
         if edits:
             await self._register_secrets()
             self._publish_config()
+        return events
 
     def _persist(self, known_text: str, edits: Sequence[Edit]) -> str:
         """在线程池中执行：把修改写进配置文件，返回写入的文本。

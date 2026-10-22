@@ -33,8 +33,8 @@ def test_choice_from_literal_type_alias() -> None:
 
 
 def test_choice_from_enum_uses_member_values() -> None:
-    mode = spec("race", "mode")
-    assert (mode.kind, mode.choices, mode.default) == (Kind.CHOICE, ("saver", "full"), "saver")
+    mode = spec("ocr", "mode")
+    assert (mode.kind, mode.choices, mode.default) == (Kind.CHOICE, ("structure", "text"), "structure")
     assert spec("ocr", "device").choices == ("auto", "cpu", "gpu")
 
 
@@ -46,9 +46,8 @@ def test_integer_range_and_default_come_from_the_model() -> None:
 
 
 def test_nested_model_path() -> None:
-    marker = spec("race", "show_source_marker", "bilingual")
-    assert (marker.kind, marker.default) == (Kind.BOOL, True)
-    assert spec("race", "show_source_marker", "overlay").default is False
+    marker = spec("race", "show_source_marker", "overlay")
+    assert (marker.kind, marker.default) == (Kind.BOOL, False)
 
 
 def test_exclusive_float_minimum() -> None:
@@ -66,11 +65,11 @@ def test_new_type_and_plain_text_fields() -> None:
 
 def test_unknown_field_and_bad_nesting() -> None:
     with pytest.raises(KeyError, match="没有字段"):
-        spec("race", "nope")
+        spec("bilingual", "nope")
     with pytest.raises(KeyError, match="嵌套"):
-        spec("race", "mode", "deeper")
+        spec("bilingual", "layout", "deeper")
     with pytest.raises(KeyError):
-        field_spec(all_models()["race"], ())
+        field_spec(all_models()["bilingual"], ())
 
 
 def test_engine_model_fields() -> None:
@@ -100,8 +99,8 @@ def test_read_value_falls_back_to_the_default() -> None:
     debounce = spec("bilingual", "debounce_ms")
     assert read_value(config, "bilingual", ("debounce_ms",), debounce) == 700
     assert read_value(None, "bilingual", ("debounce_ms",), debounce) == 400
-    assert read_path(config, "race", ("show_source_marker", "bilingual")) is True
-    assert read_path(config, "race", ("nope", "deeper")) is None
+    assert read_path(config, "race", ("show_source_marker", "overlay")) is False
+    assert read_path(config, "bilingual", ("nope", "deeper")) is None
 
 
 def test_optional_fields_read_none_not_the_default() -> None:
@@ -111,10 +110,8 @@ def test_optional_fields_read_none_not_the_default() -> None:
 
 def test_nested_patch() -> None:
     value: JsonValue = True
-    assert nested_patch(("show_source_marker", "bilingual"), value) == {
-        "show_source_marker": {"bilingual": True}
-    }
-    assert nested_patch(("mode",), "full") == {"mode": "full"}
+    assert nested_patch(("show_source_marker", "overlay"), value) == {"show_source_marker": {"overlay": True}}
+    assert nested_patch(("layout",), "horizontal") == {"layout": "horizontal"}
 
 
 def errors_of(kind: str, **fields: object) -> dict[str, str]:

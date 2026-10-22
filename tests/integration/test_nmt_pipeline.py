@@ -111,10 +111,10 @@ async def test_real_models_through_supervisor_and_race() -> None:
         finally:
             await scheduler.aclose()
         for view in to_zh:
-            assert (view.winner, view.finished) == (ARGOS, True)
+            assert (view.shown_engine, view.finished) == (ARGOS, True)
             assert any("一" <= ch <= "鿿" for ch in view.display_text), view.display_text
         for view in to_en:
-            assert (view.winner, view.finished) == (ARGOS, True)
+            assert (view.shown_engine, view.finished) == (ARGOS, True)
             letters = [ch for ch in view.display_text if ch.isalpha()]
             assert letters and sum(ch.isascii() for ch in letters) / len(letters) > 0.9, view.display_text
     finally:
@@ -133,16 +133,16 @@ async def test_crash_mid_race_backup_wins_then_worker_recovers() -> None:
         try:
             before, crashed = await translate(scheduler, sink, "c", ["hello", "CRASH now"], (EN, ZH))
             # NMT 进程逐段发回结果：第一段在崩溃前已经返回，本地 NMT 优先级更高而胜出。
-            assert (before.winner, before.display_text) == (ARGOS, "[en>zh-Hans]hello")
+            assert (before.shown_engine, before.display_text) == (ARGOS, "[en>zh-Hans]hello")
             # 第二段让进程退出：本地 NMT 的尝试记为推理进程崩溃，备用引擎胜出。
-            assert crashed.winner == BACKUP
+            assert crashed.shown_engine == BACKUP
             nmt = next(a for a in crashed.attempts if a.engine_id == ARGOS)
             assert nmt.state is AttemptState.FAILED
             assert nmt.error_code is ErrorCode.WORKER_CRASHED
 
             states.append(await supervisor.wait_for_state(WorkerState.READY, WorkerState.FAILED))
             recovered = await translate(scheduler, sink, "d", ["hello again"], (EN, ZH))
-            assert recovered[0].winner == ARGOS
+            assert recovered[0].shown_engine == ARGOS
             assert recovered[0].display_text == "[en>zh-Hans]hello again"
         finally:
             await scheduler.aclose()

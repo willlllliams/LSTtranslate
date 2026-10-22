@@ -8,6 +8,8 @@
 - 正文（文本模式）：全部正文块的文本行一起交给段落合并器，每个段落一个段，段号 ``p{n}``
   （n 从 1 开始按阅读顺序编号），范围是段落的包围盒，所属块是段落首行所在的块。
   没有 lines 的正文块整体当作一行。其他类别的块仍按版面模式的规则处理。
+  premerged 为真时正文块已经由结构归一化的聚合步骤合并成段落（lst/services/ocr/normalize.py），
+  每个正文块一个段，段号同样是 ``p{n}``，文本是块的 text（为空白时改用 lines），范围是块的包围盒。
 - 表格：每个非空单元格一个段，段号 ``b{块 id}-r{行}c{列}``，范围是单元格的包围盒，cell=(行, 列)。
   表格没有单元格网格时退回为整块一个段，文字不会丢失。
 - 图表：图表转换出的数据表中每个非空单元格一个段，段号写法同表格，cell 是数据表的行列号；
@@ -37,9 +39,14 @@ _TEXT_LIKE: Final = frozenset({BlockCategory.TEXT, BlockCategory.TITLE, BlockCat
 
 
 def blocks_to_segments(
-    blocks: Sequence[LayoutBlock], mode: OcrMode, merger: ParagraphMerger | None = None
+    blocks: Sequence[LayoutBlock],
+    mode: OcrMode,
+    merger: ParagraphMerger | None = None,
+    *,
+    premerged: bool = False,
 ) -> tuple[OcrSegment, ...]:
-    """按模块文档的规则把版面块转换成段。merger 缺省时用默认参数的 GeometricMerger。"""
+    """按模块文档的规则把版面块转换成段。merger 缺省时用默认参数的 GeometricMerger；
+    premerged 为真时文本模式的正文块已经是段落，不再合并。"""
     ordered = sorted(blocks, key=lambda b: b.order)
     paragraph_merger = merger if merger is not None else _DEFAULT_MERGER
     out: list[OcrSegment] = []
@@ -53,9 +60,16 @@ def blocks_to_segments(
         out.append(OcrSegment(Segment(SegmentId(segment_id), text), block_id, bbox, cell))
 
     merged = False
+    number = 0
     for block in ordered:
         if mode is OcrMode.TEXT and block.category is BlockCategory.TEXT:
             # 文本模式下全部正文块的行一起合并，段落排在第一个正文块的位置。
+            if premerged:
+                text = block_text(block)
+                if text:
+                    number += 1
+                    add(f"p{number}", text, block.id, block.bbox, None)
+                continue
             if not merged:
                 merged = True
                 for segment_id, text, block_id, bbox in _paragraphs(ordered, paragraph_merger):

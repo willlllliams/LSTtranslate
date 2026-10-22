@@ -18,7 +18,9 @@ from lst.contracts.events import (
     WorkerStatuses,
 )
 from lst.contracts.models import ModelCatalog
+from lst.contracts.nmt_runtime import NmtRuntimeInfo
 from lst.contracts.ocr_engines import OcrEngineCatalog
+from lst.contracts.storage import StorageLocations
 from lst.contracts.updates import UpdateStatus
 from lst.kernel import ModuleContext
 from lst.ui.settings.controls import DEFAULT_DEBOUNCE_MS
@@ -49,14 +51,15 @@ class SettingsModule:
             [bilingual]、[nmt]、[updates] 等）。界面模块不能 import services，模型由组合根注入，设置项的类型、
             取值范围和默认值都从它们读出；某一节没有注入时，依赖它的设置项不显示；
         engine_kinds：引擎类别（kind）→ 该类引擎一条 ``[[engines]]`` 的 pydantic 模型；
-        keyless_kinds：不需要 API key 的引擎类别，默认只有 local_nmt；
+        keyless_kinds：不需要 API key 的引擎类别，默认是 local_nmt 与 dictionary；
         app_version：关于页显示的版本号，缺省时读已安装包的版本；
         text_debounce_ms：文本框停止输入后提交的等待时间，默认 500 毫秒（需求 UI-06）；
         dialogs：确认与选择目录的对话框，缺省用 Qt 的模态对话框，测试时替换。
 
     start 时创建窗口并保持隐藏；收到 OpenSettings 命令时显示窗口，窗口已经显示时只是带到前面。
-    OCR 引擎目录（OcrEngineCatalog）与更新状态（UpdateStatus）从总线订阅；总线上没有它们时，
-    截屏与识别页的引擎卡片与关于页的更新卡片说明该功能不可用，不发送命令。
+    OCR 引擎目录（OcrEngineCatalog）、显卡运行库状态（NmtRuntimeInfo）、更新状态（UpdateStatus）与存储位置
+    （StorageLocations）从总线订阅；总线上没有它们时，截屏与识别页的引擎卡片、模型页的显卡运行库卡片、
+    关于页的更新卡片与常规页的存储位置卡片说明该功能不可用，不发送命令。
     """
 
     name = "ui.settings"
@@ -120,7 +123,9 @@ class SettingsModule:
         ctx.subscribe(EngineConnectionChecked, presenter.on_connection_checked)
         ctx.subscribe(CacheCleared, presenter.on_cache_cleared)
         ctx.subscribe(OcrEngineCatalog, presenter.on_ocr_engines)
+        ctx.subscribe(NmtRuntimeInfo, presenter.on_nmt_runtime)
         ctx.subscribe(UpdateStatus, presenter.on_update_status)
+        ctx.subscribe(StorageLocations, presenter.on_storage)
         ctx.subscribe(OpenSettings, lambda _: presenter.on_open_settings())
 
     async def stop(self) -> None:

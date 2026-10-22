@@ -43,7 +43,16 @@ from lst.contracts.models import (
     ModelCatalog,
     RefreshModelCatalog,
 )
-from lst.contracts.ocr_engines import CancelOcrEngineInstall, InstallOcrEngine, UninstallOcrEngine
+from lst.contracts.nmt_runtime import CancelNmtRuntimeInstall, DeleteNmtRuntime, InstallNmtRuntime
+from lst.contracts.ocr_engines import (
+    CancelOcrEngineInstall,
+    CancelOcrModelDownload,
+    DeleteOcrModel,
+    DownloadOcrModel,
+    InstallOcrEngine,
+    UninstallOcrEngine,
+)
+from lst.contracts.storage import ChangeDataDir, ChangeModelsDir, RestartApp
 from lst.contracts.updates import CheckForUpdates, DownloadUpdate, InstallUpdate
 from lst.kernel import EventBus, ModuleContext
 from lst.services.cache import CacheModule, SqliteTranslationCache
@@ -77,10 +86,19 @@ COMMAND_TYPES: tuple[type[Command], ...] = (
     InstallOcrEngine,
     CancelOcrEngineInstall,
     UninstallOcrEngine,
+    DownloadOcrModel,
+    CancelOcrModelDownload,
+    DeleteOcrModel,
+    InstallNmtRuntime,
+    CancelNmtRuntimeInstall,
+    DeleteNmtRuntime,
     CheckForUpdates,
     DownloadUpdate,
     InstallUpdate,
     RestartWorker,
+    ChangeDataDir,
+    ChangeModelsDir,
+    RestartApp,
 )
 
 

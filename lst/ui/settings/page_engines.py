@@ -58,7 +58,7 @@ from lst.ui.settings.presenter import (
     Topic,
 )
 from lst.ui.settings.schema import FieldSpec, Kind, model_field_specs
-from lst.ui.settings.strings import text_or
+from lst.ui.settings.strings_free import text_or
 from lst.ui.theme import TOKENS, Glyph, engine_color, fluent_icon, style_primary_button
 
 ID_ROLE: Final = Qt.ItemDataRole.UserRole

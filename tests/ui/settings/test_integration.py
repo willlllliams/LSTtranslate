@@ -76,18 +76,16 @@ async def test_changes_are_saved_to_the_file_and_shown_back(start_full: StartFul
     full = await start_full()
     window = await full.open()
     window.show_page("race")
-    mode = binding(window.page("race"), "race", "mode").editor
-    assert isinstance(mode, ChoiceEditor)
-    mode.combo.setCurrentIndex(mode.combo.findData("full"))
     toggle = binding(window.page("race"), "race", "show_source_marker", "overlay").editor
     assert isinstance(toggle, SwitchEditor)
     toggle.switch.click()
+    layout = binding(window.page("race"), "bilingual", "layout").editor
+    assert isinstance(layout, ChoiceEditor)
+    layout.combo.setCurrentIndex(layout.combo.findData("horizontal"))
     await full.settle()
-    assert config_file(full)["race"] == {
-        "mode": "full",
-        "show_source_marker": {"overlay": True, "bilingual": True},
-    }
-    assert mode.json_value() == "full" and not mode.dirty
+    assert config_file(full)["race"] == {"show_source_marker": {"overlay": True}}
+    assert config_file(full)["bilingual"]["layout"] == "horizontal"
+    assert toggle.json_value() is True and not toggle.dirty
 
 
 async def test_language_switch_round_trip(start_full: StartFull) -> None:
@@ -99,15 +97,19 @@ async def test_language_switch_round_trip(start_full: StartFull) -> None:
     await full.settle()
     assert i18n.current_language() == "en"
     assert window.windowTitle() == "Settings"
-    assert [window.nav.item(i).text() for i in range(3)] == ["General", "Hotkeys", "Capture & recognition"]
+    assert [item.text(0) for item in window.nav.top_items()[:3]] == [
+        "General",
+        "Hotkeys & bindings",
+        "Capture & recognition",
+    ]
     assert config_file(full)["ui"] == {"language": "en", "theme": "system"}
 
 
 async def test_service_rejection_is_shown_beside_the_control_and_clears(start_full: StartFull) -> None:
     full = await start_full()
     window = await full.open()
-    window.show_page("capture")
-    page = window.page("capture")
+    window.show_page("capture.options")
+    page = window.page("capture.options")
     resize = binding(page, "ocr", "resize_max_side")
     grayscale = binding(page, "ocr", "grayscale").editor
     assert isinstance(resize.editor, IntEditor) and isinstance(grayscale, SwitchEditor)
@@ -177,7 +179,12 @@ async def test_duplicate_hotkey_is_rejected_beside_the_edited_hotkey(start_full:
 async def test_instances_survive_edits_and_reorder_through_the_real_service(start_full: StartFull) -> None:
     full = await start_full()
     page = await engines_page(full)
-    assert page.ids() == ["argos"]  # 配置文件不存在时的默认列表
+    assert page.ids() == [
+        "argos",
+        "google_free",
+        "microsoft_free",
+        "dictionary",
+    ]  # 配置文件不存在时的默认列表
     for _ in range(2):
         page.add_button.click()
         dialog = page.add_dialog
@@ -185,13 +192,23 @@ async def test_instances_survive_edits_and_reorder_through_the_real_service(star
         dialog.kind_combo.setCurrentIndex(dialog.kind_combo.findData("deepl"))
         dialog.add_button.click()
         await full.settle()
-    assert page.ids() == ["argos", "deepl", "deepl-2"] and page.selected_id == "deepl-2"
+    assert (
+        page.ids() == ["argos", "google_free", "microsoft_free", "dictionary", "deepl", "deepl-2"]
+        and page.selected_id == "deepl-2"
+    )
 
-    page.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)  # 拖拽
+    page.list.model().moveRow(QModelIndex(), 5, QModelIndex(), 0)  # 拖拽
     await full.settle()
-    assert page.ids() == ["deepl-2", "argos", "deepl"]
+    assert page.ids() == ["deepl-2", "argos", "google_free", "microsoft_free", "dictionary", "deepl"]
     saved = config_file(full)["engines"]
-    assert [(e["id"], e["priority"]) for e in saved] == [("deepl-2", 1), ("argos", 2), ("deepl", 3)]
+    assert [(e["id"], e["priority"]) for e in saved] == [
+        ("deepl-2", 1),
+        ("argos", 2),
+        ("google_free", 3),
+        ("microsoft_free", 4),
+        ("dictionary", 5),
+        ("deepl", 6),
+    ]
 
     editor = page.editor_editor("name")
     assert isinstance(editor, TextEditor)
@@ -199,7 +216,7 @@ async def test_instances_survive_edits_and_reorder_through_the_real_service(star
     editor.edit.textEdited.emit("")
     editor.edit.editingFinished.emit()
     await full.settle()
-    assert page.ids() == ["deepl-2", "argos", "deepl"]
+    assert page.ids() == ["deepl-2", "argos", "google_free", "microsoft_free", "dictionary", "deepl"]
     assert page.editor_card("name") is not None and page.editor_card("name").error_text != ""  # type: ignore[union-attr]
 
 
@@ -239,7 +256,7 @@ async def test_api_key_flows_to_the_secret_store_and_nowhere_else(
         assert full.secrets.get_secret("deepl") == KEY  # 经由 UpdateSecret 进入密钥存储
         assert page.secret_field is not None and page.secret_field.status_label.text() == "已设置"
         assert KEY not in read_config_text(full)  # 配置文件里只有条目名
-        assert config_file(full)["engines"][1]["secret"] == "deepl"
+        assert config_file(full)["engines"][4]["secret"] == "deepl"
 
         page.secret_field.editor.edit.setText(new_key)  # 换一个 key
         page.secret_field.editor.edit.textEdited.emit(new_key)
@@ -264,7 +281,7 @@ async def test_instance_without_a_key_shows_unset_and_the_test_fails_with_advice
     full = await start_full()
     page = await add_deepl(full, None)
     assert page.secret_field is not None and page.secret_field.status_label.text() == "未设置"
-    assert "出错" in page.list.item(1).text()
+    assert "出错" in page.list.item(4).text()
     page.test_button.click()
     await wait_until(lambda: page.test_label.text().startswith("连接失败"))
     assert "API key" in page.test_label.text()
@@ -288,9 +305,14 @@ async def test_removing_an_instance_deletes_its_key(start_full: StartFull) -> No
     page.select("deepl")
     page.remove_button.click()
     await full.settle()
-    assert page.ids() == ["argos"]
+    assert page.ids() == ["argos", "google_free", "microsoft_free", "dictionary"]
     assert full.secrets.get_secret("deepl") is None
-    assert [e["id"] for e in config_file(full)["engines"]] == ["argos"]
+    assert [e["id"] for e in config_file(full)["engines"]] == [
+        "argos",
+        "google_free",
+        "microsoft_free",
+        "dictionary",
+    ]
 
 
 async def test_statistics_table_updates_and_resets_through_the_real_stats_module(

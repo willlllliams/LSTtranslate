@@ -340,7 +340,6 @@ class Glyph:
     SLIDERS: Final = "\ue9e9"
     STOPWATCH: Final = "\ue916"
     PIN: Final = "\ue7b7"
-    BILL: Final = "\ue9f9"
     POWER: Final = "\ue7e8"
     LOCK: Final = "\ue72e"
     LINK: Final = "\ue71b"
@@ -363,6 +362,13 @@ class Glyph:
     UPDATE: Final = "\ue777"  # 更新
     OPEN_IN_NEW: Final = "\ue8a7"  # 在新窗口中打开：发布说明
     CANCEL: Final = "\ue711"  # 叉号：取消
+    FILTER: Final = "\ue71c"  # 漏斗：清洗
+    CUT: Final = "\ue8c6"  # 剪刀：拆分、分句
+    CODE: Final = "\ue943"  # 花括号：结果转换
+    MERGE: Final = "\uea3c"  # 汇合箭头：聚合、拼回
+    HISTORY: Final = "\ue81c"  # 带箭头的时钟：译文缓存
+    GRID: Final = "\ue8a9"  # 四个方块：分批
+    SEND: Final = "\ue724"  # 纸飞机：提交请求
 
 
 _icon_font_ready: bool | None = None

@@ -48,13 +48,13 @@ class TestRequirementTimeline:
         assert race.display_text == "原文"
 
         assert race.resolve(ARGOS, ok("argos 译文"), now=0.3)
-        assert (race.winner, race.finished) == (ARGOS, False)
+        assert (race.shown_engine, race.finished) == (ARGOS, False)
 
         assert race.resolve(DEEPL, ok("deepl 译文"), now=1.2)
-        assert (race.winner, race.finished) == (DEEPL, False)
+        assert (race.shown_engine, race.finished) == (DEEPL, False)
 
         assert race.resolve(DEEPSEEK, ok("deepseek 译文"), now=2.1)
-        assert (race.winner, race.finished) == (DEEPSEEK, True)
+        assert (race.shown_engine, race.finished) == (DEEPSEEK, True)
         assert race.display_text == "deepseek 译文"
 
     def test_lower_priority_result_after_best_is_only_recorded(self) -> None:
@@ -64,40 +64,9 @@ class TestRequirementTimeline:
         assert race.finished
 
         assert not race.resolve(DEEPL, ok("deepl 译文"), now=1.2)
-        assert race.winner == DEEPSEEK
+        assert race.shown_engine == DEEPSEEK
         assert race.attempt(DEEPL).state is AttemptState.DONE
         assert race.attempt(DEEPL).text == "deepl 译文"
-
-
-class TestRejoin:
-    """计费实例被替换后，同号新实例的尝试替换旧实例失败的尝试。"""
-
-    def test_replaces_failed_attempt_and_reopens_race(self) -> None:
-        race = make_race((DEEPSEEK, 1), (ARGOS, 3))
-        race.resolve(DEEPSEEK, fail("401"), now=0.2)
-        race.resolve(ARGOS, ok("argos 译文"), now=0.3)
-        assert (race.winner, race.finished) == (ARGOS, True)
-
-        race.rejoin(DEEPSEEK, 1, now=5.0)
-        attempt = race.attempt(DEEPSEEK)
-        assert (attempt.state, attempt.error, attempt.dispatched_at) == (AttemptState.QUEUED, None, 5.0)
-        assert race.participants() == (DEEPSEEK, ARGOS)
-        assert (race.winner, race.finished) == (ARGOS, False)
-
-        assert race.resolve(DEEPSEEK, ok("deepseek 译文"), now=5.5)
-        assert (race.winner, race.finished) == (DEEPSEEK, True)
-
-    @pytest.mark.parametrize("finish", [None, "done", "cancelled"])
-    def test_only_failed_attempt_can_be_replaced(self, finish: str | None) -> None:
-        race = make_race((DEEPSEEK, 1))
-        if finish == "done":
-            race.resolve(DEEPSEEK, ok("译文"), now=0.1)
-        elif finish == "cancelled":
-            race.cancel(DEEPSEEK, now=0.1)
-        with pytest.raises(ValueError, match="不能重新参赛"):
-            race.rejoin(DEEPSEEK, 1, now=1.0)
-        with pytest.raises(ValueError, match="不能重新参赛"):
-            race.rejoin(DEEPL, 2, now=1.0)
 
 
 def test_failure_never_overrides_and_top_failure_finishes_race() -> None:
@@ -106,7 +75,7 @@ def test_failure_never_overrides_and_top_failure_finishes_race() -> None:
     assert not race.finished
 
     assert not race.resolve(DEEPSEEK, fail("401"), now=0.5)
-    assert race.winner == ARGOS
+    assert race.shown_engine == ARGOS
     assert race.finished
     assert race.attempt(DEEPSEEK).error == "401"
 
@@ -117,7 +86,7 @@ def test_all_failed_shows_source_text() -> None:
     assert not race.finished
     race.resolve(DEEPSEEK, fail("超时"), now=0.2)
     assert race.finished
-    assert race.winner is None
+    assert race.shown_engine is None
     assert race.display_text == "原文"
 
 
@@ -126,13 +95,13 @@ def test_equal_priority_keeps_first_arrival() -> None:
     race = make_race((a, 2), (b, 2))
     assert race.resolve(b, ok("b"), now=0.1)
     assert not race.resolve(a, ok("a"), now=0.2)
-    assert race.winner == b
+    assert race.shown_engine == b
 
 
 def test_no_participants_is_finished_with_source_text() -> None:
     race = make_race()
     assert race.finished
-    assert race.winner is None
+    assert race.shown_engine is None
     assert race.display_text == "原文"
 
 
@@ -164,6 +133,18 @@ def test_duplicate_participant_is_rejected() -> None:
 
 
 class TestCancel:
+    def test_running_attempt_can_be_cancelled_only_when_asked(self) -> None:
+        """调度器取消执行中的任务时才取消 RUNNING 的尝试；取消记为 CANCELLED，不是失败，不改变胜出者。"""
+        race = make_race((DEEPSEEK, 1), (ARGOS, 3))
+        race.start(ARGOS)
+        race.resolve(DEEPSEEK, ok("deepseek 译文"), now=0.5)
+        assert not race.cancel(ARGOS, now=0.6)
+        assert race.cancel(ARGOS, now=0.6, running=True)
+        attempt = race.attempt(ARGOS)
+        assert (attempt.state, attempt.error, attempt.finished_at) == (AttemptState.CANCELLED, None, 0.6)
+        assert race.shown_engine == DEEPSEEK
+        assert not race.cancel(DEEPSEEK, now=0.7, running=True)  # 已经结束的不受影响
+
     def test_only_queued_attempts_can_be_cancelled(self) -> None:
         race = make_race((DEEPL, 2), (ARGOS, 3))
         race.start(ARGOS)
@@ -197,35 +178,14 @@ class TestCancel:
         assert race.finished
 
 
-class TestLateJoin:
-    """双语窗口 Ctrl+Enter 时计费引擎加入已经开始的会话（需求 BI-04）。"""
-
-    def test_higher_priority_join_reopens_race(self) -> None:
-        race = make_race((ARGOS, 3))
-        race.resolve(ARGOS, ok("argos 译文"), now=0.3)
-        assert race.finished
-
-        race.add(DEEPSEEK, 1, now=1.0)
-        assert not race.finished
-        race.resolve(DEEPSEEK, ok("deepseek 译文"), now=2.0)
-        assert (race.winner, race.finished) == (DEEPSEEK, True)
-
-    def test_lower_priority_join_keeps_race_finished(self) -> None:
-        race = make_race((DEEPL, 2))
-        race.resolve(DEEPL, ok("deepl 译文"), now=0.3)
-        race.add(ARGOS, 3, now=1.0)
-        assert race.finished
-        assert not race.contending(ARGOS)
-
-
-def test_view_orders_winner_first_and_reports_latency() -> None:
+def test_view_orders_shown_engine_first_and_reports_latency() -> None:
     race = make_race((DEEPSEEK, 1), (DEEPL, 2), (ARGOS, 3))
     race.resolve(DEEPL, ok("deepl 译文"), now=1.2)
     view = race.view()
     assert [a.engine_id for a in view.attempts] == [DEEPL, DEEPSEEK, ARGOS]
     assert view.attempts[0].latency_ms == pytest.approx(1200.0)
     assert view.attempts[1].latency_ms is None
-    assert (view.display_text, view.winner, view.finished) == ("deepl 译文", DEEPL, False)
+    assert (view.display_text, view.shown_engine, view.finished) == ("deepl 译文", DEEPL, False)
 
 
 class TestSessionRace:
@@ -296,7 +256,7 @@ def engine(i: int) -> EngineId:
 
 def reference_h_empty(race: SegmentRace) -> bool:
     """独立按定义计算 H 是否为空。"""
-    w = race.winner
+    w = race.shown_engine
     for e in race.participants():
         a = race.attempt(e)
         if a.state in (AttemptState.QUEUED, AttemptState.RUNNING) and (
@@ -313,7 +273,7 @@ def test_properties_hold_for_any_arrival_order(scenario: tuple[list[int], list[S
 
     changes = 0
     shown: list[int] = []  # 每次显示变化后的胜出者优先级
-    finished_winner: EngineId | None = None
+    finished_shown: EngineId | None = None
     finished_seen = False
 
     for t, step in enumerate(steps, start=1):
@@ -324,7 +284,7 @@ def test_properties_hold_for_any_arrival_order(scenario: tuple[list[int], list[S
             race.start(e)
             if race.resolve(e, ok(f"t{step.index}") if step.success else fail(), now=float(t)):
                 changes += 1
-                w = race.winner
+                w = race.shown_engine
                 assert w is not None
                 shown.append(race.attempt(w).priority)
 
@@ -332,11 +292,11 @@ def test_properties_hold_for_any_arrival_order(scenario: tuple[list[int], list[S
         assert race.finished == reference_h_empty(race)
         # 参赛集合不变时，结束后胜出者不再变化。
         if finished_seen:
-            assert race.winner == finished_winner
+            assert race.shown_engine == finished_shown
         if race.finished and not finished_seen:
-            finished_seen, finished_winner = True, race.winner
+            finished_seen, finished_shown = True, race.shown_engine
         # contending 与 H 的定义一致；竞速结束时没有任何尝试仍在竞争。
-        w = race.winner
+        w = race.shown_engine
         for x in race.participants():
             a = race.attempt(x)
             in_h = a.state.pending and (w is None or a.priority < race.attempt(w).priority)
@@ -357,8 +317,8 @@ def test_properties_hold_for_any_arrival_order(scenario: tuple[list[int], list[S
         for t, s in enumerate(steps)
         if not s.cancel and s.success
     ]
-    expected_winner = min(successes)[2] if successes else None
-    assert race.winner == expected_winner
+    expected_shown = min(successes)[2] if successes else None
+    assert race.shown_engine == expected_shown
 
 
 # ---------------------------------------------------------------- 新增接口
@@ -373,15 +333,6 @@ class TestContendingAndComplete:
         assert race.contending(DEEPSEEK)
         assert not race.contending(DEEPL)  # 已结束
         assert not race.contending(ARGOS)  # 优先级低于胜出者，可剪枝
-
-    def test_complete_requires_every_attempt_finished(self) -> None:
-        race = make_race((DEEPSEEK, 1), (ARGOS, 3))
-        race.resolve(DEEPSEEK, ok("deepseek 译文"), now=0.5)
-        assert race.finished
-        assert not race.complete
-        race.resolve(ARGOS, ok("argos 译文"), now=0.6)
-        assert race.complete
-        assert race.view().complete
 
     def test_cached_flag_reaches_view(self) -> None:
         race = make_race((DEEPL, 2), (ARGOS, 3))
@@ -398,7 +349,7 @@ class TestSkip:
         session.skip(SEG, SkipReason.SAME_LANGUAGE)
         (view,) = session.take_dirty()
         assert view.skip_reason is SkipReason.SAME_LANGUAGE
-        assert view.finished and view.complete
+        assert view.finished
         assert view.display_text == "same"
 
     def test_skip_rejected_when_participants_exist(self) -> None:
@@ -411,25 +362,26 @@ class TestSkip:
 # ---------------------------------------------------------------- 穷举测试
 
 
-def _final_winner(
-    order: tuple[int, ...], outcomes: tuple[bool, ...], *, saver: bool
+def _final_shown(
+    order: tuple[int, ...], outcomes: tuple[bool, ...], *, prune: bool
 ) -> tuple[EngineId | None, list[EngineId | None]]:
     """按给定到达顺序与成败执行一次竞速，返回最终胜出者与每步之后的胜出者。
 
-    saver=True 时模拟节省模式的出队剪枝：轮到某个实例执行时，若它已不在 H 中就取消它。
+    prune=True 时模拟调度器的剪枝：轮到某个实例执行时，若它已不在 H 中就取消它；
+    prune=False 时每个实例都执行，用来对照剪枝是否改变终态。
     参赛实例 i 的优先级为 i + 1，满足前提 1（优先级互异）。
     """
     race = make_race(*((engine(i), i + 1) for i in range(len(order))))
     history: list[EngineId | None] = []
     for t, i in enumerate(order, start=1):
         e = engine(i)
-        if saver and not race.contending(e):
+        if prune and not race.contending(e):
             assert race.cancel(e, now=float(t))
         else:
             race.start(e)
             race.resolve(e, ok(f"t{i}") if outcomes[i] else fail(), now=float(t))
-        history.append(race.winner)
-    return race.winner, history
+        history.append(race.shown_engine)
+    return race.shown_engine, history
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 4])
@@ -437,8 +389,8 @@ def test_exhaustive_orders_and_outcomes(n: int) -> None:
     """参赛实例不超过 4 个时，遍历所有到达顺序与成败组合。
 
     逐一检查：
-    - 性质 2：完整模式的终态是成功实例中优先级最高者，与到达顺序无关；
-    - 引理 2：节省模式的终态与完整模式相同；
+    - 性质 2：不剪枝时的终态是成功实例中优先级最高者，与到达顺序无关；
+    - 引理 2：剪枝后的终态与不剪枝时相同；
     - 定理 1：显示已定之后胜出者不再变化。
     """
     for order in permutations(range(n)):
@@ -446,10 +398,10 @@ def test_exhaustive_orders_and_outcomes(n: int) -> None:
             successes = [i for i in range(n) if outcomes[i]]
             expected = engine(min(successes)) if successes else None
 
-            full, _ = _final_winner(order, outcomes, saver=False)
-            saver, _ = _final_winner(order, outcomes, saver=True)
-            assert full == expected, (order, outcomes)
-            assert saver == expected, (order, outcomes)
+            unpruned, _ = _final_shown(order, outcomes, prune=False)
+            pruned, _ = _final_shown(order, outcomes, prune=True)
+            assert unpruned == expected, (order, outcomes)
+            assert pruned == expected, (order, outcomes)
 
             # 定理 1：重放一遍，找到第一次显示已定的时刻，之后胜出者不变。
             race = make_race(*((engine(i), i + 1) for i in range(n)))
@@ -459,9 +411,9 @@ def test_exhaustive_orders_and_outcomes(n: int) -> None:
                 race.start(engine(i))
                 race.resolve(engine(i), ok("x") if outcomes[i] else fail(), now=float(t))
                 if settled_seen:
-                    assert race.winner == settled, (order, outcomes)
+                    assert race.shown_engine == settled, (order, outcomes)
                 elif race.finished:
-                    settled_seen, settled = True, race.winner
+                    settled_seen, settled = True, race.shown_engine
             assert settled_seen
 
 

@@ -200,24 +200,24 @@ class AttemptView:
 class SkipReason(StrEnum):
     """段没有参加竞速的原因。"""
 
+    NO_TEXT = "no_text"  # 段里没有可翻译的文字：只有数字、符号，或只有一个非汉字字母（RACE-09）
     SAME_LANGUAGE = "same_language"  # 检测到的源语言与目标语言相同（RACE-09）
     NO_ENGINE = "no_engine"  # 没有任何已启用的实例支持这个语言对
 
 
 @dataclass(frozen=True, slots=True)
 class SegmentView:
-    """发给界面的一个段的竞速快照。winner 为 None 时界面显示原文。
+    """发给界面的一个段的竞速快照。
 
-    finished：显示已定（架构文档 6.3 节的 H 为空）。没有晚加入时之后不会再变化；双语窗口按 Ctrl+Enter
-    让优先级更高的计费实例晚加入时，已定的段会重新变为未定（6.3 节“晚加入”）。
-    complete：所有参赛实例都已结束；完整模式（RACE-05）下用于判断比较数据是否齐全。
+    shown_engine 是当前显示的译文来自哪个实例，即竞速的当前胜出者：已成功返回的实例中优先级最高的那个
+    （RACE-03）。为 None 时还没有任何实例成功，界面显示原文。
+    finished：显示已定（架构文档 6.3 节的 H 为空），之后 shown_engine 与 display_text 不再变化。
     """
 
     segment_id: SegmentId
     source_text: str
     display_text: str
-    winner: EngineId | None
+    shown_engine: EngineId | None
     finished: bool
     attempts: tuple[AttemptView, ...]
-    complete: bool = False
     skip_reason: SkipReason | None = None

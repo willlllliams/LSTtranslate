@@ -70,7 +70,10 @@ class OcrWorkerProcess:
         python: Path | str | None = None,
         extra_args: Sequence[str] = (),
         env: Mapping[str, str] | None = None,
+        command: Sequence[str] | None = None,
     ) -> None:
+        """command 不为 None 时代替 ``python -m lst.workers.ocr_worker``，例如经安装版启动器运行。"""
+        self._command = None if command is None else list(command)
         self.authkey = secrets.token_bytes(32)
         self.address = rf"\\.\pipe\lst-test-ocr-{os.getpid()}-{secrets.token_hex(8)}"
         self._python = str(python or sys.executable)
@@ -93,7 +96,8 @@ class OcrWorkerProcess:
         self._listener = Listener(self.address, family="AF_PIPE", authkey=self.authkey)
         self._accept_thread = threading.Thread(target=self._accept, daemon=True)
         self._accept_thread.start()
-        args = [self._python, "-m", "lst.workers.ocr_worker", "--address", self.address, *self._extra_args]
+        entry = self._command or [self._python, "-m", "lst.workers.ocr_worker"]
+        args = [*entry, "--address", self.address, *self._extra_args]
         if self._backend is not None:
             args += ["--backend", self._backend]
         self.proc = subprocess.Popen(

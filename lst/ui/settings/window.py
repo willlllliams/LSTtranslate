@@ -1,50 +1,57 @@
-"""设置窗口的视图：左侧导航、右侧页面、Mica 背景（需求 UI-01、UI-05、UI-07，架构文档 11.7 节）。
+"""设置窗口的视图：左侧两级导航、右侧页面、Mica 背景（需求 UI-01、UI-05、UI-07，架构文档 11.7 节）。
 
 窗口只负责绘制和收集输入：页面从展示器读数据，用户的操作交给展示器，数据变化时展示器通过 ``Topic``
 通知窗口，窗口再转给各页面。窗口在模块启动时创建并保持隐藏，收到 OpenSettings 时只做显示
 （架构文档 11.2 节“窗口首次创建”，需求 6.1 节“设置窗口打开 ≤ 300 毫秒”）。
 
-键盘（需求 UI-07）：Tab 顺序是导航列表、当前页面里从上到下的控件；Ctrl+1 至 Ctrl+7 切换页面，
-Ctrl+Tab 与 Ctrl+Shift+Tab 依次切换；Esc 关闭窗口（只是隐藏）。显示、关闭、Mica 背景与屏幕位置的规则
+导航是两级菜单（``nav.NavTree``）：七个一级项，其中“热键与键位”“截屏与识别”“模型”有子页。
+点有子项的一级项展开它并显示第一个子页，同一时间只展开当前页所在的分支。页面标识：一级页面是 ``general``
+这样的名字，二级页面是 ``capture.paddle``、``hotkeys.overlay`` 这样的“一级.二级”。
+``show_page`` 接受二级标识，也接受旧版本的一级标识（``hotkeys``、``capture``、``models``），
+映射到该分支的第一个子页，例如 ``hotkeys`` 映射到 ``hotkeys.global``。
+上次打开的页面按页面标识保存，旧版本保存的页面序号读取时同样映射。
+
+键盘（需求 UI-07）：Tab 顺序是导航树、当前页面里从上到下的控件；Ctrl+1 至 Ctrl+7 切到第 n 个一级项
+（有子项时到它的第一个子页）；Ctrl+Tab 与 Ctrl+Shift+Tab 按子页的显示顺序循环切换（没有子项的一级项算一页）；
+在导航树里上下键移动、右键展开、左键收起；Esc 关闭窗口（只是隐藏）。显示、关闭、Mica 背景与屏幕位置的规则
 与其他次要窗口相同（``lst.ui.common.window.SecondaryWindow``）。这些按键在 keyPressEvent 里处理，
 不依赖 QShortcut 要求的“窗口处于激活状态”。
+
+配置被拒绝（ConfigRejected）时，错误显示在负责那个位置的卡片上。窗口可见、而当前页没有卡片负责它时，
+自动切到负责它的子页，例如 [bindings] 节里覆盖窗口操作的字段被拒绝时切到 ``hotkeys.overlay``。
 """
 
 from typing import Final
 
-from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import (
-    QHideEvent,
-    QIcon,
-    QKeyEvent,
-    QPainter,
-    QPaintEvent,
-)
-from PySide6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QListWidget,
-    QListWidgetItem,
-    QStackedWidget,
-    QStyle,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
-    QVBoxLayout,
-)
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QHideEvent, QKeyEvent, QPainter, QPaintEvent
+from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout
 
+from lst.contracts.ocr_engines import OcrEngineKind
+from lst.ui.common.bindings import Scope
 from lst.ui.common.window import SecondaryWindow
 from lst.ui.i18n import tr
-from lst.ui.settings.cards import CardBuilder
+from lst.ui.settings.cards import Binding, CardBuilder
 from lst.ui.settings.controls import ThemedLabel
 from lst.ui.settings.dialogs import Dialogs, QtDialogs
+from lst.ui.settings.nav import (
+    NAV_GROUPS,
+    NavDelegate,
+    NavTree,
+    leaf_ids,
+    legacy_page_id,
+    resolve_page_id,
+)
 from lst.ui.settings.page_about import AboutPage
-from lst.ui.settings.page_capture import CapturePage
+from lst.ui.settings.page_bindings import BindingsPage
+from lst.ui.settings.page_capture import CaptureEnginesPage, CaptureOptionsPage
 from lst.ui.settings.page_engines import EnginesPage
-from lst.ui.settings.page_models import ModelsPage
-from lst.ui.settings.pages import GeneralPage, HotkeysPage, RacePage, SettingsPage
+from lst.ui.settings.page_models import DictsPage, GpuPage, NmtModelsPage
+from lst.ui.settings.page_ocr_engine import NormalizePage, OcrEnginePage
+from lst.ui.settings.pages import GeneralPage, GlobalHotkeysPage, RacePage, SettingsPage
 from lst.ui.settings.presenter import Location, SettingsPresenter, Topic
 from lst.ui.settings.state import WindowStateStore
-from lst.ui.theme import TOKENS, fluent_icon, theme_colors, ui_font
+from lst.ui.theme import TOKENS, theme_colors
 
 DEFAULT_SIZE: Final = QSize(1120, 760)
 MINIMUM_SIZE: Final = QSize(820, 520)
@@ -63,52 +70,6 @@ def describe_location(location: Location) -> str:
     return " › ".join(parts)
 
 
-class NavDelegate(QStyledItemDelegate):
-    """导航项的绘制：图标加文字，悬停与选中有圆角背景，选中项左侧有强调色竖条（与 Windows 11 的“设置”一致）。
-
-    颜色取自 ui.theme，每次绘制时读取，切换深浅色或强调色后立即正确。
-    """
-
-    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> QSize:
-        del index
-        return QSize(option.rect.width(), TOKENS.nav_item_height)
-
-    def paint(
-        self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
-    ) -> None:
-        colors = theme_colors()
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(option.rect).adjusted(TOKENS.spacing_s, 2, -TOKENS.spacing_s, -2)
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        if selected or hovered:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(colors.nav_selected if selected else colors.nav_hover)
-            painter.drawRoundedRect(rect, TOKENS.radius_s, TOKENS.radius_s)
-        if selected:
-            bar = QRectF(rect.left(), rect.center().y() - 8, TOKENS.nav_indicator_width, 16)
-            painter.setBrush(colors.accent)
-            painter.drawRoundedRect(bar, TOKENS.nav_indicator_width / 2, TOKENS.nav_indicator_width / 2)
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-        left = rect.left() + TOKENS.spacing_l
-        if isinstance(icon, QIcon):
-            size = TOKENS.nav_icon_px
-            target = QRect(int(left), int(rect.center().y() - size / 2), size, size)
-            icon.paint(painter, target, Qt.AlignmentFlag.AlignCenter, QIcon.Mode.Normal)
-        painter.setFont(ui_font(TOKENS.title_px))
-        painter.setPen(colors.text)
-        text_rect = QRectF(
-            left + TOKENS.nav_icon_px + TOKENS.spacing_m, rect.top(), rect.right() - left, rect.height()
-        )
-        painter.drawText(
-            text_rect,
-            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),
-            str(index.data(Qt.ItemDataRole.DisplayRole) or ""),
-        )
-        painter.restore()
-
-
 class SettingsWindow(SecondaryWindow):
     """设置窗口。控件以公开属性暴露，供测试检查。"""
 
@@ -125,19 +86,14 @@ class SettingsWindow(SecondaryWindow):
         self._store = store
         self._placed = False
         self._shown_once = False
+        self._current_id = ""
+        self._revealed: set[Location] = set()
         if isinstance(dialogs, QtDialogs):
             dialogs.parent = self
 
         self.title_label = ThemedLabel("primary", TOKENS.title_px + 6, semibold=True, display=True)
-        self.nav = QListWidget()
-        self.nav.setFrameShape(QFrame.Shape.NoFrame)
-        self.nav.setIconSize(QSize(TOKENS.nav_icon_px, TOKENS.nav_icon_px))
-        self.nav.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.nav = NavTree()
         self.nav.setFixedWidth(TOKENS.nav_width)
-        self.nav.viewport().setAutoFillBackground(False)
-        self.nav.setMouseTracking(True)
-        self.nav.setItemDelegate(NavDelegate(self.nav))
-        self.nav.setStyleSheet("QListWidget { background: transparent; outline: none; }")
         self.stack = QStackedWidget()
         self.stack.setAutoFillBackground(False)
         self.notice_label = ThemedLabel("critical", TOKENS.caption_px)
@@ -148,17 +104,26 @@ class SettingsWindow(SecondaryWindow):
         builder = CardBuilder(presenter, dialogs, debounce_ms)
         self.pages: list[SettingsPage] = [
             GeneralPage(presenter, builder, dialogs),
-            HotkeysPage(presenter, builder, dialogs),
-            CapturePage(presenter, builder, dialogs),
+            GlobalHotkeysPage(presenter, builder, dialogs),
+            *(BindingsPage(scope, presenter, builder, dialogs) for scope in Scope),
+            CaptureEnginesPage(presenter, builder, dialogs),
+            *(OcrEnginePage(kind, presenter, builder, dialogs) for kind in OcrEngineKind),
+            NormalizePage(presenter, builder, dialogs),
+            CaptureOptionsPage(presenter, builder, dialogs),
             EnginesPage(presenter, builder, dialogs),
             RacePage(presenter, builder, dialogs),
-            ModelsPage(presenter, builder, dialogs),
+            NmtModelsPage(presenter, builder, dialogs),
+            GpuPage(presenter, builder, dialogs),
+            DictsPage(presenter, builder, dialogs),
             AboutPage(presenter, builder, dialogs),
         ]
+        if [page.page_id for page in self.pages] != leaf_ids():
+            raise RuntimeError("设置页面的顺序与导航菜单不一致")
+        self._by_id = {page.page_id: page for page in self.pages}
         for page in self.pages:
+            page.navigate = self.show_page
             page.finish()  # 页面构造完成之后才设置文案和取值，见 SettingsPage.finish
             self.stack.addWidget(page)
-            self.nav.addItem(QListWidgetItem(fluent_icon(page.icon), ""))
 
         nav_column = QVBoxLayout()
         nav_column.setContentsMargins(0, TOKENS.spacing_xl, 0, TOKENS.spacing_m)
@@ -177,10 +142,10 @@ class SettingsWindow(SecondaryWindow):
         root.addLayout(nav_column)
         root.addLayout(content_column, 1)
 
-        self.nav.currentRowChanged.connect(self._page_changed)
+        self.nav.page_chosen.connect(self._activate)
         presenter.subscribe(self._on_topic)
         self.retranslate()
-        self.nav.setCurrentRow(0)
+        self._activate(self.pages[0].page_id)
         self.setMinimumSize(MINIMUM_SIZE)
         self.resize(DEFAULT_SIZE)
 
@@ -188,22 +153,56 @@ class SettingsWindow(SecondaryWindow):
 
     @property
     def current_page(self) -> SettingsPage:
-        return self.pages[max(0, self.stack.currentIndex())]
+        return self._by_id[self._current_id]
 
     def page(self, page_id: str) -> SettingsPage:
-        """按页面标识取页面：general、hotkeys、capture、engines、race、models、about。"""
-        return next(page for page in self.pages if page.page_id == page_id)
+        """按页面标识取页面，如 general、hotkeys.overlay、capture.paddle、models.gpu。
+
+        旧的一级标识 hotkeys、capture、models 给出该分支的第一个子页。
+        """
+        resolved = resolve_page_id(page_id)
+        if resolved is None:
+            raise KeyError(page_id)
+        return self._by_id[resolved]
 
     def show_page(self, page_id: str) -> None:
-        self.nav.setCurrentRow(self.pages.index(self.page(page_id)))
+        self._activate(self.page(page_id).page_id)
 
-    def _page_changed(self, row: int) -> None:
-        if not 0 <= row < len(self.pages):
+    def _activate(self, page_id: str) -> None:
+        """切换到页面 page_id，并让导航树的展开与选中状态与它一致。"""
+        self.nav.show_leaf(page_id)
+        if page_id == self._current_id:
             return
-        self.stack.setCurrentIndex(row)
-        self.pages[row].on_shown()
+        self._current_id = page_id
+        page = self._by_id[page_id]
+        self.stack.setCurrentWidget(page)
+        page.on_shown()
         if self._shown_once:
-            self._store.save_page(row)
+            self._store.save_page(page_id)
+
+    def page_for_location(self, location: Location) -> SettingsPage | None:
+        """负责显示这个配置位置的页面。
+
+        当前页负责时就是当前页。否则在负责的页面里优先取当前 OCR 引擎的子页（几个引擎共用的 [ocr] 节字段，
+        例如文本行方向，同时出现在 RapidOCR 与 PaddleOCR 子页上），再按菜单顺序取第一个。
+        """
+        if self.current_page.claims(location):
+            return self.current_page
+        claimants = [page for page in self.pages if page.claims(location)]
+        engine = self._presenter.current_ocr_engine
+        preferred = [page for page in claimants if isinstance(page, OcrEnginePage) and page.kind is engine]
+        return next(iter(preferred or claimants), None)
+
+    def show_location(self, location: Location) -> Binding | None:
+        """切到负责这个配置位置的页面，并把对应的卡片滚动到可见处。返回那张卡片的绑定，没有页面负责时不动。"""
+        page = self.page_for_location(location)
+        if page is None:
+            return None
+        self.show_page(page.page_id)
+        binding = next((b for b in page.all_bindings() if b.matches(location)), None)
+        if binding is not None:
+            page.ensureWidgetVisible(binding.card)
+        return binding
 
     # ------------------------------------------------------------------ 文案
 
@@ -211,11 +210,7 @@ class SettingsWindow(SecondaryWindow):
         self.setWindowTitle(tr("settings.window.title"))
         self.title_label.setText(tr("settings.window.title"))
         self.nav.setAccessibleName(tr("settings.nav.label"))
-        for number, page in enumerate(self.pages, start=1):
-            item = self.nav.item(number - 1)
-            name = tr(f"settings.nav.{page.page_id}")
-            item.setText(name)
-            item.setToolTip(tr("settings.nav.tip", name=name, number=number))
+        self.nav.retranslate()
         self._update_notice()
 
     def _on_topic(self, topic: Topic) -> None:
@@ -233,6 +228,21 @@ class SettingsWindow(SecondaryWindow):
             page.refresh(topic)
         if topic is Topic.CONFIG:
             self._update_notice()
+        if topic is Topic.REJECTIONS:
+            self._reveal_rejections()
+
+    def _reveal_rejections(self) -> None:
+        """新出现的 ConfigRejected 落在别的子页上时，切到那个子页（窗口可见时）。"""
+        fresh = [location for location in self._presenter.rejections if location not in self._revealed]
+        self._revealed = set(self._presenter.rejections)
+        if not self.isVisible() or not fresh:
+            return
+        if any(self.current_page.claims(location) for location in fresh):
+            return
+        for location in fresh:
+            if self.page_for_location(location) is not None:
+                self.show_location(location)
+                return
 
     def unclaimed_rejections(self) -> list[tuple[Location, str]]:
         """没有任何卡片负责显示的 ConfigRejected（例如整节出错），由窗口底部的提示条显示。"""
@@ -254,7 +264,7 @@ class SettingsWindow(SecondaryWindow):
     # ------------------------------------------------------------------ 显示与隐藏
 
     def present(self) -> None:
-        """显示并激活窗口。窗口已经显示时再次打开只是把它带到前面并给导航列表焦点。"""
+        """显示并激活窗口。窗口已经显示时再次打开只是把它带到前面并给导航树焦点。"""
         if not self._placed:
             self._placed = True
             self._restore_state()
@@ -264,8 +274,11 @@ class SettingsWindow(SecondaryWindow):
     def _restore_state(self) -> None:
         state = self._store.load()
         self.restore_geometry(state.position, state.size)
-        if state.page is not None and 0 <= state.page < len(self.pages):
-            self.nav.setCurrentRow(state.page)
+        page_id = resolve_page_id(state.page_id) if state.page_id is not None else None
+        if page_id is None and state.page is not None:
+            page_id = legacy_page_id(state.page)
+        if page_id is not None:
+            self.show_page(page_id)
 
     def flush(self) -> None:
         """把还没提交的输入提交出去。"""
@@ -278,14 +291,15 @@ class SettingsWindow(SecondaryWindow):
         key = event.key()
         modifiers = event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
         if modifiers == _CTRL and int(Qt.Key.Key_1.value) <= key <= int(Qt.Key.Key_9.value):
-            row = key - int(Qt.Key.Key_1.value)
-            if row < len(self.pages):
-                self.nav.setCurrentRow(row)
+            number = key - int(Qt.Key.Key_1.value)
+            if number < len(NAV_GROUPS):
+                self.show_page(NAV_GROUPS[number].first)
                 event.accept()
                 return
         if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab) and modifiers & _CTRL:
             step = -1 if (key == Qt.Key.Key_Backtab or modifiers & _SHIFT) else 1
-            self.nav.setCurrentRow((self.nav.currentRow() + step) % len(self.pages))
+            order = leaf_ids()
+            self.show_page(order[(order.index(self._current_id) + step) % len(order)])
             event.accept()
             return
         if key == Qt.Key.Key_Escape and modifiers == Qt.KeyboardModifier.NoModifier:
@@ -307,3 +321,6 @@ class SettingsWindow(SecondaryWindow):
             self.flush()
             self._store.save_geometry(self.pos(), self.size())
         super().hideEvent(event)
+
+
+__all__ = ["NavDelegate", "SettingsWindow", "describe_location"]

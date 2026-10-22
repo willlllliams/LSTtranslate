@@ -16,9 +16,16 @@ from lst.contracts.ocr_engines import (
 )
 from lst.kernel import EventBus
 from lst.services.ocr_engines import DevPaddleEnvironment, PaddleInstallPaths
-from lst.services.ocr_engines.layout import DEFAULT_PADDLE_MODELS, features_of
 from tests.services.ocr_engines.conftest import MODULE_LOGGER, Published, StartModule
-from tests.services.ocr_engines.helpers import MODELS, FakeServer, FakeUv, install_layout, tree, write_model
+from tests.services.ocr_engines.helpers import (
+    CPU,
+    MODELS,
+    FakeServer,
+    FakeUv,
+    install_layout,
+    tree,
+    write_model,
+)
 
 K = OcrEngineKind
 S = OcrEngineState
@@ -41,9 +48,9 @@ async def test_initial_catalog_lists_both_engines(start_module: StartModule, pub
     paddle = published.engine(K.PADDLE)
     assert paddle.state is S.NOT_INSTALLED
     assert paddle.needs_download
-    assert paddle.download_bytes == 10_000 + sum(model.size_bytes for model in MODELS)
+    assert paddle.download_bytes == 10_000 + sum(model.size_bytes or 0 for model in MODELS)
     assert paddle.progress is None
-    assert paddle.features == ("text", "layout", "table")
+    assert paddle.features == ("text", "layout", "table", "formula")
 
 
 async def test_windows_without_language_is_unavailable(
@@ -93,7 +100,7 @@ async def test_changed_requirements_need_runtime_update(
 ) -> None:
     install_everything(paths)
     # 程序升级后安装目录里的版本清单变了，数据目录里的运行环境还是按旧清单装的。
-    paths.requirements.write_text("paddlepaddle==3.4.0\n", encoding="utf-8")
+    paths.requirements(CPU).write_text("paddlepaddle==3.4.0\n", encoding="utf-8")
     await start_module()
     paddle = published.engine(K.PADDLE)
     assert paddle.state is S.NOT_INSTALLED
@@ -237,8 +244,16 @@ async def test_process_state_is_merged_only_into_active_installed_engine(
     assert published.engine(K.PADDLE).state is S.NOT_INSTALLED
 
 
-def test_default_model_list_matches_worker_defaults() -> None:
-    names = {model.name for model in DEFAULT_PADDLE_MODELS}
-    # lst/workers/ocr_worker/settings.py 的默认模型。
-    assert {"PP-DocLayout_plus-L", "PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"} <= names
-    assert features_of(DEFAULT_PADDLE_MODELS) == ("text", "layout", "table")
+async def test_process_state_goes_to_the_engine_actually_running(
+    bus: EventBus, start_module: StartModule, published: Published
+) -> None:
+    """配置选了没装好的 PaddleOCR，进程改跑 Windows OCR：进程状态显示在 Windows OCR 上（OCRE-04）。"""
+    module = await start_module()
+    bus.publish(AppConfig({"ocr": {"engine": "paddle"}}, revision=1))
+    await bus.drain()
+    module.set_running(K.WINDOWS)
+    module.set_process_state(K.WINDOWS, S.READY)
+    await bus.drain()
+    assert published.catalog.active is K.PADDLE and published.catalog.running is K.WINDOWS
+    assert published.engine(K.WINDOWS).state is S.READY
+    assert published.engine(K.PADDLE).state is S.NOT_INSTALLED

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shutil
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,14 +23,16 @@ from lst.app.bootstrap import Application, AppOptions, ocr_model_cache
 from lst.app.paths import AppPaths
 from lst.app.supervisor import WorkerSupervisor
 from lst.contracts.config import AppConfig
-from lst.contracts.events import RestartWorker
+from lst.contracts.events import RestartWorker, WorkerStatuses
 from lst.contracts.models import ModelsInstalled
+from lst.contracts.nmt_runtime import NmtRuntimeChanged
 from lst.contracts.ocr_engines import (
     OcrEngineCatalog,
     OcrEngineErrorCode,
     OcrEngineInfo,
     OcrEngineKind,
     OcrEngineState,
+    OcrRuntimeVariant,
 )
 from lst.contracts.ports import WorkerState
 from lst.contracts.worker_protocol import JsonValue
@@ -46,6 +50,7 @@ class FakeSupervisor:
         self.delay = delay
         self.calls: list[tuple[str, Any]] = []
         self.running = False
+        self.versions: dict[str, str] = {}
 
     async def reload(self, settings: Mapping[str, JsonValue], *, command: Any = None) -> None:
         self.calls.append(("reload", dict(settings)))
@@ -70,6 +75,7 @@ class FakeEngines:
         default_factory=lambda: list[tuple[OcrEngineKind, OcrEngineState | None, OcrEngineErrorCode | None]]()
     )
     bus: EventBus | None = None
+    running: OcrEngineKind | None = None
 
     def can_run(self, kind: OcrEngineKind) -> bool:
         return kind in self.runnable
@@ -84,7 +90,11 @@ class FakeEngines:
                 OcrEngineInfo(P, state(P), needs_download=True),
             ),
             active=W,
+            running=self.running,
         )
+
+    def set_running(self, kind: OcrEngineKind | None) -> None:
+        self.running = kind
 
     def set_process_state(
         self,
@@ -102,6 +112,31 @@ class FakeEngines:
     def publish(self) -> None:
         assert self.bus is not None
         self.bus.publish(self.catalog())
+
+    variants: dict[OcrEngineKind, str] = field(default_factory=lambda: dict[OcrEngineKind, str]())
+    ready: dict[OcrEngineKind, tuple[tuple[str, bool], ...]] = field(
+        default_factory=lambda: dict[OcrEngineKind, tuple[tuple[str, bool], ...]]()
+    )
+
+    def installed_variant(self, kind: OcrEngineKind) -> str:
+        return self.variants.get(kind, "")
+
+    def selected_models_ready(self, kind: OcrEngineKind) -> tuple[tuple[str, bool], ...]:
+        return self.ready.get(kind, ())
+
+    def worker_model_settings(self, kind: OcrEngineKind) -> dict[str, JsonValue]:
+        return {"rec_model_path": "C:/models/rec.onnx"} if kind is OcrEngineKind.RAPID else {}
+
+    # 换模型目录时组合根按 Module 协议停止、启动它。
+    name = "ocr_engines"
+    stopped: int = 0
+
+    async def start(self, ctx: ModuleContext) -> None:
+        del ctx
+        self.publish()
+
+    async def stop(self) -> None:
+        self.stopped += 1
 
 
 @dataclass
@@ -175,8 +210,8 @@ async def test_concurrent_model_dir_changes_replace_the_module_once(
     class FakeModels:
         name = "models"
 
-        def __init__(self, models_dir: Path, client: object, url: str) -> None:
-            del client, url
+        def __init__(self, models_dir: Path, client: object, url: str, **kwargs: object) -> None:
+            del client, url, kwargs  # dict_dir、dict_index_url
             self.models_dir = models_dir
             self.started = self.stopped = 0
             created.append(self)
@@ -231,6 +266,33 @@ async def test_unavailable_engine_does_not_start_and_catalog_starts_it_later(
     assert rig.ocr.reloads("engine") == ["paddle"]
 
 
+async def test_missing_engine_falls_back_to_windows_ocr_until_installed(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """选用的引擎没有装好时先用 Windows OCR，装好后换回（OCRE-04）。"""
+    rig.engines.runnable = {W}
+    with caplog.at_level(logging.WARNING, logger="lst.app.bootstrap"):
+        rig.configure({"ocr": {"engine": "paddle", "device": "gpu", "language": "ja"}})
+        await rig.bus.drain()
+    # Windows OCR 的进程级字段只有语言：语言变了才重载，换成 paddle 本身不会停掉正在运行的 Windows OCR。
+    assert rig.ocr.reloads("engine") == ["windows"]
+    assert rig.ocr.reloads("language") == ["ja"]
+    assert ("stop", None) not in rig.ocr.calls
+    assert rig.engines.running is W
+    assert caplog.text.count("先用 Windows OCR") == 1
+
+    rig.configure({"ocr": {"engine": "paddle", "device": "gpu", "language": "ja"}, "ui": {"theme": "dark"}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("engine") == ["windows"]  # 无关的配置变化不重启
+    assert caplog.text.count("先用 Windows OCR") == 1
+
+    rig.engines.runnable = {W, P}
+    rig.engines.publish()
+    await rig.bus.drain()
+    assert rig.ocr.reloads("engine") == ["windows", "paddle"]
+    assert rig.engines.running is P
+
+
 async def test_same_configuration_does_not_reload_twice(rig: Rig) -> None:
     rig.configure({"ocr": {"language": "en"}})
     await rig.bus.drain()
@@ -250,7 +312,7 @@ async def test_windows_language_list_change_restarts_the_process(rig: Rig) -> No
     assert rig.ocr.reloads("language") == ["ja", "ja"]
 
 
-async def test_failed_process_restarts_on_next_configuration(rig: Rig) -> None:
+async def test_failed_process_restarts_only_when_the_ocr_decision_changes(rig: Rig) -> None:
     rig.configure({"ocr": {"language": "ja"}})
     await rig.bus.drain()
     rig.worker_state("ocr", WorkerState.FAILED, "确定性故障")
@@ -259,9 +321,74 @@ async def test_failed_process_restarts_on_next_configuration(rig: Rig) -> None:
     assert rig.ocr.reloads("language") == ["ja"]
     assert rig.engines.overlays[-1] == (W, OcrEngineState.ERROR, OcrEngineErrorCode.WORKER_FAILED)
 
+    # 与 OCR 无关的配置变化不重启：否则每保存一次设置，确定性故障的进程就被拉起一次，设置窗口一直显示加载中。
     rig.configure({"ocr": {"language": "ja"}, "ui": {"theme": "dark"}})
     await rig.bus.drain()
-    assert rig.ocr.reloads("language") == ["ja", "ja"]
+    assert rig.ocr.reloads("language") == ["ja"]
+    assert rig.engines.overlays[-1] == (W, OcrEngineState.ERROR, OcrEngineErrorCode.WORKER_FAILED)
+
+    # 决定进程的字段变了（这里是识别语言）才重新启动。
+    rig.configure({"ocr": {"language": "en"}, "ui": {"theme": "dark"}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("language") == ["ja", "en"]
+
+
+async def test_paddle_gpu_on_cpu_runtime_shows_error_and_stays_there(rig: Rig) -> None:
+    """用户报告的问题：PaddleOCR 选了显卡推理，装的却是 CPU 版，进程以依赖错误（65）退出进入 FAILED。
+
+    设置窗口应显示出错，之后其他设置的保存、引擎目录的重新发布都不应把进程重新拉起（那会让卡片回到
+    “正在加载…”）。装好 CUDA 版（已装版本变化）后自动重新启动。
+    """
+    rig.engines.runnable = {W, P}
+    rig.engines.variants = {P: "cpu"}
+    rig.configure({"ocr": {"engine": "paddle", "device": "gpu"}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("device") == ["gpu"]
+    rig.worker_state("ocr", WorkerState.STARTING)
+    rig.worker_state("ocr", WorkerState.LOADING)
+    rig.worker_state("ocr", WorkerState.FAILED, "确定性故障 DEPENDENCY_ERROR（退出码 65）")
+    await rig.bus.drain()
+    assert rig.engines.overlays[-1] == (P, OcrEngineState.ERROR, OcrEngineErrorCode.RUNTIME_MISMATCH)
+    for revision_theme in ("dark", "light", "dark"):
+        rig.configure({"ocr": {"engine": "paddle", "device": "gpu"}, "ui": {"theme": revision_theme}})
+        rig.engines.publish()
+        await rig.bus.drain()
+    assert rig.ocr.reloads("device") == ["gpu"]
+    assert rig.engines.overlays[-1] == (P, OcrEngineState.ERROR, OcrEngineErrorCode.RUNTIME_MISMATCH)
+
+    rig.engines.variants = {P: "cuda"}
+    rig.engines.publish()
+    await rig.bus.drain()
+    assert rig.ocr.reloads("device") == ["gpu", "gpu"]
+
+
+async def test_downloaded_selected_model_restarts_a_failed_process(rig: Rig) -> None:
+    rig.engines.runnable = {W, P}
+    rig.engines.ready = {P: (("PP-OCRv5_server_det", False),)}
+    rig.configure({"ocr": {"engine": "paddle"}, "ocr_paddle": {"detection_model": "PP-OCRv5_server_det"}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("detection_model") == ["PP-OCRv5_server_det"]
+    rig.worker_state("ocr", WorkerState.FAILED, "模型目录中缺少 PP-OCRv5_server_det")
+    rig.engines.ready = {P: (("PP-OCRv5_server_det", True),)}
+    rig.engines.publish()
+    await rig.bus.drain()
+    assert rig.ocr.reloads("detection_model") == ["PP-OCRv5_server_det", "PP-OCRv5_server_det"]
+
+
+async def test_pipeline_fields_reach_the_worker_and_reload_only_when_marked(rig: Rig) -> None:
+    rig.engines.runnable = {W, OcrEngineKind.RAPID}
+    rig.configure({"ocr": {"engine": "rapid"}, "ocr_rapid": {"det_box_thresh": 0.4}})
+    await rig.bus.drain()
+    [settings] = [s for name, s in rig.ocr.calls if name == "reload"]
+    assert settings["det_box_thresh"] == 0.4 and settings["det_thresh"] == 0.3
+    assert settings["rec_model_path"] == "C:/models/rec.onnx"
+    # 请求级参数变化不重载，带 reload 标记的参数变化才重载。
+    rig.configure({"ocr": {"engine": "rapid"}, "ocr_rapid": {"det_box_thresh": 0.6}})
+    await rig.bus.drain()
+    assert len(rig.ocr.reloads("det_thresh")) == 1
+    rig.configure({"ocr": {"engine": "rapid"}, "ocr_rapid": {"det_box_thresh": 0.6, "det_thresh": 0.2}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("det_thresh") == [0.3, 0.2]
 
 
 async def test_restart_worker_recovers_failed_ocr(rig: Rig) -> None:
@@ -352,6 +479,54 @@ async def test_models_installed_reloads_are_merged(rig: Rig) -> None:
     assert rig.nmt.reloads("beam_size") == [2, 2, 2]
 
 
+def install_fake_runtime(root: Path) -> Path:
+    """在 root 下放一个结构完整的显卡运行库（DLL 是假内容），返回 DLL 目录。"""
+    version_dir = root / "12.9.2.10"
+    (version_dir / "bin").mkdir(parents=True)
+    files: dict[str, int] = {}
+    for name in ("bin/cublasLt64_12.dll", "bin/cublas64_12.dll"):
+        (version_dir / name).write_bytes(b"dll")
+        files[name] = 3
+    marker = {"version": "12.9.2.10", "files": files}
+    (version_dir / "installed.json").write_text(json.dumps(marker), encoding="utf-8")
+    return version_dir / "bin"
+
+
+async def test_gpu_runtime_install_and_delete_restart_nmt_with_the_dll_dir(rig: Rig, tmp_path: Path) -> None:
+    """显卡运行库装好后 NMT 进程带上 cuda_dll_dir 重启；删除前先停进程，删除后不带它重启（MOD-06）。"""
+    rig.configure({"nmt": {"beam_size": 2}})
+    await rig.bus.drain()
+    assert "cuda_dll_dir" not in rig.nmt.calls[-1][1]
+    bin_dir = install_fake_runtime(AppPaths(tmp_path / "data").nmt_runtime_dir)
+    rig.bus.publish(NmtRuntimeChanged(installed=True, bin_dir=str(bin_dir)))
+    await rig.bus.drain()
+    assert rig.nmt.calls[-1] == ("reload", {**rig.nmt.calls[-1][1], "cuda_dll_dir": str(bin_dir)})
+
+    await rig.app._before_nmt_runtime_delete()  # pyright: ignore[reportPrivateUsage]
+    assert rig.nmt.calls[-1] == ("stop", None)
+    shutil.rmtree(bin_dir.parent)
+    rig.bus.publish(NmtRuntimeChanged(installed=False))
+    await rig.bus.drain()
+    name, settings = rig.nmt.calls[-1]
+    assert name == "reload" and "cuda_dll_dir" not in settings
+
+
+async def test_worker_status_carries_the_reported_versions(rig: Rig) -> None:
+    rig.nmt.versions = {"device": "cuda", "ctranslate2": "4.8.3"}
+    rig.worker_state("nmt", WorkerState.READY)
+    statuses = rig.bus.latest(WorkerStatuses)
+    assert statuses is not None and statuses.statuses["nmt"].versions["device"] == "cuda"
+
+
+async def test_dictionary_changes_do_not_reload_nmt(rig: Rig) -> None:
+    rig.configure({"nmt": {"beam_size": 2}})
+    await rig.bus.drain()
+    rig.bus.publish(ModelsInstalled(("dict:en:zh-Hans",), removed=("dict:de:en",)))
+    await rig.bus.drain()
+    assert rig.app._nmt_reload is None  # pyright: ignore[reportPrivateUsage]
+    assert rig.nmt.reloads("beam_size") == [2]
+
+
 async def test_models_installed_does_not_restart_disabled_nmt(rig: Rig) -> None:
     rig.configure({"nmt": {"beam_size": 2}})
     await rig.bus.drain()
@@ -421,6 +596,30 @@ def test_installed_commands_share_the_launcher_prefix(
     assert paddle[:6] == (*prefix, "ocr")
     assert paddle[6:8] == ("--ocr-site", paddle[7]) and paddle[7].startswith(str(paths.data_dir))
     assert paddle[-2:] == ("--log-level", "WARNING")
+    assert "--backend" not in paddle
+    rapid = bootstrap.ocr_worker_command(OcrEngineKind.RAPID, paths)
+    assert rapid[:6] == (*prefix, "ocr")
+    assert rapid[7] == str(paths.data_dir / "models" / "engines" / "rapid" / "site")
+    assert rapid[8:10] == ("--backend", bootstrap.RAPID_BACKEND)
+    layout = bootstrap.rapid_layout(paths)
+    assert isinstance(layout, bootstrap.RapidInstallPaths)
+    assert layout.model_dir == paths.ocr_models_dir / "rapid"
+    assert layout.requirements(OcrRuntimeVariant.CUDA) == root / "app" / "ocr-rapid-cuda-requirements.txt"
+    paddle_paths = bootstrap.paddle_layout(paths)
+    assert isinstance(paddle_paths, bootstrap.PaddleInstallPaths)
+    cpu = paddle_paths.requirements(OcrRuntimeVariant.CPU)
+    assert cpu == root / "app" / "ocr-paddle-cpu-requirements.txt"
+
+
+def test_source_commands_use_the_ocr_venv_with_the_right_backend(tmp_path: Path) -> None:
+    paths = AppPaths(tmp_path / "data")
+    rapid = bootstrap.ocr_worker_command(OcrEngineKind.RAPID, paths)
+    assert rapid[0].endswith("python.exe") and ".venv-ocr" in rapid[0]
+    assert rapid[rapid.index("--backend") + 1] == bootstrap.RAPID_BACKEND
+    assert "--backend" not in bootstrap.ocr_worker_command(P, paths)
+    dev = bootstrap.rapid_layout(paths)
+    assert isinstance(dev, bootstrap.DevRapidEnvironment)
+    assert dev.model_dir == paths.ocr_models_dir / "rapid"
 
 
 async def test_ocr_waits_for_the_engine_catalog_before_deciding(
@@ -451,3 +650,185 @@ async def test_ocr_waits_for_the_engine_catalog_before_deciding(
         assert ocr.reloads("language") == ["en"]
     finally:
         await bus.aclose()
+
+
+def test_ocr_failure_code_names_deterministic_failures() -> None:
+    code = bootstrap.ocr_failure_code
+    assert code("确定性故障 DEPENDENCY_ERROR（退出码 65）") is OcrEngineErrorCode.RUNTIME_MISMATCH
+    assert code("确定性故障 CONFIG_ERROR（退出码 66）") is OcrEngineErrorCode.BAD_CONFIG
+    assert code("5 分钟内崩溃 3 次") is OcrEngineErrorCode.WORKER_FAILED
+
+
+# ---------------------------------------------------------------- 运行中更换模型目录
+
+
+class FakeModule:
+    """模型管理、显卡运行库模块的替身：记下构造时的目录与启停次数。"""
+
+    def __init__(self, name: str, directory: Path) -> None:
+        self.name = name
+        self.directory = directory
+        self.started = self.stopped = 0
+
+    async def start(self, ctx: ModuleContext) -> None:
+        del ctx
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+class FakeEnginesModule(FakeModule):
+    """引擎模块的替身：只记下词典目录的更换。"""
+
+    def __init__(self, directory: Path) -> None:
+        super().__init__("engines", directory)
+        self.dict_dirs: list[Path | None] = []
+
+    async def set_dict_dir(self, directory: Path | None) -> None:
+        self.dict_dirs.append(directory)
+
+
+@dataclass
+class Relocation:
+    app: Application
+    created: list[tuple[str, Path]]
+    engines: FakeEnginesModule
+    ocr_modules: list[FakeEngines]
+
+
+@pytest.fixture
+def relocation(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> Relocation:
+    """给组合根装上三个用到模型目录的模块的替身，构造新模块时记下它们拿到的目录。"""
+    app = rig.app
+    created: list[tuple[str, Path]] = []
+    ocr_modules: list[FakeEngines] = []
+
+    def models(models_dir: Path, client: object, url: str, **kwargs: object) -> FakeModule:
+        del client, url
+        created.append(("models", models_dir))
+        created.append(("dict", cast(Path, kwargs["dict_dir"])))
+        return FakeModule("models", models_dir)
+
+    def ocr_engines() -> FakeEngines:
+        paths = app.paths
+        created.append(("ocr", paths.ocr_models_dir))
+        created.append(("engines", paths.engines_dir))
+        module = FakeEngines(bus=rig.bus)
+        ocr_modules.append(module)
+        return module
+
+    def runtime() -> FakeModule:
+        created.append(("runtime", app.paths.nmt_runtime_dir))
+        return FakeModule("nmt_runtime", app.paths.nmt_runtime_dir)
+
+    monkeypatch.setattr(bootstrap, "ModelsModule", models)
+    # 源码版在模型目录没有模型时回退到仓库的 assets/argosmodel；这里的目录都是空的，关掉回退。
+    monkeypatch.setattr(bootstrap, "LEGACY_NMT_MODELS", app.paths.data_dir / "no-legacy")
+    monkeypatch.setattr(app, "_new_ocr_engines", ocr_engines)
+    monkeypatch.setattr(app, "_new_nmt_runtime", runtime)
+    engines = FakeEnginesModule(app.paths.dict_models_dir)
+    app.client = cast(Any, object())
+    app.models = cast(Any, FakeModule("models", app.paths.nmt_models_dir))
+    app.nmt_runtime = cast(Any, FakeModule("nmt_runtime", app.paths.nmt_runtime_dir))
+    app.engines = cast(Any, engines)
+    context = ModuleContext(rig.bus, logging.getLogger("t"))
+    for module in (app.models, app.engines, app.nmt_runtime, app.ocr_engines):
+        app._started.append((cast(Any, module), context))  # pyright: ignore[reportPrivateUsage]
+    return Relocation(app, created, engines, ocr_modules)
+
+
+async def test_suspend_stops_processes_and_model_modules_and_pauses_decisions(
+    rig: Rig, relocation: Relocation
+) -> None:
+    rig.configure({"nmt": {"beam_size": 2}, "ocr": {"language": "en"}})
+    await rig.bus.drain()
+    app = relocation.app
+    old_models, old_runtime = cast(FakeModule, app.models), cast(FakeModule, app.nmt_runtime)
+    rig.nmt.calls.clear()
+    rig.ocr.calls.clear()
+
+    await app.suspend_models()
+    assert rig.nmt.calls == [("stop", None)] and rig.ocr.calls == [("stop", None)]
+    assert (old_models.stopped, old_runtime.stopped) == (1, 1)
+
+    # 停下期间配置变化、模型装好、RestartWorker 都不启动进程。
+    rig.configure({"nmt": {"beam_size": 3}, "ocr": {"language": "ja"}})
+    rig.bus.publish(ModelsInstalled(("argos:en:ja",)))
+    rig.bus.send(RestartWorker("ocr"))
+    await rig.bus.drain()
+    if app._nmt_reload is not None:  # pyright: ignore[reportPrivateUsage]
+        await app._nmt_reload  # pyright: ignore[reportPrivateUsage]
+    assert rig.nmt.calls == [("stop", None)] and rig.ocr.calls == [("stop", None)]
+
+
+async def test_resume_rebuilds_modules_in_the_new_dir_and_restarts_processes(
+    rig: Rig, relocation: Relocation, tmp_path: Path
+) -> None:
+    """运行中更换模型目录：三个模块按新目录重建，字典引擎换词典目录，NMT 与 OCR 进程按最新配置重新启动，
+    不需要重启程序（需求 MOD-04）。"""
+    rig.configure({"nmt": {"beam_size": 2}, "ocr": {"language": "en"}})
+    await rig.bus.drain()
+    app = relocation.app
+    order = [module.name for module, _ in app._started]  # pyright: ignore[reportPrivateUsage]
+    await app.suspend_models()
+    rig.configure({"nmt": {"beam_size": 3}, "ocr": {"language": "ja"}})
+    await rig.bus.drain()
+    rig.nmt.calls.clear()
+    rig.ocr.calls.clear()
+    relocation.created.clear()
+
+    new_root = tmp_path / "big" / "models"
+    await app.resume_models(new_root)
+    await rig.bus.drain()
+
+    assert app.paths.models_root == new_root
+    assert sorted(relocation.created) == sorted(
+        [
+            ("models", new_root / "nmt"),
+            ("dict", new_root / "dict"),
+            ("ocr", new_root / "ocr"),
+            ("engines", new_root / "engines"),
+            ("runtime", new_root / "runtimes" / "cublas12"),
+        ]
+    )
+    assert relocation.engines.dict_dirs == [new_root / "dict"]
+    assert all((new_root / name).is_dir() for name in ("nmt", "ocr", "dict"))
+    assert [module.name for module, _ in app._started] == order  # pyright: ignore[reportPrivateUsage]
+    assert app.ocr_engines is relocation.ocr_modules[-1]
+    # NMT 进程用新目录与停下期间的最新配置重新启动，OCR 进程同样按最新配置启动。
+    [nmt_settings] = [settings for name, settings in rig.nmt.calls if name == "reload"]
+    assert nmt_settings["model_dir"] == str(new_root / "nmt")
+    assert nmt_settings["extract_dir"] == str(new_root / "nmt" / ".extracted")
+    assert nmt_settings["beam_size"] == 3
+    assert rig.ocr.reloads("language") == ["ja"]
+
+
+async def test_hand_edited_models_dir_is_picked_up_without_moving_files(
+    rig: Rig, relocation: Relocation, tmp_path: Path
+) -> None:
+    """用户直接改了配置文件里的 [storage].models_dir：按新目录重建模块、重启进程，不移动任何文件。"""
+    rig.configure({"nmt": {"beam_size": 2}})
+    await rig.bus.drain()
+    rig.nmt.calls.clear()
+    (relocation.app.paths.nmt_models_dir).mkdir(parents=True)
+    (relocation.app.paths.nmt_models_dir / "keep.argosmodel").write_bytes(b"x")
+    new_root = tmp_path / "edited"
+    rig.configure({"nmt": {"beam_size": 2}, "storage": {"models_dir": str(new_root)}})
+    await rig.bus.drain()
+    assert relocation.app.paths.models_root == new_root
+    assert ("stop", None) in rig.nmt.calls
+    assert rig.nmt.reloads("model_dir")[-1] == str(new_root / "nmt")
+    assert (tmp_path / "data" / "models" / "nmt" / "keep.argosmodel").is_file()
+
+    rig.nmt.calls.clear()
+    rig.configure({"nmt": {"beam_size": 2}, "storage": {"models_dir": str(new_root)}, "ui": {}})
+    await rig.bus.drain()
+    assert rig.nmt.calls == []  # 目录没变：不再重启
+
+
+def test_storage_section_accepts_only_absolute_paths() -> None:
+    assert bootstrap.StorageConfig().models_dir == ""
+    assert bootstrap.StorageConfig(models_dir="D:\\models").models_dir == "D:\\models"
+    with pytest.raises(ValueError):
+        bootstrap.StorageConfig(models_dir="models")

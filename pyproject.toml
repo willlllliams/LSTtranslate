@@ -1,6 +1,6 @@
 [project]
 name = "lsttranslate"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 description = "Windows 屏幕翻译工具，多引擎竞速翻译"
 requires-python = ">=3.13,<3.14"
 license = "GPL-3.0-only"
@@ -108,6 +108,7 @@ modules = [
     "lst.services.cache",
     "lst.services.stats",
     "lst.services.models",
+    "lst.services.nmt_runtime",
     "lst.services.ocr_engines",
     "lst.services.updates",
     "lst.services.diagnostics",
@@ -125,6 +126,7 @@ forbidden_modules = [
     "lst.services.cache",
     "lst.services.stats",
     "lst.services.models",
+    "lst.services.nmt_runtime",
     "lst.services.ocr_engines",
     "lst.services.updates",
     "lst.services.diagnostics",

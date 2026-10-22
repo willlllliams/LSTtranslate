@@ -16,16 +16,82 @@ from pathlib import Path
 
 import httpx
 
-from lst.services.ocr_engines import CommandResult, PaddleInstallPaths, PaddleModel, model_url
+from lst.contracts.ocr_engines import OcrEngineKind, OcrRuntimeVariant, OcrStage
+from lst.services.ocr_engines import (
+    CommandResult,
+    ModelSpec,
+    PaddleInstallPaths,
+    RapidInstallPaths,
+    model_url,
+    requirements_name,
+)
+from lst.services.ocr_engines.catalog import RAPID_BUNDLED_FILES
 from lst.services.ocr_engines.layout import RUNTIME_STAMP
 
 BASE_URL = "https://models.invalid/paddle3.0.0"
+RAPID_URL = "https://models.invalid/rapid"
 
-MODELS: tuple[PaddleModel, ...] = (
-    PaddleModel("PP-OCRv5_mobile_det", 3000),
-    PaddleModel("PP-OCRv5_mobile_rec", 5000),
-    PaddleModel("SLANet_plus", 2000, "table"),
+CPU = OcrRuntimeVariant.CPU
+CUDA = OcrRuntimeVariant.CUDA
+DML = OcrRuntimeVariant.DIRECTML
+
+MODELS: tuple[ModelSpec, ...] = (
+    ModelSpec("PP-OCRv5_mobile_det", OcrStage.DETECTION, 3000, default=True),
+    ModelSpec("PP-OCRv5_mobile_rec", OcrStage.RECOGNITION, 5000, languages=("zh-Hans", "en"), default=True),
+    ModelSpec("SLANet_plus", OcrStage.TABLE, 2000, default=True),
 )
+"""测试用的 PaddleOCR 默认组合：安装时全部下载。"""
+
+EXTRA_MODEL = ModelSpec("PP-OCRv5_server_det", OcrStage.DETECTION, 4000, "server")
+"""不在默认组合里的可选模型，单独下载与删除。"""
+
+AUX_MODEL = ModelSpec("SLANeXt_wired", None, 1500, default=True)
+"""附属模型：随引擎安装，不列出，不能删除。"""
+
+PADDLE_TEST_MODELS: tuple[ModelSpec, ...] = (*MODELS, EXTRA_MODEL)
+
+RAPID_BUNDLED_DET = ModelSpec(
+    "PP-OCRv6/small/multi/det",
+    OcrStage.DETECTION,
+    9,
+    default=True,
+    bundled=True,
+    filename="PP-OCRv6_det_small.onnx",
+)
+RAPID_BUNDLED_REC = ModelSpec(
+    "PP-OCRv6/small/multi/rec",
+    OcrStage.RECOGNITION,
+    21,
+    languages=("zh-Hans", "en", "ja"),
+    default=True,
+    bundled=True,
+    filename="PP-OCRv6_rec_small.onnx",
+)
+RAPID_BUNDLED_CLS = ModelSpec(
+    "PP-OCRv4/mobile/ch/cls",
+    OcrStage.TEXTLINE_ORIENTATION,
+    1,
+    default=True,
+    bundled=True,
+    filename="ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+)
+RAPID_EXTRA_BODY = b"onnx-model-medium" * 100
+RAPID_EXTRA = ModelSpec(
+    "PP-OCRv6/medium/multi/rec",
+    OcrStage.RECOGNITION,
+    None,
+    languages=("zh-Hans", "en", "ja", "de"),
+    url=f"{RAPID_URL}/PP-OCRv6_rec_medium.onnx",
+    sha256=hashlib.sha256(RAPID_EXTRA_BODY).hexdigest(),
+    filename="PP-OCRv6_rec_medium.onnx",
+)
+RAPID_TEST_MODELS: tuple[ModelSpec, ...] = (
+    RAPID_BUNDLED_DET,
+    RAPID_BUNDLED_REC,
+    RAPID_BUNDLED_CLS,
+    RAPID_EXTRA,
+)
+RAPID_MODEL_FILES: tuple[str, ...] = tuple(f"rapidocr/models/{name}" for name in RAPID_BUNDLED_FILES)
 
 
 def model_tar(
@@ -90,6 +156,10 @@ class FakeServer:
         self.routes: dict[str, Route] = {}
         self.requests: list[str] = []
 
+    def add_url(self, url: str, route: Route) -> Route:
+        self.routes[httpx.URL(url).path] = route
+        return route
+
     def add_model(self, name: str, route: Route | None = None) -> Route:
         chosen = route if route is not None else Route(body=model_tar(name))
         if not chosen.body and chosen.status == 200 and chosen.error is None:
@@ -97,9 +167,9 @@ class FakeServer:
         self.routes[httpx.URL(model_url(BASE_URL, name)).path] = chosen
         return chosen
 
-    def add_models(self, models: Sequence[PaddleModel] = MODELS) -> None:
+    def add_models(self, models: Sequence[ModelSpec] = MODELS) -> None:
         for model in models:
-            self.add_model(model.name)
+            self.add_model(model.id)
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -134,6 +204,7 @@ class FakeUv:
 
     returncode 非零时不写文件，输出 output。gate 不为 None 时写完缓存后设置 reached，等 gate 再返回。
     cache_bytes 是写进 UV_CACHE_DIR 的字节数，用来驱动按缓存大小估计的进度。
+    files 是写进目标目录的文件（相对路径 → 内容），默认是一个假的 paddle 包。
     """
 
     returncode: int = 0
@@ -145,6 +216,7 @@ class FakeUv:
     calls: list[list[str]] = field(default_factory=list[list[str]])
     envs: list[dict[str, str]] = field(default_factory=list[dict[str, str]])
     cancelled: int = 0
+    files: dict[str, bytes] = field(default_factory=lambda: {"paddle/__init__.py": b"# fake\n"})
 
     async def __call__(self, args: Sequence[str], env: Mapping[str, str]) -> CommandResult:
         self.calls.append(list(args))
@@ -157,8 +229,7 @@ class FakeUv:
         if self.cache_bytes:
             (cache / "wheel.bin").write_bytes(b"x" * self.cache_bytes)
         target.mkdir(parents=True, exist_ok=True)
-        (target / "paddle").mkdir(exist_ok=True)
-        (target / "paddle" / "__init__.py").write_text("# fake\n", encoding="utf-8")
+        write_files(target, self.files)
         if self.gate is not None:
             self.reached.set()
             try:
@@ -171,34 +242,98 @@ class FakeUv:
         return CommandResult(0, self.output or "Installed 1 package")
 
 
-def make_paths(root: Path) -> PaddleInstallPaths:
-    """安装布局：tools\\uv.exe、runtime\\python.exe、app\\ 下的版本清单都是占位文件。"""
-    install = root / "Programs" / "LSTtranslate"
-    data = root / "LocalAppData" / "LSTtranslate"
+RAPID_UV_FILES: dict[str, bytes] = {
+    "rapidocr/__init__.py": b"# fake\n",
+    **dict.fromkeys(RAPID_MODEL_FILES, b"onnx"),
+}
+"""假 uv 装 RapidOCR 运行环境时写入的文件：包与两个自带模型。"""
+
+
+def write_files(root: Path, files: Mapping[str, bytes]) -> None:
+    """在 root 下写入 files（相对路径 → 内容）。"""
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
+def write_requirements(app: Path, kind: OcrEngineKind, variants: Sequence[OcrRuntimeVariant]) -> None:
+    """在安装目录 app\\ 下为各版本写占位的版本清单（内容不同，哈希因此不同）。"""
+    app.mkdir(parents=True, exist_ok=True)
+    for index, variant in enumerate(variants):
+        digit = str(index + (1 if kind is OcrEngineKind.RAPID else 0))
+        package = "rapidocr==3.10.0" if kind is OcrEngineKind.RAPID else "paddlepaddle==3.3.1"
+        (app / requirements_name(kind, variant)).write_text(
+            f"{package} \\\n    --hash=sha256:" + digit * 64 + "\n", encoding="utf-8"
+        )
+
+
+def _tools(install: Path) -> None:
     for path in (install / "tools" / "uv.exe", install / "runtime" / "python.exe"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"MZ")
-    requirements = install / "app" / "ocr-paddle-requirements.txt"
-    requirements.parent.mkdir(parents=True, exist_ok=True)
-    requirements.write_text("paddlepaddle==3.3.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+
+
+def make_rapid_paths(
+    root: Path, variants: Sequence[OcrRuntimeVariant] = (CPU, DML, CUDA)
+) -> RapidInstallPaths:
+    """RapidOCR 的安装布局，与 make_paths 共用安装目录与数据目录；各版本的版本清单是占位文件。"""
+    install = root / "Programs" / "LSTtranslate"
+    data = root / "LocalAppData" / "LSTtranslate"
+    _tools(install)
+    write_requirements(install / "app", OcrEngineKind.RAPID, variants)
+    return RapidInstallPaths(
+        engine_dir=data / "engines" / "rapid",
+        model_dir=data / "models" / "ocr" / "rapid",
+        uv=install / "tools" / "uv.exe",
+        python=install / "runtime" / "python.exe",
+        requirements_dir=install / "app",
+    )
+
+
+def install_rapid_layout(paths: RapidInstallPaths, variant: OcrRuntimeVariant = CPU) -> None:
+    """按 RapidOCR 安装完成的样子摆好文件：带运行环境标记与自带模型的 site、安装标记。"""
+    digest = hashlib.sha256(paths.requirements(variant).read_bytes()).hexdigest()
+    write_files(paths.site_dir, RAPID_UV_FILES)
+    (paths.site_dir / RUNTIME_STAMP).write_text(json.dumps({"requirements_sha256": digest}), encoding="utf-8")
+    paths.marker.write_text(
+        json.dumps({"runtime_requirements_sha256": digest, "variant": variant.value, "models": []}),
+        encoding="utf-8",
+    )
+
+
+def make_paths(root: Path, variants: Sequence[OcrRuntimeVariant] = (CPU, CUDA)) -> PaddleInstallPaths:
+    """安装布局：tools\\uv.exe、runtime\\python.exe、app\\ 下各版本的版本清单都是占位文件。"""
+    install = root / "Programs" / "LSTtranslate"
+    data = root / "LocalAppData" / "LSTtranslate"
+    _tools(install)
+    write_requirements(install / "app", OcrEngineKind.PADDLE, variants)
     return PaddleInstallPaths(
         engine_dir=data / "engines" / "paddle",
         model_cache_dir=data / "models" / "ocr",
         uv=install / "tools" / "uv.exe",
         python=install / "runtime" / "python.exe",
-        requirements=requirements,
+        requirements_dir=install / "app",
     )
 
 
-def install_layout(paths: PaddleInstallPaths, models: Sequence[PaddleModel]) -> None:
+def install_layout(
+    paths: PaddleInstallPaths, models: Sequence[ModelSpec], variant: OcrRuntimeVariant = CPU
+) -> None:
     """按安装完成的样子摆好文件：运行环境（带按当前版本清单写的运行环境标记）、全部模型、安装标记。"""
-    digest = hashlib.sha256(paths.requirements.read_bytes()).hexdigest()
+    digest = hashlib.sha256(paths.requirements(variant).read_bytes()).hexdigest()
     (paths.site_dir / "paddle").mkdir(parents=True)
     (paths.site_dir / RUNTIME_STAMP).write_text(json.dumps({"requirements_sha256": digest}), encoding="utf-8")
     for model in models:
-        write_model(paths.model_dir(model.name))
+        write_model(paths.model_dir(model.id))
     paths.marker.write_text(
-        json.dumps({"runtime_requirements_sha256": digest, "models": [model.name for model in models]}),
+        json.dumps(
+            {
+                "runtime_requirements_sha256": digest,
+                "variant": variant.value,
+                "models": [model.id for model in models],
+            }
+        ),
         encoding="utf-8",
     )
 

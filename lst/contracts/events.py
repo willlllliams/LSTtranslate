@@ -1,7 +1,7 @@
 """竞速与引擎相关的总线消息（架构文档 5.3 节），以及设置窗口用到的统计、缓存与连接测试消息。"""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from lst.contracts.errors import ErrorCode
@@ -42,18 +42,10 @@ class TranslateText(Command):
     """双语窗口请求翻译一段文本（需求 BI-03 至 BI-06）。
 
     source、target 为 None 表示“自动”：源语言按段检测，目标语言按互译对规则确定（RACE-10）。
+    engine_id 是用户在窗口里选中的翻译服务，这次请求只交给它（BI-04）；为 None 表示没有可用的服务，
+    各段按“没有支持这个语言对的服务”跳过，界面显示原文。
 
-    会话号由双语窗口决定，竞速模块据此区分两种请求（架构文档 11.6 节）：
-    - 会话号与当前会话相同、include_billing 为真：用户按了 Ctrl+Enter 而文本与语言都没变，
-      还没有参赛的计费实例加入当前会话（6.3 节“晚加入”），结果仍以这个会话号发布；
-    - 其他情况：开始新会话，取消旧会话。
-
-    “文本与语言是否没变”由双语窗口判断，体现为是否沿用会话号。竞速模块收到沿用的会话号后，
-    还会比较本次与当前会话的切段文本和各段语言对，作为防御：两者一致时让计费实例加入当前会话；
-    不一致（只会出自窗口的缺陷，例如 "a\\nb" 改成 "a\\n\\nb" 这类只改空行、窗口却认为没变的输入）时，
-    以同一会话号开始新会话。两种情况的结果都以窗口给出的会话号发布，窗口照常显示，
-    并且结果总与本次输入一致。
-
+    每个请求开始一个新会话，同时取消双语入口的旧会话（RACE-01）。会话号由双语窗口生成。
     text 去掉空白后为空表示取消当前会话：调度器取消双语入口的会话，不发布任何事件。
     """
 
@@ -61,7 +53,7 @@ class TranslateText(Command):
     text: str
     source: Lang | None = None
     target: Lang | None = None
-    include_billing: bool = False
+    engine_id: EngineId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,20 +82,30 @@ class EngineStatus:
 
 @dataclass(frozen=True, slots=True)
 class EngineStatuses(State):
-    """每个引擎实例（包括未启用的）的状态、名称与标识颜色，供托盘、设置窗口和双语窗口显示。
+    """每个引擎实例（包括未启用的）的状态、名称与标识颜色，供托盘、设置窗口、覆盖窗口和双语窗口显示。
 
-    colors 是配置里的标识颜色（可能为空串，界面这时按实例号取默认颜色）；为 None 表示发布方没有提供。
+    - colors 是配置里的标识颜色（可能为空串，界面这时按实例号取默认颜色），覆盖窗口的来源标记用它；
+    - priorities 是配置里的优先级，数值越小优先级越高，双语窗口的服务列表按它排序；
+    - billing 只含已经创建成功的启用实例，值为该实例是否计费（EngineInfo.billing），双语窗口据此标出计费服务。
+
+    三项为 None 表示发布方没有提供。
     """
 
     statuses: Mapping[EngineId, EngineStatus]
     names: Mapping[EngineId, str]
     colors: Mapping[EngineId, str] | None = None
+    priorities: Mapping[EngineId, int] | None = None
+    billing: Mapping[EngineId, bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerStatus:
+    """一个推理进程的状态。versions 是进程握手时报告的版本与运行信息（Ready.versions），
+    例如 NMT 进程的 "device"（"cuda" 或 "cpu"）；进程还没有就绪过时为空。"""
+
     state: WorkerState
     detail: str = ""
+    versions: Mapping[str, str] = field(default_factory=dict[str, str])
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +191,7 @@ class NotificationRequested(Event):
 class EngineStatsRow:
     """一个引擎实例的累计竞速统计（需求 RACE-07）。字段含义与 services.stats 的 EngineStats 相同。
 
-    - executed：真正执行过的尝试数，命中缓存的和执行前被取消的不计入；
+    - executed：执行完并给出结果（成功或失败）的尝试数，命中缓存的和被取消的（排队中或执行中）都不计入；
     - wins：以该实例的译文成为最终显示的段数；
     - p50_ms、p95_ms：成功尝试的结果耗时的中位数与第 95 百分位数，没有样本时为 None；
     - failure_rate：执行过的尝试中失败所占的比例，没有执行过时为 None。

@@ -67,7 +67,8 @@ pytestmark = [
     pytest.mark.timeout(60, func_only=True),
 ]
 
-SETTINGS: dict[str, JsonValue] = {"model_cache_dir": str(MODEL_CACHE)}
+# 表格识别的默认值是关（重构前的取值），这里的测试要检查表格，所以显式打开。
+SETTINGS: dict[str, JsonValue] = {"model_cache_dir": str(MODEL_CACHE), "table": True}
 SMALL_W, SMALL_H = 1280, 900
 HD_W, HD_H = 1920, 1080
 LOAD_TIMEOUT = 300.0
@@ -173,6 +174,7 @@ def test_structure_ready(structure_worker: tuple[OcrWorkerProcess, Ready]) -> No
         "table": True,
         "formula": False,
         "chart": False,
+        "region": True,
         "doc_orientation": False,
         "doc_unwarping": False,
         "textline_orientation": False,
@@ -323,6 +325,61 @@ def test_text_mode_performance(text_worker: tuple[OcrWorkerProcess, Ready], hd_p
     blocks = ocr(worker, "hd-check", hd_pixels, (HD_W, HD_H), timeout=120)
     assert len(cast(list[object], blocks[0]["lines"])) >= 20
     assert measure(worker, hd_pixels, "text-mode") < 15.0
+
+
+@pytest.mark.timeout(300, func_only=True)
+def test_text_mode_loads_and_recognizes_with_onednn_off(small_pixels: bytes) -> None:
+    """enable_mkldnn 为 false（全部模型用普通方式运行）时仍能加载并识别。"""
+    worker = OcrWorkerProcess(PADDLE_BACKEND, python=OCR_PYTHON)
+    worker.start(connect_timeout=120)
+    try:
+        settings: dict[str, JsonValue] = {**SETTINGS, "mode": "text", "device": "cpu", "enable_mkldnn": False}
+        worker.handshake(settings, timeout=LOAD_TIMEOUT)
+        blocks = ocr(worker, "plain", small_pixels, (SMALL_W, SMALL_H), timeout=120)
+        lines = cast(list[dict[str, object]], blocks[0]["lines"])
+        joined = " ".join(cast(str, line["text"]) for line in lines)
+        for keyword in ("屏幕翻译", "Machine translation"):
+            assert keyword in joined
+    finally:
+        worker.close()
+
+
+@pytest.mark.timeout(300, func_only=True)
+def test_structure_mode_default_features_have_no_table() -> None:
+    """不带任何设置时（表格识别默认关，重构前的取值）版面模式照常识别，表格块没有单元格。"""
+    worker = OcrWorkerProcess(PADDLE_BACKEND, python=OCR_PYTHON)
+    worker.start(connect_timeout=120)
+    try:
+        ready = worker.handshake(
+            {"model_cache_dir": str(MODEL_CACHE), "mode": "structure"}, timeout=LOAD_TIMEOUT
+        )
+        features = cast(dict[str, bool], ready.capabilities["features"])
+        assert (features["table"], features["region"]) == (False, True)
+        pixels = render_document(small_document())
+        blocks = ocr(worker, "no-table", pixels, (SMALL_W, SMALL_H), timeout=120)
+        assert blocks
+        # 版面检测仍把表格区域标为 table，但没有单元格：只有文字。
+        assert all("cells" not in block or not block["cells"] for block in of(blocks, "table"))
+    finally:
+        worker.close()
+
+
+@pytest.mark.timeout(300, func_only=True)
+def test_structure_mode_recognizes_with_region_detection_off() -> None:
+    """[ocr].region 关闭时，建产线不带区域检测模型，预测也不能要求区域检测，否则 PaddleX 访问不存在的模型。"""
+    worker = OcrWorkerProcess(PADDLE_BACKEND, python=OCR_PYTHON)
+    worker.start(connect_timeout=120)
+    try:
+        ready = worker.handshake(
+            {"model_cache_dir": str(MODEL_CACHE), "mode": "structure", "region": False}, timeout=LOAD_TIMEOUT
+        )
+        features = cast(dict[str, bool], ready.capabilities["features"])
+        assert features["region"] is False
+        pixels = render_document(small_document())
+        blocks = ocr(worker, "no-region", pixels, (SMALL_W, SMALL_H), timeout=120)
+        assert blocks
+    finally:
+        worker.close()
 
 
 @pytest.mark.timeout(300, func_only=True)

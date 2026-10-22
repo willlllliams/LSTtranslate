@@ -6,8 +6,10 @@
 1. 子能力：按要开启的子能力设置 use_* 开关，并删掉关闭的子能力对应的子产线和子模块。PaddleX 只在
    开关为真时才创建子模块，删掉配置是为了让第 3 步只检查真正要加载的模型；印章识别总是关闭
    （默认的印章检测模型不在模型目录里，需求也不要求印章）。
-2. 模型：版面检测、文本检测、文本识别换成设置里的模型。表格子产线里还有一份 OCR 配置，PaddleX 只在
-   检测到表格被旋转时才临时创建它，这里也换成同样的模型，避免它去加载另一套。
+2. 模型：各环节换成设置里的模型（OcrSettings 的 det_model、rec_model、layout_model 与 models）：
+   版面检测、区域检测、文本检测、文本识别、文本行方向、文档方向、去畸变、无线表格结构、公式与图表。
+   表格子产线里还有一份 OCR 配置，PaddleX 只在检测到表格被旋转时才临时创建它，这里也换成同样的模型，
+   避免它去加载另一套。
 3. 模型目录：给配置里出现的每个 model_name 写上 model_dir = <模型缓存>/official_models/<模型名>，
    目录不存在就抛 ConfigError（列出全部缺失的模型）。PaddleX 拿到 model_dir 就直接加载，不经过下载逻辑。
 
@@ -69,9 +71,11 @@ def _configure_ocr(ocr: Config, settings: OcrSettings, textline: bool) -> None:
     _child(modules, "TextRecognition")["model_name"] = settings.rec_model
     if not textline:
         modules.pop("TextLineOrientation", None)
+    else:
+        _child(modules, "TextLineOrientation")["model_name"] = settings.model("textline_orientation_model")
 
 
-def _configure_doc_preprocessor(owner: Config, features: frozenset[str]) -> None:
+def _configure_doc_preprocessor(owner: Config, settings: OcrSettings, features: frozenset[str]) -> None:
     """文档方向校正与去畸变：都关时删掉整个子产线，否则只保留开着的子模块。"""
     orientation = "doc_orientation" in features
     unwarping = "doc_unwarping" in features
@@ -88,37 +92,49 @@ def _configure_doc_preprocessor(owner: Config, features: frozenset[str]) -> None
     modules = _child(preprocessor, "SubModules")
     if not orientation:
         modules.pop("DocOrientationClassify", None)
+    else:
+        _child(modules, "DocOrientationClassify")["model_name"] = settings.model("doc_orientation_model")
     if not unwarping:
         modules.pop("DocUnwarping", None)
+    else:
+        _child(modules, "DocUnwarping")["model_name"] = settings.model("doc_unwarping_model")
 
 
 def structure_config(base: Config, settings: OcrSettings, features: frozenset[str]) -> Config:
     """PP-StructureV3 的配置，开启 features 中的子能力。"""
     config = copy.deepcopy(base)
     table, formula, chart = "table" in features, "formula" in features, "chart" in features
+    region = "region" in features
     textline = "textline_orientation" in features
     config.update(
         use_seal_recognition=False,
         use_table_recognition=table,
         use_formula_recognition=formula,
         use_chart_recognition=chart,
-        use_region_detection=True,
+        use_region_detection=region,
     )
-    _configure_doc_preprocessor(config, features)
+    _configure_doc_preprocessor(config, settings, features)
     sub_pipelines = _child(config, "SubPipelines")
     sub_modules = _child(config, "SubModules")
     _child(sub_modules, "LayoutDetection")["model_name"] = settings.layout_model
+    _child(sub_modules, "RegionDetection")["model_name"] = settings.model("region_model")
     _configure_ocr(_child(sub_pipelines, "GeneralOCR"), settings, textline)
     sub_pipelines.pop("SealRecognition", None)
     if table:
-        _configure_ocr(
-            _child(sub_pipelines, "TableRecognition", "SubPipelines", "GeneralOCR"), settings, textline
-        )
+        table_config = _child(sub_pipelines, "TableRecognition")
+        _configure_ocr(_child(table_config, "SubPipelines", "GeneralOCR"), settings, textline)
+        wireless = _child(table_config, "SubModules", "WirelessTableStructureRecognition")
+        wireless["model_name"] = settings.model("table_model")
     else:
         sub_pipelines.pop("TableRecognition", None)
-    if not formula:
+    if formula:
+        recognizer = _child(sub_pipelines, "FormulaRecognition", "SubModules", "FormulaRecognition")
+        recognizer["model_name"] = settings.model("formula_model")
+    else:
         sub_pipelines.pop("FormulaRecognition", None)
-    if not chart:
+    if chart:
+        _child(sub_modules, "ChartRecognition")["model_name"] = settings.model("chart_model")
+    else:
         sub_modules.pop("ChartRecognition", None)
     return config
 
@@ -126,7 +142,7 @@ def structure_config(base: Config, settings: OcrSettings, features: frozenset[st
 def text_config(base: Config, settings: OcrSettings, features: frozenset[str]) -> Config:
     """OCR 产线（文本模式）的配置。"""
     config = copy.deepcopy(base)
-    _configure_doc_preprocessor(config, features)
+    _configure_doc_preprocessor(config, settings, features)
     _configure_ocr(config, settings, "textline_orientation" in features)
     return config
 
@@ -154,9 +170,9 @@ def model_names(config: Config) -> list[str]:
     return names
 
 
-def cpu_engine_config(model_name: str, cpu_threads: int) -> Config:
-    """CPU 上一个模型的运行方式，见模块说明的 oneDNN 一段。"""
-    run_mode = "mkldnn" if model_name in ONEDNN_MODELS else "paddle"
+def cpu_engine_config(model_name: str, cpu_threads: int, onednn: bool = True) -> Config:
+    """CPU 上一个模型的运行方式，见模块说明的 oneDNN 一段。onednn 为 False 时全部模型用 paddle。"""
+    run_mode = "mkldnn" if onednn and model_name in ONEDNN_MODELS else "paddle"
     return {
         "paddle_static": {
             "run_mode": run_mode,
@@ -167,7 +183,9 @@ def cpu_engine_config(model_name: str, cpu_threads: int) -> Config:
     }
 
 
-def attach_models(config: Config, models_dir: Path, cpu_threads: int | None) -> list[str]:
+def attach_models(
+    config: Config, models_dir: Path, cpu_threads: int | None, onednn: bool = True
+) -> list[str]:
     """给每个模型写上本地目录；cpu_threads 不为 None（设备是 CPU）时同时写上运行方式。
 
     返回用到的模型名。任何一个模型目录不存在时抛 ModelMissing（ConfigError 的子类），不会让 PaddleX 去下载。
@@ -182,7 +200,7 @@ def attach_models(config: Config, models_dir: Path, cpu_threads: int | None) -> 
             continue
         node["model_dir"] = str(directory)
         if cpu_threads is not None:
-            node["engine_config"] = cpu_engine_config(name, cpu_threads)
+            node["engine_config"] = cpu_engine_config(name, cpu_threads, onednn)
     if missing:
         raise ModelMissing(f"模型目录 {models_dir} 中缺少：{', '.join(missing)}")
     return model_names(config)

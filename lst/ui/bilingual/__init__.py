@@ -5,7 +5,7 @@
 
 from lst.ui.bilingual.module import BilingualModule, system_clipboard
 from lst.ui.bilingual.options import BilingualOptions, parse_options
-from lst.ui.bilingual.presenter import BilingualPresenter, EngineRow, SegmentItem
+from lst.ui.bilingual.presenter import BilingualPresenter, EngineChoice, engine_choices
 from lst.ui.bilingual.strings import CATALOG, LANGUAGES
 from lst.ui.bilingual.window import BilingualWindow
 
@@ -16,8 +16,8 @@ __all__ = [
     "BilingualOptions",
     "BilingualPresenter",
     "BilingualWindow",
-    "EngineRow",
-    "SegmentItem",
+    "EngineChoice",
+    "engine_choices",
     "parse_options",
     "system_clipboard",
 ]

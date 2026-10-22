@@ -9,7 +9,7 @@ import asyncio
 import logging
 import threading
 from collections import Counter
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Mapping, Sequence
 from enum import Enum, auto
 from typing import Protocol
 
@@ -31,7 +31,7 @@ from lst.contracts.translation import (
     SkipReason,
 )
 from lst.services.race.merger import SessionRace
-from lst.services.race.scheduler import LangPair, RaceMode, RaceScheduler, pack_segments
+from lst.services.race.scheduler import LangPair, RaceScheduler, pack_segments
 
 EN = Lang("en")
 JA = Lang("ja")
@@ -331,8 +331,8 @@ class Harness:
         session: str = "sess",
         entry: Entry = Entry.SCREENSHOT,
         sources: Mapping[SegmentId, Lang] | None = None,
-        langs: Mapping[SegmentId, LangPair] | None = None,
-        include_billing: bool = True,
+        langs: Mapping[SegmentId, LangPair | None] | None = None,
+        engines: Collection[EngineId] | None = None,
         context: str = "",
         images: Mapping[int, JobImage] | None = None,
     ) -> None:
@@ -344,13 +344,10 @@ class Harness:
             SessionId(session),
             segments,
             langs,
-            include_billing=include_billing,
+            engines=engines,
             context=context,
             images=images,
         )
-
-    async def extend(self, session: str = "sess") -> None:
-        await self.scheduler.extend_session(SessionId(session))
 
     async def drain(self) -> None:
         async with asyncio.timeout(5):
@@ -387,7 +384,6 @@ class MakeHarness(Protocol):
     def __call__(
         self,
         *engines: FakeEngine,
-        mode: RaceMode = RaceMode.SAVER,
         cache: FakeCache | None = None,
         frame_interval: float = FRAME,
         sink: FakeSink | None = None,
@@ -401,16 +397,13 @@ async def make() -> AsyncIterator[MakeHarness]:
 
     def factory(
         *engines: FakeEngine,
-        mode: RaceMode = RaceMode.SAVER,
         cache: FakeCache | None = None,
         frame_interval: float = FRAME,
         sink: FakeSink | None = None,
     ) -> Harness:
         sink = sink or FakeSink()
         clock = FakeClock()
-        scheduler = RaceScheduler(
-            engines, sink, mode=mode, cache=cache, clock=clock, frame_interval=frame_interval
-        )
+        scheduler = RaceScheduler(engines, sink, cache=cache, clock=clock, frame_interval=frame_interval)
         harness = Harness(scheduler, sink, clock)
         harnesses.append(harness)
         return harness
@@ -458,11 +451,11 @@ class TestRequirementTimeline:
         h, deepseek, deepl, argos = await self.begin(make)
 
         view = await self.arrive(h, argos, 0.3)
-        assert (view.display_text, view.winner, view.finished) == ("argos:Hello", argos.id, False)
+        assert (view.display_text, view.shown_engine, view.finished) == ("argos:Hello", argos.id, False)
         view = await self.arrive(h, deepl, 1.2)
-        assert (view.display_text, view.winner, view.finished) == ("deepl:Hello", deepl.id, False)
+        assert (view.display_text, view.shown_engine, view.finished) == ("deepl:Hello", deepl.id, False)
         view = await self.arrive(h, deepseek, 2.1)
-        assert (view.display_text, view.winner, view.finished) == ("deepseek:Hello", deepseek.id, True)
+        assert (view.display_text, view.shown_engine, view.finished) == ("deepseek:Hello", deepseek.id, True)
 
         await h.drain()
         assert h.displayed(S1) == ["Hello", "argos:Hello", "deepl:Hello", "deepseek:Hello"]
@@ -471,21 +464,21 @@ class TestRequirementTimeline:
         assert latencies == pytest.approx({deepseek.id: 2100.0, deepl.id: 1200.0, argos.id: 300.0})
         assert h.sink.progress[-1] == (SESSION, 1, 1)
 
-    async def test_lower_priority_result_after_best_is_only_recorded(self, make: MakeHarness) -> None:
+    async def test_lower_priority_running_after_best_is_cancelled(self, make: MakeHarness) -> None:
+        """DeepSeek 在 DeepL 之前返回：显示直接从 Argos 换成 DeepSeek，仍在执行的 DeepL 被取消（RACE-05）。"""
         h, deepseek, deepl, argos = await self.begin(make)
 
         await self.arrive(h, argos, 0.3)
         view = await self.arrive(h, deepseek, 0.8)
-        assert (view.winner, view.finished) == (deepseek.id, True)
-        # DeepL 已在执行，节省模式下照常完成，结果只记录不显示。
-        await self.arrive(h, deepl, 1.2)
+        assert (view.shown_engine, view.finished) == (deepseek.id, True)
         await h.drain()
 
         view = h.view(S1)
-        assert view.winner == deepseek.id
+        assert view.shown_engine == deepseek.id
         assert [a.engine_id for a in view.attempts] == [deepseek.id, deepl.id, argos.id]
+        assert deepl.cancelled == deepl.jobs
         late = h.attempt(S1, deepl)
-        assert (late.state, late.text) == (DONE, "deepl:Hello")
+        assert (late.state, late.text, late.started) == (CANCELLED, None, True)
         assert h.displayed(S1) == ["Hello", "argos:Hello", "deepseek:Hello"]
 
 
@@ -501,7 +494,12 @@ class TestParticipation:
 
         assert a.segments_seen() == [(S1,)]
         view = h.view(S2)
-        assert (view.display_text, view.winner, view.finished, view.attempts) == ("你好", None, True, ())
+        assert (view.display_text, view.shown_engine, view.finished, view.attempts) == (
+            "你好",
+            None,
+            True,
+            (),
+        )
         assert view.skip_reason is SkipReason.SAME_LANGUAGE
         assert h.view(S1).skip_reason is None
         assert h.sink.progress[-1] == (SESSION, 2, 2)
@@ -519,24 +517,31 @@ class TestParticipation:
         assert [a.engine_id for a in h.view(S2).attempts] == [ja_only.id]
 
     async def test_segment_without_any_supporting_engine_is_skipped(self, make: MakeHarness) -> None:
-        free = FakeEngine("free", 2, pairs=[("en", "zh-Hans")])
-        paid = FakeEngine("paid", 1, billing=True, pairs=[("ja", "zh-Hans")])
-        h = make(free, paid)
-        await h.start(
-            segs("Hello", "こんにちは", "Hola"), sources={S1: EN, S2: JA, S3: ES}, include_billing=False
+        en_only = FakeEngine("en_only", 1, pairs=[("en", "zh-Hans")])
+        h = make(en_only)
+        await h.start(segs("Hello", "Hola"), sources={S1: EN, S2: ES})
+        await h.drain()
+
+        assert en_only.segments_seen() == [(S1,)]
+        assert (h.view(S2).attempts, h.view(S2).skip_reason) == ((), SkipReason.NO_ENGINE)
+        assert (h.view(S2).display_text, h.view(S2).finished) == ("Hola", True)
+
+    async def test_segment_without_text_is_skipped_as_no_text(self, make: MakeHarness) -> None:
+        """语言对为 None 的段（只有符号或单个字母）不派发，标为“无需翻译”。"""
+        a = FakeEngine("a", 1)
+        h = make(a)
+        await h.start(segs("Hello", "☆4"), langs={S1: (EN, ZH), S2: None})
+        await h.drain()
+
+        assert a.segments_seen() == [(S1,)]
+        view = h.view(S2)
+        assert (view.skip_reason, view.attempts, view.display_text, view.finished) == (
+            SkipReason.NO_TEXT,
+            (),
+            "☆4",
+            True,
         )
-        await h.drain()
-
-        # s2 只有计费实例支持：暂时没有参赛者，但不标记跳过，等 extend_session。
-        assert (h.view(S2).attempts, h.view(S2).skip_reason) == ((), None)
-        # s3 的语言对没有任何实例支持，包括计费实例。
-        assert (h.view(S3).attempts, h.view(S3).skip_reason) == ((), SkipReason.NO_ENGINE)
-
-        await h.extend()
-        await h.drain()
-        assert paid.segments_seen() == [(S2,)]
-        assert h.view(S2).winner == paid.id
-        assert h.view(S3).attempts == ()
+        assert h.sink.progress[-1] == (SESSION, 2, 2)
 
     async def test_each_segment_uses_its_own_language_pair(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1, max_batch_segments=10)
@@ -553,17 +558,30 @@ class TestParticipation:
         assert cache.get_calls == [(key("Hello", a), key("你好", a, ZH, EN), key("World", a))]
         assert dict(cache.puts)[key("你好", a, ZH, EN)] == "a:你好"
 
-    async def test_billing_engines_stay_out_unless_included(self, make: MakeHarness) -> None:
+    async def test_engines_filter_limits_candidates(self, make: MakeHarness) -> None:
+        """engines 给出时只有列出的实例参加（双语窗口只用选中的服务），计费与否不影响。"""
         free = FakeEngine("free", 2)
         paid = FakeEngine("paid", 1, billing=True)
         h = make(free, paid)
-        await h.start(segs("Hello"), include_billing=False)
+        await h.start(segs("Hello"), entry=Entry.BILINGUAL, engines=[paid.id])
         await h.drain()
 
-        assert paid.jobs == []
+        assert free.jobs == []
         view = h.view(S1)
-        assert [a.engine_id for a in view.attempts] == [free.id]
-        assert (view.winner, view.finished) == (free.id, True)
+        assert [a.engine_id for a in view.attempts] == [paid.id]
+        assert (view.shown_engine, view.finished) == (paid.id, True)
+
+    @pytest.mark.parametrize("chosen", [(), ("gone",)], ids=["空集合", "不存在的实例"])
+    async def test_engines_filter_without_match_skips_as_no_engine(
+        self, make: MakeHarness, chosen: tuple[str, ...]
+    ) -> None:
+        a = FakeEngine("a", 1)
+        h = make(a)
+        await h.start(segs("Hello"), entry=Entry.BILINGUAL, engines=[EngineId(e) for e in chosen])
+        await h.drain()
+
+        assert a.jobs == []
+        assert (h.view(S1).skip_reason, h.view(S1).display_text) == (SkipReason.NO_ENGINE, "Hello")
 
     async def test_dispatch_time_comes_from_clock(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1)
@@ -587,7 +605,7 @@ class TestCache:
         b = FakeEngine("b", 2)
         b.behavior[S2] = Behavior.FAIL
         cache = FakeCache({key("一", b): "缓存译文"})
-        h = make(a, b, cache=cache, mode=RaceMode.FULL)
+        h = make(a, b, cache=cache)
         h.clock.now = 5.0
         await h.start(segs("一", "二"))
         await h.drain()
@@ -611,42 +629,14 @@ class TestCache:
         await h.start(segs("一"))
         await h.drain()
 
-        # 缓存命中让 a 成为胜出者，b 的排队尝试被即时剪枝，没有入队，也没有调用引擎。
+        # 缓存命中让 a 的译文显示出来，b 的排队尝试被即时剪枝，没有入队，也没有调用引擎。
         assert a.jobs == []
         assert b.jobs == []
         view = h.view(S1)
-        assert (view.winner, view.display_text, view.finished) == (a.id, "缓存译文", True)
+        assert (view.shown_engine, view.display_text, view.finished) == (a.id, "缓存译文", True)
         assert h.attempt(S1, b).state is CANCELLED
 
-    async def test_billing_cache_hits_join_without_extend(self, make: MakeHarness) -> None:
-        free = FakeEngine("free", 3)
-        paid = FakeEngine("paid", 1, billing=True)
-        cache = FakeCache({key("一", paid): "paid 缓存"})
-        h = make(free, paid, cache=cache)
-        await h.start(segs("一", "二"), include_billing=False)
-        await h.drain()
-
-        # 计费实例的组合同样查缓存。
-        assert cache.get_calls == [(key("一", free), key("一", paid), key("二", free), key("二", paid))]
-        # 命中的组合参赛并胜出；free 在 s1 上的排队尝试随之被即时剪枝。
-        hit = h.attempt(S1, paid)
-        assert (hit.state, hit.cached, hit.latency_ms) == (DONE, True, 0.0)
-        assert h.view(S1).winner == paid.id
-        assert h.attempt(S1, free).state is CANCELLED
-        # 没命中的组合不参赛，也不调用计费引擎。
-        assert [a.engine_id for a in h.view(S2).attempts] == [free.id]
-        assert paid.jobs == []
-        assert free.segments_seen() == [(S2,)]
-
-        await h.extend()
-        await h.drain()
-        # extend_session 之后，没命中的组合正常加入；命中过的组合不重复参赛。
-        assert cache.get_calls[-1] == (key("二", paid),)
-        assert paid.segments_seen() == [(S2,)]
-        assert h.view(S2).winner == paid.id
-        assert len(h.sink.recorded(S1, paid)) == 1
-
-    async def test_cache_errors_are_logged_and_race_goes_on(
+    async def test_cache_errors_are_logged_and_translation_goes_on(
         self, make: MakeHarness, caplog: pytest.LogCaptureFixture
     ) -> None:
         caplog.set_level(logging.WARNING, logger=LOGGER)
@@ -707,19 +697,6 @@ class TestCache:
             hit = h.attempt(segment_id, a)
             assert (hit.state, hit.text, hit.cached) == (DONE, "好", True)
             assert h.view(segment_id).finished
-
-    async def test_identical_texts_all_join_on_billing_hit(self, make: MakeHarness) -> None:
-        """双语窗口不含计费实例时，原文相同的段都因缓存命中让计费实例参赛。"""
-        free = FakeEngine("free", 2)
-        paid = FakeEngine("paid", 1, billing=True)
-        cache = FakeCache({key("OK", paid): "好"})
-        h = make(free, paid, cache=cache)
-        await h.start(segs("OK", "OK"), entry=Entry.BILINGUAL, include_billing=False)
-        await h.drain()
-
-        assert paid.jobs == []
-        for segment_id in (S1, S2):
-            assert (h.view(segment_id).winner, h.view(segment_id).display_text) == (paid.id, "好")
 
     async def test_blank_translation_is_not_written(self, make: MakeHarness) -> None:
         """译文去掉空白后为空时不写缓存，免得以后每次都命中这个空结果。"""
@@ -816,20 +793,20 @@ class TestExecution:
         await h.sink.signal.wait_until(lambda: bool(h.sink.recorded(S3, b)))
         assert [r.state for r in h.sink.recorded(S3, b)] == [CANCELLED]  # 即时剪枝
 
-        b.release(S1)
+        # 第一个任务的两段都已被 a 覆盖，任务被取消；
+        # 出队时 s3 已不在 QUEUED 状态，从第二个任务中移除，只保留 s4。
         await wait_jobs(b, 2)
-        # 出队时 s3 已不在 QUEUED 状态，从任务中移除，只保留 s4。
         assert b.segments_seen() == [(S1, S2), (S4,)]
         a.release(S4)
         await h.drain()
 
         for segment_id in (S1, S2):
-            assert h.view(segment_id).winner == a.id
-            assert h.attempt(segment_id, b).state is DONE
+            assert h.view(segment_id).shown_engine == a.id
+            assert h.attempt(segment_id, b).state is CANCELLED
         assert len(h.sink.recorded(S3, b)) == 1
-        assert h.view(S4).winner == a.id
+        assert h.view(S4).shown_engine == a.id
 
-    async def test_attempt_that_cannot_win_is_pruned_before_race_finishes(self, make: MakeHarness) -> None:
+    async def test_attempt_that_cannot_change_display_is_pruned_early(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1)
         a.gate(S1, S2)
         b = FakeEngine("b", 2, max_concurrency=2)
@@ -842,7 +819,7 @@ class TestExecution:
         await wait_jobs(c, 1)
         await h.sink.signal.wait_until(lambda: h.state(S2, b) is DONE)
 
-        # b 在 s2 上胜出的同时，优先级更低的 c 被剪掉；a 还可能改变显示，竞速尚未结束。
+        # b 在 s2 上的译文显示出来的同时，优先级更低的 c 被剪掉；a 还可能改变显示，显示尚未确定。
         assert [r.state for r in h.sink.recorded(S2, c)] == [CANCELLED]
         assert h.state(S2, a) is QUEUED
         assert not h.finished(S2)
@@ -852,7 +829,7 @@ class TestExecution:
         b.release(S1)
         await h.drain()
         assert c.segments_seen() == [(S1,)]
-        assert (h.view(S2).winner, h.view(S2).finished) == (a.id, True)
+        assert (h.view(S2).shown_engine, h.view(S2).finished) == (a.id, True)
 
 
 class TestConcurrency:
@@ -925,7 +902,7 @@ class TestEngineFaults:
             attempt = h.attempt(segment_id, a)
             assert (attempt.state, attempt.error) == (FAILED, "RuntimeError: 连接中断")
             # 一个实例出错不影响其他实例（ENG-06）。
-            assert h.view(segment_id).winner == b.id
+            assert h.view(segment_id).shown_engine == b.id
 
     async def test_segment_missing_from_stream_fails(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1, max_batch_segments=2)
@@ -938,7 +915,7 @@ class TestEngineFaults:
         attempt = h.attempt(S2, a)
         assert (attempt.state, attempt.error) == (FAILED, "引擎未返回该段")
         view = h.view(S2)
-        assert (view.finished, view.winner, view.display_text) == (True, None, "二")
+        assert (view.finished, view.shown_engine, view.display_text) == (True, None, "二")
 
     async def test_foreign_and_duplicate_outcomes_are_ignored(
         self, make: MakeHarness, caplog: pytest.LogCaptureFixture
@@ -1007,24 +984,11 @@ class TestEngineFaults:
         assert a.segments_seen() == [(SegmentId("n1"),)]
 
 
-# ---------------------------------------------------------------- 6 竞速模式
+# ---------------------------------------------------------------- 6 剪枝
 
 
-class TestRaceMode:
-    @staticmethod
-    async def begin(make: MakeHarness, mode: RaceMode) -> tuple[Harness, FakeEngine, FakeEngine]:
-        """a（优先级 1）两段都停在闸门上；b（优先级 2，并发 1）正在执行 s1，s2 在排队。"""
-        a = FakeEngine("a", 1, max_concurrency=2)
-        a.gate(S1, S2)
-        b = FakeEngine("b", 2)
-        b.gate(S1)
-        h = make(a, b, mode=mode)
-        await h.start(segs("一", "二"))
-        await wait_jobs(a, 2)
-        await wait_jobs(b, 1)
-        return h, a, b
-
-    async def test_saver_cancels_queued_attempts_as_soon_as_display_settles(self, make: MakeHarness) -> None:
+class TestPruning:
+    async def test_queued_attempts_are_cancelled_as_soon_as_display_settles(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1, max_concurrency=4)
         a.gate(S1, S2, S3, S4)
         b = FakeEngine("b", 2)  # 并发 1：s1 执行中，s2 至 s4 排在后面
@@ -1041,48 +1005,103 @@ class TestRaceMode:
         assert all([r.state for r in h.sink.recorded(s, b)] == [CANCELLED] for s in later)
         assert b.segments_seen() == [(S1,)]
 
-        b.release(S1)
         await h.drain()
         # 出队时这些任务已经没有排队的段，直接丢弃，不调用引擎。
         assert b.segments_seen() == [(S1,)]
         assert all(len(h.sink.recorded(s, b)) == 1 for s in later)
-        # b 在 s1 上已经开始执行，照常完成，结果只记录不显示。
-        assert h.view(S1).winner == a.id
+        # b 在 s1 上的任务正在执行：a 的译文显示后它不可能再改变显示，任务被取消，尝试记为已取消。
+        assert b.cancelled == b.jobs
+        assert h.view(S1).shown_engine == a.id
         late = h.attempt(S1, b)
-        assert (late.state, late.text) == (DONE, "b:一")
+        assert (late.state, late.text, late.started) == (CANCELLED, None, True)
+        assert [r.state for r in h.sink.recorded(S1, b)] == [CANCELLED]
 
-    async def test_full_mode_runs_every_attempt(self, make: MakeHarness) -> None:
-        h, a, b = await self.begin(make, RaceMode.FULL)
-        a.release(S1, S2)
-        b.release(S1)
+    async def test_running_job_is_cancelled_when_higher_priority_wins(self, make: MakeHarness) -> None:
+        """在线引擎这类任务在等待网络时被取消：生成器收到 CancelledError，尝试记为已取消、不是失败。"""
+        deepseek = FakeEngine("deepseek", 1)
+        deepseek.gate(S1)
+        argos = FakeEngine("argos", 3)
+        argos.gate(S1)
+        h = make(deepseek, argos)
+        await h.start(segs("Hello"))
+        await wait_jobs(argos, 1)
+        await wait_jobs(deepseek, 1)
+        deepseek.release(S1)
         await h.drain()
 
-        assert b.segments_seen() == [(S1,), (S2,)]
-        assert len(h.sink.records) == 4
-        assert all(attempt.state is DONE for _, _, attempt in h.sink.records)
-        assert h.view(S2).winner == a.id
-        assert h.view(S2).complete
+        assert argos.cancelled == argos.jobs
+        attempt = h.attempt(S1, argos)
+        assert (attempt.state, attempt.error, attempt.error_code) == (CANCELLED, None, None)
+        assert (h.view(S1).shown_engine, h.view(S1).finished) == (deepseek.id, True)
+        assert [r.state for r in h.sink.recorded(S1, argos)] == [CANCELLED]
 
-    async def test_switching_to_full_stops_later_pruning(self, make: MakeHarness) -> None:
-        h, a, b = await self.begin(make, RaceMode.SAVER)
-        h.scheduler.set_mode(RaceMode.FULL)
-        a.release(S1, S2)
-        b.release(S1)
+    async def test_running_higher_priority_job_is_not_cancelled(self, make: MakeHarness) -> None:
+        """低优先级的译文先到只会先显示，不会取消更高优先级的任务；后者到达后替换显示（RACE-03）。"""
+        deepseek = FakeEngine("deepseek", 1)
+        deepseek.gate(S1)
+        argos = FakeEngine("argos", 3)
+        h = make(deepseek, argos)
+        await h.start(segs("Hello"))
+        await h.sink.signal.wait_until(lambda: h.state(S1, argos) is DONE)
+        assert h.view(S1).shown_engine == argos.id
+        deepseek.release(S1)
         await h.drain()
+        assert deepseek.cancelled == []
+        assert h.displayed(S1) == ["Hello", "argos:Hello", "deepseek:Hello"]
 
-        assert b.segments_seen() == [(S1,), (S2,)]
-        assert h.attempt(S2, b).state is DONE
+    async def test_partially_covered_batch_keeps_running(self, make: MakeHarness) -> None:
+        """批量任务里还有段需要它时不取消；剩下的段也都被更高优先级覆盖后才取消。"""
+        top_slots = FakeEngine("top", 1, max_concurrency=2)
+        top_slots.gate(S1, S2)
+        batch = FakeEngine("batch", 2, max_batch_segments=2)
+        batch.gate(S1, S2)
+        h = make(top_slots, batch)
+        await h.start(segs("一", "二"))
+        await wait_jobs(batch, 1)
+        assert batch.segments_seen() == [(S1, S2)]
 
-    async def test_switching_to_saver_prunes_later_dequeues(self, make: MakeHarness) -> None:
-        h, a, b = await self.begin(make, RaceMode.FULL)
-        a.release(S1, S2)
-        await h.sink.signal.wait_until(lambda: h.finished(S2))
+        top_slots.release(S1)
+        await h.sink.signal.wait_until(lambda: h.view(S1).shown_engine == top_slots.id)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert batch.cancelled == [], "s2 还需要 batch 的译文，批次继续执行"
+        assert h.state(S1, batch) is RUNNING
 
-        h.scheduler.set_mode(RaceMode.SAVER)
-        b.release(S1)
+        top_slots.release(S2)
         await h.drain()
-        assert b.segments_seen() == [(S1,)]
-        assert h.attempt(S2, b).state is CANCELLED
+        assert batch.cancelled == batch.jobs
+        for segment_id in (S1, S2):
+            assert h.attempt(segment_id, batch).state is CANCELLED
+            assert h.view(segment_id).shown_engine == top_slots.id
+
+    async def test_batch_with_own_result_is_cancelled_when_rest_is_covered(self, make: MakeHarness) -> None:
+        """批次里已经出过结果的段不算“还需要”：剩下的段被覆盖后批次就取消。"""
+        top = FakeEngine("top", 1)
+        top.gate(S2)
+        batch = FakeEngine("batch", 2, max_batch_segments=2)
+        batch.gate(S2)
+        h = make(top, batch)
+        await h.start(segs("一", "二"))
+        await h.sink.signal.wait_until(lambda: h.state(S1, batch) is DONE or h.state(S1, top) is DONE)
+        top.release(S2)
+        await h.drain()
+        assert batch.cancelled == batch.jobs
+        assert h.attempt(S2, batch).state is CANCELLED
+        assert h.view(S2).shown_engine == top.id
+
+    async def test_failure_of_higher_priority_keeps_shown_translation(self, make: MakeHarness) -> None:
+        """更高优先级失败或查不到（NO_MATCH）时，已经显示的低优先级译文保留，不取消任何任务。"""
+        top = FakeEngine("top", 1)
+        top.behavior[S1] = Behavior.FAIL
+        top.gate(S1)
+        low = FakeEngine("low", 3)
+        h = make(top, low)
+        await h.start(segs("一"))
+        await h.sink.signal.wait_until(lambda: h.state(S1, low) is DONE)
+        top.release(S1)
+        await h.drain()
+        assert (h.view(S1).shown_engine, h.view(S1).display_text) == (low.id, "low:一")
+        assert h.attempt(S1, top).state is FAILED
 
 
 # ---------------------------------------------------------------- 7 会话
@@ -1194,197 +1213,6 @@ class TestSessions:
             await h.start(segs("二", prefix="n"), session="later")
 
 
-# ---------------------------------------------------------------- 8 晚加入（BI-04）
-
-
-class TestLateJoin:
-    async def test_billing_engines_join_on_extend_and_reopen_race(self, make: MakeHarness) -> None:
-        argos = FakeEngine("argos", 3)
-        deepseek = FakeEngine("deepseek", 1, billing=True)
-        deepseek.gate(S1)
-        deepl = FakeEngine("deepl", 2, billing=True)
-        cache = FakeCache()
-        h = make(argos, deepseek, deepl, cache=cache)
-        await h.start(segs("第一段", "第二段"), include_billing=False)
-        await h.drain()
-        assert deepseek.jobs == []
-        assert deepl.jobs == []
-        assert (h.view(S1).winner, h.view(S1).finished) == (argos.id, True)
-
-        cache.data[key("第二段", deepl)] = "deepl 缓存"  # 会话开始之后才出现的缓存条目
-        h.clock.now = 5.0
-        await h.extend()
-        # 更高优先级的实例加入后，已经结束的段重新打开。
-        await h.sink.signal.wait_until(lambda: h.state(S1, deepseek) is RUNNING)
-        assert not h.view(S1).finished
-        h.clock.now = 5.4
-        deepseek.release(S1)
-        await h.drain()
-
-        # 晚加入的组合同样先查缓存：deepl 在 s2 上命中，只为 s1 调用引擎。
-        assert cache.get_calls[-1] == (
-            key("第一段", deepseek),
-            key("第一段", deepl),
-            key("第二段", deepseek),
-            key("第二段", deepl),
-        )
-        assert deepl.segments_seen() == [(S1,)]
-        hit = h.attempt(S2, deepl)
-        assert (hit.latency_ms, hit.cached) == (0.0, True)
-        for segment_id in (S1, S2):
-            assert (h.view(segment_id).winner, h.view(segment_id).finished) == (deepseek.id, True)
-        # 晚加入实例的耗时从 extend_session 的时刻算起。
-        assert h.attempt(S1, deepseek).latency_ms == pytest.approx(400.0)
-
-    async def test_reopened_race_does_not_revive_hopeless_attempt(
-        self, make: MakeHarness, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.ERROR, logger=LOGGER)
-        local = FakeEngine("local", 2, max_concurrency=2)
-        local.gate(S1, S2)
-        slow = FakeEngine("slow", 3)  # 并发 1：s1 执行中，s2 排队
-        slow.gate(S1)
-        deepseek = FakeEngine("deepseek", 1, billing=True)
-        deepseek.gate(S2)
-        h = make(local, slow, deepseek)
-        await h.start(segs("一", "二"), include_billing=False)
-        await wait_jobs(slow, 1)
-        local.release(S1, S2)
-        # local 在 s2 上胜出时，排在 slow 队列里的 s2 尝试被即时剪枝。
-        await h.sink.signal.wait_until(lambda: bool(h.sink.recorded(S2, slow)))
-        assert [r.state for r in h.sink.recorded(S2, slow)] == [CANCELLED]
-
-        await h.extend()  # deepseek 加入，s2 的竞速重新打开
-        await h.sink.signal.wait_until(lambda: h.state(S2, deepseek) is RUNNING)
-        assert not h.finished(S2)
-
-        # slow 的任务 [s2] 在竞速重开期间出队：已取消的尝试只被移除，不会被重新启动。
-        slow.release(S1)
-        await slow.signal.wait_until(lambda: slow.active == 0)
-        for _ in range(10):  # 让 slow 的工作协程取出下一个任务
-            await asyncio.sleep(0)
-        assert not h.finished(S2)
-        deepseek.release(S2)
-        await h.drain()
-
-        assert slow.segments_seen() == [(S1,)]
-        assert len(h.sink.recorded(S2, slow)) == 1
-        assert (h.view(S2).winner, h.view(S2).finished) == (deepseek.id, True)
-        assert caplog.records == []
-
-    async def test_extend_never_rejoins_existing_pairs(self, make: MakeHarness) -> None:
-        local = FakeEngine("local", 2)
-        deepl = FakeEngine("deepl", 3, billing=True)
-        h = make(local, deepl)
-        await h.start(segs("一"), include_billing=False)
-        await h.drain()
-
-        await h.extend()
-        await h.drain()
-        # 节省模式：deepl 的优先级低于已经胜出的 local，出队时被剪掉，不调用引擎。
-        assert deepl.jobs == []
-        assert h.attempt(S1, deepl).state is CANCELLED
-
-        await h.extend()
-        await h.drain()
-        assert deepl.jobs == []
-        assert len(h.sink.recorded(S1, deepl)) == 1
-
-    async def test_extend_follows_each_segment_language_pair(self, make: MakeHarness) -> None:
-        free = FakeEngine("free", 3)
-        paid = FakeEngine("paid", 1, billing=True, pairs=[("en", "zh-Hans"), ("zh-Hans", "en")])
-        h = make(free, paid)
-        langs = {S1: (EN, ZH), S2: (ZH, ZH), S3: (JA, ZH), S4: (ZH, EN)}
-        await h.start(segs("Hello", "你好", "こんにちは", "世界"), langs=langs, include_billing=False)
-        await h.drain()
-        await h.extend()
-        await h.drain()
-
-        assert paid.segments_seen() == [(S1,), (S4,)]
-        assert [(job.source_lang, job.target_lang) for job in paid.jobs] == [(EN, ZH), (ZH, EN)]
-        assert h.view(S2).attempts == ()
-        assert [a.engine_id for a in h.view(S3).attempts] == [free.id]
-
-    async def test_extend_admits_replaced_billing_instance(self, make: MakeHarness) -> None:
-        """计费实例在会话开始后被替换（例如补填了 API key），Ctrl+Enter 时由新实例参赛。"""
-        local = FakeEngine("argos", 2)
-        old = FakeEngine("deepseek", 1, billing=True, revision=1)
-        h = make(local, old)
-        await h.start(segs("hello"), entry=Entry.BILINGUAL, include_billing=False)
-        await h.drain()
-
-        new = FakeEngine("deepseek", 1, billing=True, revision=2)
-        new.gate(S1)
-        h.scheduler.set_engines([local, new])
-        await h.extend()
-        await h.sink.signal.wait_until(lambda: h.state(S1, new) is RUNNING)
-        assert not h.finished(S1)
-        new.release(S1)
-        await h.drain()
-
-        assert old.jobs == []
-        assert new.segments_seen() == [(S1,)]
-        assert (h.view(S1).winner, h.view(S1).display_text) == (new.id, "deepseek:hello")
-
-    async def test_extend_reruns_attempt_failed_by_replaced_instance(self, make: MakeHarness) -> None:
-        """旧实例失败的段由同号新实例重新参赛，旧实例成功的段保持原状。"""
-        local = FakeEngine("argos", 2)
-        old = FakeEngine("deepseek", 1, billing=True, revision=1)
-        old.behavior[S1] = Behavior.FAIL
-        h = make(local, old)
-        await h.start(segs("一", "二"), entry=Entry.BILINGUAL)
-        await h.drain()
-        assert h.attempt(S1, old).state is FAILED
-        assert h.view(S1).winner == local.id
-
-        new = FakeEngine("deepseek", 1, billing=True, revision=2)
-        h.scheduler.set_engines([local, new])
-        await h.extend()
-        await h.drain()
-
-        assert new.segments_seen() == [(S1,)]
-        assert (h.view(S1).winner, h.view(S1).display_text) == (new.id, "deepseek:一")
-        assert h.view(S2).display_text == "deepseek:二"  # 旧实例的结果
-        assert [r.state for r in h.sink.recorded(S1, new)] == [FAILED, DONE]
-
-        # 新实例自己的结果不再被替换：再按一次 Ctrl+Enter 什么也不发生。
-        await h.extend()
-        await h.drain()
-        assert new.segments_seen() == [(S1,)]
-
-    async def test_replacement_that_joined_is_retired_like_original(self, make: MakeHarness) -> None:
-        """加入会话的新实例再被移除时，它在这个会话里的尝试同样按“实例已移除”结束。"""
-        local = FakeEngine("argos", 2)
-        old = FakeEngine("deepseek", 1, billing=True, revision=1)
-        h = make(local, old)
-        await h.start(segs("一"), entry=Entry.BILINGUAL, include_billing=False)
-        await h.drain()
-        new = FakeEngine("deepseek", 1, billing=True, revision=2)
-        new.gate(S1)
-        h.scheduler.set_engines([local, new])
-        await h.extend()
-        await wait_jobs(new, 1)
-
-        h.scheduler.set_engines([local])
-        await h.drain()
-        removed = h.attempt(S1, new)
-        assert (removed.state, removed.error) == (FAILED, "实例已移除")
-        assert new.cancelled == new.jobs
-        assert (h.view(S1).winner, h.view(S1).finished) == (local.id, True)
-
-    async def test_extend_ignores_unknown_or_cancelled_sessions(self, make: MakeHarness) -> None:
-        paid = FakeEngine("paid", 1, billing=True)
-        h = make(paid)
-        await h.extend("unknown")
-        await h.start(segs("一"), include_billing=False)
-        h.scheduler.cancel_session(Entry.SCREENSHOT)
-        await h.extend()
-        await h.drain()
-
-        assert paid.jobs == []
-        assert h.sink.log == []
-
-
 # ---------------------------------------------------------------- 实例集合变化（6.5 节）
 
 
@@ -1406,7 +1234,7 @@ class TestSetEngines:
         for segment_id in (S1, S2):
             assert [(r.state, r.error) for r in h.sink.recorded(segment_id, a)] == [(FAILED, "实例已移除")]
         await h.sink.signal.wait_until(lambda: h.finished(S1) and h.finished(S2), timeout=0.5)
-        assert h.view(S1).winner == b.id
+        assert h.view(S1).shown_engine == b.id
         await h.drain()
 
         assert a.cancelled == a.jobs  # 执行中的任务被取消
@@ -1425,7 +1253,7 @@ class TestSetEngines:
         for segment_id in (S1, S2):
             removed = h.attempt(segment_id, a)
             assert (removed.state, removed.error) == (FAILED, "实例已移除")
-            assert (h.view(segment_id).winner, h.view(segment_id).finished) == (b.id, True)
+            assert (h.view(segment_id).shown_engine, h.view(segment_id).finished) == (b.id, True)
 
     async def test_changed_priority_applies_only_to_later_sessions(self, make: MakeHarness) -> None:
         old_a = FakeEngine("a", 1)
@@ -1445,29 +1273,28 @@ class TestSetEngines:
 
         assert old_a.cancelled == old_a.jobs
         assert [job.session_id for job in new_a.jobs] == [SessionId("second")]
-        assert h.view(S1, "first").winner == b.id
+        assert h.view(S1, "first").shown_engine == b.id
         # 新会话按新优先级合并：b（2）高于 a（3）。
-        assert h.view(n1, "second").winner == b.id
+        assert h.view(n1, "second").shown_engine == b.id
 
     async def test_new_instance_joins_only_later_sessions(self, make: MakeHarness) -> None:
         free = FakeEngine("free", 2)
         free.gate(S1)
-        h = make(free, mode=RaceMode.FULL)
-        await h.start(segs("一"), session="first", include_billing=False)
+        h = make(free)
+        await h.start(segs("一"), session="first")
         await wait_jobs(free, 1)
 
         paid = FakeEngine("paid", 1, billing=True)
         added = FakeEngine("added", 3)
         h.scheduler.set_engines([free, paid, added])
-        await h.extend("first")  # 现存会话不接纳新实例，extend_session 也一样
         free.release(S1)
         await h.start(segs("二", prefix="n"), session="second", entry=Entry.BILINGUAL)
         await h.drain()
 
         assert [a.engine_id for a in h.view(S1, "first").attempts] == [free.id]
         second = h.view(SegmentId("n1"), "second")
-        assert {a.engine_id for a in second.attempts} == {free.id, paid.id, added.id}
-        assert second.winner == paid.id
+        assert [a.engine_id for a in second.attempts] == [paid.id, free.id, added.id]
+        assert second.shown_engine == paid.id
 
     async def test_unchanged_instance_is_left_alone(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1)
@@ -1483,7 +1310,7 @@ class TestSetEngines:
         a.release(S1)
         await h.drain()
         assert a.cancelled == []
-        assert (h.attempt(S1, a).state, h.view(S1).winner) == (DONE, a.id)
+        assert (h.attempt(S1, a).state, h.view(S1).shown_engine) == (DONE, a.id)
 
         # 原样保留：之后的会话仍交给原来的对象。
         await h.start(segs("二", prefix="n"), session="next", entry=Entry.BILINGUAL)
@@ -1498,21 +1325,23 @@ class TestSetEngines:
 class TestFrames:
     async def test_first_frame_contains_every_segment(self, make: MakeHarness) -> None:
         a = FakeEngine("a", 1, pairs=[("en", "zh-Hans")])
-        paid = FakeEngine("paid", 2, billing=True, pairs=[("ja", "zh-Hans")])
         a.gate(S1)
-        h = make(a, paid)
+        h = make(a)
         await h.start(
-            segs("Hello", "你好", "こんにちは"),
-            langs={S1: (EN, ZH), S2: (ZH, ZH), S3: (JA, ZH)},
-            include_billing=False,
+            segs("Hello", "你好", "こんにちは", "☆"),
+            langs={S1: (EN, ZH), S2: (ZH, ZH), S3: (JA, ZH), S4: None},
         )
         await h.sink.signal.wait_until(lambda: bool(h.sink.updates))
 
         _, first = h.sink.updates[0]
-        # s3 只因计费实例未加入而暂无参赛者，合并器不会标记它，第一帧仍要带上它。
-        assert [v.segment_id for v in first] == [S1, S2, S3]
-        assert (first[1].skip_reason, first[1].finished) == (SkipReason.SAME_LANGUAGE, True)
-        assert (first[2].skip_reason, first[2].attempts) == (None, ())
+        # 没有参赛实例的段同样在第一帧里，界面由此拿到全部段和它们不参加竞速的原因。
+        assert [v.segment_id for v in first] == [S1, S2, S3, S4]
+        assert [(v.skip_reason, v.finished) for v in first[1:]] == [
+            (SkipReason.SAME_LANGUAGE, True),
+            (SkipReason.NO_ENGINE, True),
+            (SkipReason.NO_TEXT, True),
+        ]
+        assert (first[0].skip_reason, first[0].finished) == (None, False)
         a.release(S1)
         await h.drain()
 
@@ -1623,7 +1452,7 @@ async def test_attempt_recorded_once_per_terminal_attempt(make: MakeHarness) -> 
     assert states == {
         (S1, a.id): DONE,
         (S1, b.id): FAILED,
-        (S1, c.id): DONE,
+        (S1, c.id): CANCELLED,  # 执行中被取消：a 的译文显示后它不可能再改变显示
         (S2, a.id): DONE,
         (S2, b.id): FAILED,
         (S2, c.id): CANCELLED,
@@ -1647,11 +1476,11 @@ class TestSink:
         a = FakeEngine("a", 1)
         b = FakeEngine("b", 2)
         sink = RaisingSink()
-        h = make(a, b, sink=sink, mode=RaceMode.FULL)
+        h = make(a, b, sink=sink)
         await h.start(segs("一", "二"))
         await h.drain()
 
-        assert (h.view(S1).winner, h.view(S1).finished) == (a.id, True)
+        assert (h.view(S1).shown_engine, h.view(S1).finished) == (a.id, True)
         assert len(sink.records) == 4
         assert sink.progress[-1] == (SESSION, 2, 2)  # segments_updated 抛异常后，同一帧的进度照常发出
         assert any("RaceSink" in r.getMessage() for r in caplog.records)
@@ -1711,10 +1540,16 @@ class TestImages:
     async def test_only_image_lanes_receive_matching_image(self, make: MakeHarness) -> None:
         small, large = job_image(b"small", 512), job_image(b"large", 1568)
         vision = FakeEngine("vision", 1, image_max_side=1568)
+        vision.gate(S1)  # 先让低优先级的实例都开始执行，再放行，取消规则不影响这里要看的任务内容
         other_side = FakeEngine("other", 2, image_max_side=1024)
+        other_side.gate(S1)
         plain = FakeEngine("plain", 3)
         h = make(vision, other_side, plain)
         await h.start(segs("一"), images={512: small, 1568: large})
+        for engine in (vision, other_side, plain):
+            await wait_jobs(engine, 1)
+        vision.release(S1)
+        other_side.release(S1)
         await h.drain()
 
         assert [job.image for job in vision.jobs] == [large]
@@ -1732,10 +1567,13 @@ class TestImages:
     async def test_cache_key_contains_image_digest(self, make: MakeHarness) -> None:
         image = job_image(b"shot-1")
         vision = FakeEngine("vision", 1, image_max_side=64)
+        vision.gate(S1)  # plain 先出结果并写缓存，vision 再返回
         plain = FakeEngine("plain", 2)
         cache = FakeCache()
-        h = make(vision, plain, cache=cache, mode=RaceMode.FULL)
+        h = make(vision, plain, cache=cache)
         await h.start(segs("一"), images={64: image})
+        await h.sink.signal.wait_until(lambda: h.state(S1, plain) is DONE)
+        vision.release(S1)
         await h.drain()
 
         written = dict(cache.puts)

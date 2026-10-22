@@ -3,18 +3,24 @@
 调度器按字符串比较语言代码，所以全程序统一用 BCP 47 的一个子集：中文区分 zh-Hans 与 zh-Hant，
 其他语言只用主语言子标签（en、ja、de）。配置在校验时、检测结果在输出时都经过 normalize_lang。
 
-检测分三步：
+单段检测（detect）分三步：
 
 1. 文字系统规则：出现假名判为日文，出现谚文判为韩文；
 2. 其余文本交给 lingua 高精度模式，候选语言限定为一个可配置的集合；
 3. lingua 判为中文时，再按简体专用字与繁体专用字的个数区分 zh-Hans 与 zh-Hant。
 
-没有任何字母（全是数字、符号、表情）或只有一个非汉字字母的文本，检测结果为 None。
+没有可翻译文字的文本（has_text 为假：全是数字、符号、表情，或只有一个非汉字字母）检测结果为 None。
+
+一批文本（detect_many，同一张截屏的各段或双语窗口的各段落）在单段检测之后再按上下文修正
+拉丁字母文本的结果，规则见 resolve_with_context。
 """
 
 import asyncio
 import threading
+import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Final, Protocol
 
 import lingua
@@ -94,6 +100,96 @@ def _is_han(cp: int) -> bool:
     )
 
 
+def _letters(text: str) -> tuple[int, bool, bool]:
+    """文本里的字母数、是否含汉字、是否含假名或谚文。"""
+    letters = 0
+    has_han = False
+    has_kana_or_hangul = False
+    for ch in text:
+        cp = ord(ch)
+        if _is_kana(cp) or _is_hangul(cp):
+            has_kana_or_hangul = True
+        elif _is_han(cp):
+            has_han = True
+        if ch.isalpha():
+            letters += 1
+    return letters, has_han, has_kana_or_hangul
+
+
+def has_text(text: str) -> bool:
+    """文本里有没有可翻译的文字。
+
+    没有字母（全是数字、符号、表情，例如“•”“☆4”“2024-10-21”），或者只有一个字母且它不是汉字、假名、
+    谚文（例如“v1.2”里的 v）时为假：这类段没有语言信息，翻译它只会原样返回或得到无意义的结果（需求 RACE-09）。
+    """
+    letters, has_han, has_kana_or_hangul = _letters(text)
+    return letters >= 2 or (letters == 1 and (has_han or has_kana_or_hangul))
+
+
+def _latin_only(text: str) -> bool:
+    """文本里的字母全是拉丁字母（含带附加符号的拉丁字母，例如 é、ữ）。"""
+    found = False
+    for ch in text:
+        if ch.isalpha():
+            if not unicodedata.name(ch, "").startswith("LATIN"):
+                return False
+            found = True
+    return found
+
+
+# ---------------------------------------------------------------- 上下文修正
+
+LONG_TEXT_LETTERS: Final = 20
+"""字母数达到这个值的拉丁字母文本算“长文本”，它自己的检测结果可信（置信度也足够时）。"""
+
+MIN_CONFIDENCE: Final = 0.5
+"""lingua 给出的最高置信度低于这个值时，检测结果不可信。"""
+
+CONTEXT_FALLBACK: Final = Lang("en")
+"""一批文本里没有可信的拉丁字母长文本时，短的拉丁字母文本按这个语言处理。"""
+
+
+@dataclass(frozen=True, slots=True)
+class Detection:
+    """一段文本的单段检测结果。
+
+    lang 是单段检测出的语言，检测不出时为 None；letters 是字母数；latin 表示字母全是拉丁字母；
+    confidence 是 lingua 给出的最高置信度（0 到 1），按文字系统直接判定的结果记为 1。
+    """
+
+    lang: Lang | None
+    letters: int
+    latin: bool
+    confidence: float
+
+    @property
+    def reliable(self) -> bool:
+        """单段结果是否可信：不是拉丁字母文本，或者是字母数够多、置信度够高的拉丁字母文本。"""
+        if self.lang is None or not self.latin:
+            return True
+        return self.letters >= LONG_TEXT_LETTERS and self.confidence >= MIN_CONFIDENCE
+
+
+def resolve_with_context(detections: Sequence[Detection]) -> list[Lang | None]:
+    """按同一批文本的上下文修正拉丁字母短文本的语言。
+
+    拉丁字母写成的语言（英、法、德、西、葡、意、越）只凭一两个词分不开：实测 lingua 把 Star 判成葡萄牙语、
+    Code 判成德语、Actions 判成法语、Wiki 判成越南语，置信度都在 0.55 以下。同一张截屏里的界面文字
+    通常属于同一种语言，所以规则是：
+
+    - 可信的结果（Detection.reliable）原样保留，包括整段真正的外语长文本；
+    - 其余拉丁字母文本（字母数少于 LONG_TEXT_LETTERS，或置信度低于 MIN_CONFIDENCE）取这一批里
+      可信的拉丁字母文本的检测结果的众数；票数相同时取先出现的语言；
+    - 这一批里没有可信的拉丁字母文本时取 CONTEXT_FALLBACK（英语）。
+
+    投票只在拉丁字母文本之间进行：中文页面上的英文单词不会因为周围是中文就被当成中文。
+    检测不出的文本（lang 为 None）保持 None。
+    """
+    votes = Counter(d.lang for d in detections if d.lang is not None and d.latin and d.reliable)
+    context = votes.most_common(1)[0][0] if votes else CONTEXT_FALLBACK
+    return [d.lang if d.lang is None or d.reliable else context for d in detections]
+
+
 # ---------------------------------------------------------------- 检测器
 
 DEFAULT_CANDIDATES: Final = tuple(
@@ -110,7 +206,8 @@ class SupportsLanguageDetection(Protocol):
         ...
 
     async def detect_many(self, texts: Sequence[str]) -> list[Lang | None]:
-        """按顺序返回每段文本的语言，检测不出时为 None。不阻塞事件循环。"""
+        """按顺序返回每段文本的语言，检测不出时为 None。同一批文本互为上下文（resolve_with_context）。
+        不阻塞事件循环。"""
         ...
 
 
@@ -158,41 +255,38 @@ class LanguageDetector:
         await asyncio.to_thread(self.detect, "warm up")
 
     async def detect_many(self, texts: Sequence[str]) -> list[Lang | None]:
-        """在线程池里依次检测各段文本，返回与 texts 等长的列表。"""
+        """在线程池里依次检测各段文本，再按上下文修正（resolve_with_context），返回与 texts 等长的列表。"""
         batch = list(texts)
         if not batch:
             return []
         return await asyncio.to_thread(self._detect_batch, batch)
 
     def detect(self, text: str) -> Lang | None:
-        """同步检测一段文本的语言。会阻塞调用线程，事件循环里应当用 detect_many。"""
-        letters = 0
-        has_han = False
-        has_hangul = False
+        """同步检测一段文本的语言，不看上下文。会阻塞调用线程，事件循环里应当用 detect_many。"""
+        return self.analyze(text).lang
+
+    def analyze(self, text: str) -> Detection:
+        """单段检测，同时给出上下文修正需要的字母数、文字系统与置信度。会阻塞调用线程。"""
+        letters, has_han, _ = _letters(text)
         for ch in text:
             cp = ord(ch)
             if _is_kana(cp):
-                return JA
-            if _is_hangul(cp):
-                has_hangul = True
-            elif _is_han(cp):
-                has_han = True
-            if ch.isalpha():
-                letters += 1
-        if has_hangul:
-            return KO
-        # 没有字母，或只有一个非汉字字母（例如 “v1.2” 里的 v）：没有可供判断的语言信息。
-        if letters == 0 or (letters == 1 and not has_han):
-            return None
-        language = self._ensure_detector().detect_language_of(text)
-        if language is None:
-            return None
-        if language == lingua.Language.CHINESE:  # PyO3 枚举每次返回新对象，不能用 is 比较
-            return chinese_variant(text)
-        return normalize_lang(language.iso_code_639_1.name)
+                return Detection(JA, letters, latin=False, confidence=1.0)
+        if any(_is_hangul(ord(ch)) for ch in text):
+            return Detection(KO, letters, latin=False, confidence=1.0)
+        latin = not has_han and _latin_only(text)
+        if not has_text(text):
+            return Detection(None, letters, latin, 0.0)
+        values = self._ensure_detector().compute_language_confidence_values(text)
+        if not values or values[0].value <= 0.0:
+            return Detection(None, letters, latin, 0.0)
+        top = values[0]
+        if top.language == lingua.Language.CHINESE:  # PyO3 枚举每次返回新对象，不能用 is 比较
+            return Detection(chinese_variant(text), letters, latin=False, confidence=top.value)
+        return Detection(normalize_lang(top.language.iso_code_639_1.name), letters, latin, top.value)
 
     def _detect_batch(self, texts: list[str]) -> list[Lang | None]:
-        return [self.detect(text) for text in texts]
+        return resolve_with_context([self.analyze(text) for text in texts])
 
     def _ensure_detector(self) -> lingua.LanguageDetector:
         detector = self._detector

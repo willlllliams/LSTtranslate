@@ -11,7 +11,11 @@
 - WorkerStatuses：只记录 OCR 进程的状态变化。“识别模型加载中”由覆盖窗口订阅同一状态显示（需求 OCR-07）；
   加载期间提交的请求在监管器里排队，就绪后自动发出。
 
-识别结果的处理：OcrResult 依次经过 decode_blocks、blocks_to_segments，发布 OcrCompleted。转换用的模式是
+识别结果的处理：OcrResult 依次经过 decode_blocks、结构归一化（normalize.py，按 [ocr_normalize] 节组装的
+清洗 → 拆分 → 聚合）、blocks_to_segments，发布 OcrCompleted；OcrCompleted.blocks 是归一化之后的版面块。
+文本模式下聚合步骤已经把文本行合并成段落块，blocks_to_segments 以 premerged 方式一块一段；聚合关闭时
+按 LineMerger 一行一段。请求 options 除 [ocr] 节外还带上当前引擎流水线配置节（[ocr_rapid] 等）
+里的请求级参数。转换用的模式是
 处理该请求的 OCR 进程实际加载的模式：收到 Started 时从 channel.capabilities 的 mode 取得，取不到时用提交时
 配置的 effective_mode。配置在本模块里同步生效，组合根重载进程却要等旧进程退出、新进程就绪，这段时间里
 提交的请求带着新模式，却由按旧模式加载的进程处理（PaddleOCR 后端以进程设置的模式为准）；按进程的模式转换，
@@ -47,6 +51,7 @@ from lst.contracts.errors import ErrorCode
 from lst.contracts.events import WorkerStatuses
 from lst.contracts.ids import SessionId
 from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed, RawImage, RetryOcr
+from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineKind
 from lst.contracts.ports import WorkerChannel, WorkerRequestHandle, WorkerState
 from lst.contracts.worker_protocol import (
     CANCELLED,
@@ -59,13 +64,19 @@ from lst.contracts.worker_protocol import (
 from lst.kernel import EventBus, ModuleContext
 from lst.services.ocr.blocks import decode_blocks
 from lst.services.ocr.config import (
+    NORMALIZE_SECTION,
+    PIPELINE_SECTIONS,
     OcrConfig,
     OcrMode,
+    PipelineConfig,
+    default_pipeline,
     effective_mode,
+    parse_pipeline,
     processing_timeout,
     request_options,
 )
-from lst.services.ocr.paragraphs import GeometricMerger, ParagraphMerger
+from lst.services.ocr.normalize import NormalizeConfig, NormalizeContext, NormalizePipeline, build_pipeline
+from lst.services.ocr.paragraphs import LineMerger, ParagraphMerger
 from lst.services.ocr.segments import blocks_to_segments
 
 OCR_WORKER: Final = "ocr"
@@ -111,8 +122,8 @@ class _Attempt:
 class OcrModule:
     """OCR 模块（实现 kernel 的 Module 协议）。
 
-    channel 是 OCR 进程的 WorkerChannel（由组合根注入监管器）；merger 是文本模式的段落合并器，缺省时用默认
-    参数的 GeometricMerger；clock 只用于计算日志里的耗时，缺省为 time.monotonic。
+    channel 是 OCR 进程的 WorkerChannel（由组合根注入监管器）；merger 是文本模式的段落合并器，缺省时用
+    [ocr_normalize] 节阈值的 GeometricMerger；clock 只用于计算日志里的耗时，缺省为 time.monotonic。
 
     """
 
@@ -126,7 +137,10 @@ class OcrModule:
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._channel = channel
-        self._merger: ParagraphMerger = merger if merger is not None else GeometricMerger()
+        self._merger: ParagraphMerger | None = merger
+        self._normalize_config = NormalizeConfig()
+        self._normalizer: NormalizePipeline = build_pipeline(self._normalize_config, merger)
+        self._pipeline: PipelineConfig = default_pipeline(self._config_default_engine())
         self._clock = clock if clock is not None else time.monotonic
         self._logger = logging.getLogger(__name__)
         self._bus: EventBus | None = None
@@ -136,6 +150,9 @@ class OcrModule:
         self._attempt: _Attempt | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker_state: WorkerState | None = None
+        self._message: AppConfig | None = None
+        self._substitute: OcrEngineKind | None = None
+        """OCR 进程实际运行的引擎（OcrEngineCatalog.running），与配置的引擎不同时请求按它生成。"""
 
     # ---- 查询 ----
 
@@ -163,10 +180,14 @@ class OcrModule:
         self._bus = ctx.bus
         self._logger = ctx.logger
         self._running = True
+        catalog = ctx.bus.latest(OcrEngineCatalog)
+        if catalog is not None:
+            self._substitute = catalog.running
         config = ctx.bus.latest(AppConfig)
         if config is not None:
-            self._config = self._parse(config)
+            self._apply(config)
         ctx.subscribe(AppConfig, self._on_config)
+        ctx.subscribe(OcrEngineCatalog, self._on_catalog)
         ctx.subscribe(WorkerStatuses, self._on_worker_statuses)
         ctx.subscribe(CaptureCompleted, self._on_capture)
         ctx.subscribe(RetryOcr, self._on_retry)
@@ -220,13 +241,21 @@ class OcrModule:
         self._logger.info("重新识别会话 %s", command.session_id)
         self._submit(capture, resubmits=0)
 
+    def _on_catalog(self, catalog: OcrEngineCatalog) -> None:
+        if not self._running or catalog.running is self._substitute:
+            return
+        self._substitute = catalog.running
+        if self._message is not None:
+            self._on_config(self._message)
+
     def _on_config(self, message: AppConfig) -> None:
         if not self._running:
             return
-        old, new = self._config, self._parse(message)
-        if new == old:
+        old = (self._config, self._pipeline, self._normalize_config)
+        self._apply(message)
+        new = self._config
+        if (new, self._pipeline, self._normalize_config) == old:
             return
-        self._config = new
         self._logger.info(
             "OCR 配置已更新：引擎 %s，模式 %s，设备 %s，语言 %s，处理时限 %g 秒",
             new.engine.value,
@@ -266,7 +295,7 @@ class OcrModule:
             width=image.width,
             height=image.height,
             stride=image.stride,
-            options=request_options(config),
+            options=request_options(config, self._pipeline),
         )
         timeout_s = processing_timeout(config)
         try:
@@ -354,8 +383,16 @@ class OcrModule:
         received = self._clock()
         request = attempt.request
         try:
-            blocks = decode_blocks(result.blocks, width=request.width, height=request.height)
-            segments = blocks_to_segments(blocks, self._result_mode(attempt), self._merger)
+            decoded = decode_blocks(result.blocks, width=request.width, height=request.height)
+            mode = self._result_mode(attempt)
+            text_mode = mode is OcrMode.TEXT
+            normalizer = self._normalizer
+            blocks = normalizer.apply(decoded, NormalizeContext(request.width, request.height, text_mode))
+            if text_mode and normalizer.merges_paragraphs:
+                segments = blocks_to_segments(blocks, mode, premerged=True)
+            else:
+                # 聚合关闭（或版面模式）：文本模式一行一段，版面模式的块本身就是段落级。
+                segments = blocks_to_segments(blocks, mode, LineMerger())
         except Exception as exc:
             # 只记异常类型和调用栈，不记异常信息：自定义合并器的异常信息里可能带着文本。
             self._logger.error(
@@ -459,6 +496,34 @@ class OcrModule:
     def _publish(self, message: OcrCompleted | OcrFailed) -> None:
         if self._bus is not None and self._running:
             self._bus.publish(message)
+
+    @staticmethod
+    def _config_default_engine() -> OcrEngineKind:
+        return OcrConfig().engine
+
+    def _apply(self, message: AppConfig) -> None:
+        """解析 [ocr]、当前引擎的流水线配置节与 [ocr_normalize]，之后提交的请求与转换使用它们。"""
+        self._message = message
+        self._config = self._parse(message)
+        substitute = self._substitute
+        if substitute is not None and substitute is not self._config.engine:
+            # 配置的引擎没有装好，组合根让 OCR 进程先跑 Windows OCR：请求按实际运行的引擎生成。
+            self._config = self._config.model_copy(update={"engine": substitute})
+        section, _model = PIPELINE_SECTIONS[self._config.engine]
+        try:
+            self._pipeline = parse_pipeline(self._config.engine, message.section(section))
+        except ValidationError:
+            self._logger.exception("配置节 [%s] 无法解析，使用默认值", section)
+            self._pipeline = default_pipeline(self._config.engine)
+        raw = message.section(NORMALIZE_SECTION)
+        try:
+            normalize = NormalizeConfig.model_validate(raw if isinstance(raw, dict) else {})
+        except ValidationError:
+            self._logger.exception("配置节 [%s] 无法解析，沿用当前值", NORMALIZE_SECTION)
+            normalize = self._normalize_config
+        if normalize != self._normalize_config:
+            self._normalize_config = normalize
+            self._normalizer = build_pipeline(normalize, self._merger)
 
     def _parse(self, config: AppConfig) -> OcrConfig:
         """解析 [ocr] 节：缺失时用默认值。配置服务已经校验过，解析失败说明组合根没有注册这一节的模型，

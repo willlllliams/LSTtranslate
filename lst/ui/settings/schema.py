@@ -49,7 +49,11 @@ class FieldSpec:
       小数取开区间的边界并在 ``exclusive_minimum`` 里标出；没有限制时为 None；
     - choices：CHOICE 的可选值（规范 JSON 值，即枚举的 value 或 Literal 的取值）；
     - default：模型里的默认值（规范 JSON）；``required`` 为真时没有默认值，default 为 None；
-    - min_length：文字的最小长度，大于 0 表示不能为空。
+    - min_length：文字的最小长度，大于 0 表示不能为空；
+    - title、description：模型里写的标题与说明（中文），界面没有登记文案时用它们；
+    - advanced：字段的 json_schema_extra 带 ``{"advanced": True}``，放进“高级”折叠区；
+    - reload：带 ``{"reload": True}``，修改后识别组件会重新加载，说明里注明；
+    - ocr_stage：带 ``{"ocr_stage": "<环节>"}``，是 OCR 流水线某个环节的选模型字段，取值为环节名。
     """
 
     name: str
@@ -62,6 +66,10 @@ class FieldSpec:
     choices: tuple[str, ...] = ()
     min_length: int = 0
     description: str = ""
+    title: str = ""
+    advanced: bool = False
+    reload: bool = False
+    ocr_stage: str = ""
 
 
 # ---------------------------------------------------------------- 模型 → FieldSpec
@@ -153,9 +161,17 @@ def _default_of(field: FieldInfo) -> JsonValue:
     return cast(JsonValue, to_jsonable_python(default))
 
 
+def _extra_of(field: FieldInfo) -> Mapping[str, object]:
+    """字段的 json_schema_extra。写成函数的（生成 JSON Schema 时才调用）不认，按没有处理。"""
+    extra = field.json_schema_extra
+    return cast(Mapping[str, object], extra) if isinstance(extra, Mapping) else {}
+
+
 def _spec_of(name: str, field: FieldInfo) -> FieldSpec:
     kind, choices = classify(field.annotation)
     minimum, maximum, exclusive, min_length = _bounds(field, kind)
+    extra = _extra_of(field)
+    stage = extra.get("ocr_stage")
     return FieldSpec(
         name=name,
         kind=kind,
@@ -167,6 +183,10 @@ def _spec_of(name: str, field: FieldInfo) -> FieldSpec:
         choices=choices,
         min_length=min_length,
         description=field.description or "",
+        title=field.title or "",
+        advanced=extra.get("advanced") is True,
+        reload=extra.get("reload") is True,
+        ocr_stage=stage if isinstance(stage, str) else "",
     )
 
 
@@ -188,6 +208,15 @@ def field_spec(model: type[BaseModel], path: Sequence[str]) -> FieldSpec:
             raise KeyError(f"{model.__name__} 的字段 {'.'.join(path[: index + 1])} 不是嵌套的模型")
         current = inner
     raise KeyError("字段路径不能为空")
+
+
+def nested_model(model: type[BaseModel], name: str) -> type[BaseModel] | None:
+    """字段的类型是嵌套的 pydantic 模型时返回该模型，否则返回 None（字段不存在也返回 None）。"""
+    field = model.model_fields.get(name)
+    if field is None:
+        return None
+    inner = _unwrap(field.annotation)
+    return inner if isinstance(inner, type) and issubclass(inner, BaseModel) else None
 
 
 def model_field_specs(model: type[BaseModel]) -> dict[str, FieldSpec]:

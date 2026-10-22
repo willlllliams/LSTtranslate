@@ -133,6 +133,11 @@ class _Result:
 def purge_secrets():
     print("purge called")
     return _Result()
+
+
+def purge_user_data():
+    print("purge data called")
+    return _Result()
 """
 
 
@@ -147,3 +152,30 @@ def test_purge_secrets_exit_code_follows_result(layout: Path, ok: str, code: int
     assert "purge called" in result.stdout
     assert result.returncode == code
     assert EXIT_PURGE_FAILED != 0
+
+
+@pytest.mark.parametrize(("ok", "code"), [("1", 0), ("0", EXIT_PURGE_FAILED)])
+def test_purge_data_exit_code_follows_result(layout: Path, ok: str, code: int) -> None:
+    """卸载时的 purge-data：调用 purge_user_data，按结果给出退出码，卸载脚本把它记进日志。"""
+    package = layout / "app" / "lst" / "app"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "uninstall.py").write_text(_FAKE_UNINSTALL, encoding="utf-8")
+    result = run_launcher(layout, "purge-data", env={"FAKE_PURGE_OK": ok})
+    assert "purge data called" in result.stdout and "purge called" not in result.stdout
+    assert result.returncode == code
+
+
+def test_ocr_with_rapid_site_and_backend(layout: Path, tmp_path: Path) -> None:
+    """RapidOCR 的运行环境与 PaddleOCR 用同一机制：--ocr-site 指向数据目录里的 site，--backend 原样透传。"""
+    site = tmp_path / "data" / "engines" / "rapid" / "site"
+    (site / "rapidocr").mkdir(parents=True)
+    (site / "rapidocr" / "__init__.py").write_text("", encoding="utf-8")
+    backend = "lst.workers.ocr_worker.rapid_backend:RapidBackend"
+    result = run_launcher(layout, "ocr", "--ocr-site", str(site), "--backend", backend, "--address", "r")
+    assert result.returncode == 0, result.stderr
+    output = json.loads(result.stdout)
+    assert output["argv"] == ["--backend", backend, "--address", "r"]
+    assert output["path"] == [str(layout / "app"), str(site)]
+    # 隔离模式下主环境 site\main 不在搜索路径里，rapidocr 只从 RapidOCR 的运行环境导入。
+    assert str(layout / "site" / "main") not in output["path"]

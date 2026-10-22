@@ -14,7 +14,7 @@ import pytest
 from lst.contracts.models import DownloadProgress, DownloadState, ModelCatalog, ModelsInstalled
 from lst.kernel import EventBus, ModuleContext
 from lst.services.models import ModelsModule
-from tests.services.models.helpers import INDEX_URL, FakeServer
+from tests.services.models.helpers import DICT_INDEX_URL, INDEX_URL, FakeServer
 
 MODULE_LOGGER = "lst.models"
 
@@ -74,6 +74,11 @@ def models_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def dict_dir(tmp_path: Path) -> Path:
+    return tmp_path / "data" / "models" / "dict"
+
+
+@pytest.fixture
 def server() -> FakeServer:
     return FakeServer()
 
@@ -94,6 +99,7 @@ async def start_module(
     """返回启动函数：创建并启动 ModelsModule，等它发布第一份 ModelCatalog。测试结束时停止。
 
     依赖 published 是为了让记录在模块启动之前订阅，模块发布的每一份目录都被记下。
+    dict_dir 缺省为 None：模块不管理词典包，与只有 NMT 模型时的行为相同。
     """
     started: list[tuple[ModelsModule, ModuleContext]] = []
 
@@ -103,11 +109,15 @@ async def start_module(
         progress_interval: float = 0.2,
         clock: Callable[[], float] = time.monotonic,
         write_chunk_bytes: int = 1 << 20,
+        dict_dir: Path | None = None,
+        dict_index_url: str = DICT_INDEX_URL,
     ) -> ModelsModule:
         module = ModelsModule(
             models_dir,
             client,
             index_url,
+            dict_dir=dict_dir,
+            dict_index_url=dict_index_url,
             progress_interval=progress_interval,
             clock=clock,
             write_chunk_bytes=write_chunk_bytes,

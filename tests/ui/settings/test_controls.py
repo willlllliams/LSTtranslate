@@ -363,10 +363,10 @@ def test_hotkey_without_modifier_is_still_submitted_for_the_service_to_reject() 
 
 def test_card_shows_and_clears_an_error_next_to_the_control() -> None:
     editor = SwitchEditor()
-    card = SettingCard(editor, location=("race", "mode"))
-    card.set_texts("结束方式", "说明文字")
+    card = SettingCard(editor, location=("ocr", "mode"))
+    card.set_texts("来源标记", "说明文字")
     card.show()
-    assert card.title_label.text() == "结束方式" and card.desc_label.text() == "说明文字"
+    assert card.title_label.text() == "来源标记" and card.desc_label.text() == "说明文字"
     assert card.error_text == "" and card.error_label.isHidden()
     card.set_error("不是可选值")
     assert card.error_text == "未保存：不是可选值"

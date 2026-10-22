@@ -108,13 +108,14 @@ def remove_tree(path: Path) -> None:
         shutil.rmtree(path, onexc=_clear_readonly)
 
 
-def remove_leftovers(paths: list[Path], models_dir: Path, logger: logging.Logger) -> int:
+def remove_leftovers(paths: list[Path], models_dir: Path | None, logger: logging.Logger) -> int:
     """删除上次安装中断留下的半成品：给出的路径，以及模型目录下以点开头的 .part 文件与解压目录。
 
+    models_dir 为 None（引擎没有单独的模型目录，例如 RapidOCR）时只删给出的路径。
     返回删除的项数。删不掉的只记 WARNING（可能被别的进程占用），不影响启动。
     """
     targets = [path for path in paths if path.exists()]
-    if models_dir.is_dir():
+    if models_dir is not None and models_dir.is_dir():
         targets.extend(
             entry
             for entry in models_dir.iterdir()

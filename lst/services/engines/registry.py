@@ -1,7 +1,8 @@
 """引擎注册表与 `[[engines]]` 配置节的校验模式（架构文档 4.4 节、第 9 章）。
 
-注册表把配置里的 kind 字符串映射到该类引擎的配置模型与工厂。各类引擎的工厂签名不同：网络引擎要
-SecretReader 和 httpx.AsyncClient，本地 NMT 要 WorkerChannel。注册表把它们统一成
+注册表把配置里的 kind 字符串映射到该类引擎的配置模型与工厂。各类引擎的工厂签名不同：需要 key 的
+网络引擎要 SecretReader 和 httpx.AsyncClient，谷歌、微软的免费接口只要 httpx.AsyncClient，
+本地 NMT 要 WorkerChannel，字典翻译要词典目录。注册表把它们统一成
 ``build(settings, deps) -> Engine``，deps 是组合根提供的 EngineDeps。
 
 EngineListSchema 是架构文档 4.4 节 EngineSettingsSchemas 端口的实现：配置服务用它校验
@@ -11,6 +12,7 @@ import，EngineListSchema 只在结构上满足配置服务的 ListSectionSchema
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, cast
 
@@ -23,8 +25,11 @@ from lst.contracts.worker_protocol import JsonValue
 from lst.services.engines.baidu import BaiduSettings, create_baidu_engine
 from lst.services.engines.common import EngineSettings
 from lst.services.engines.deepl import DeepLSettings, create_deepl_engine
+from lst.services.engines.dictionary import DictionarySettings, create_dictionary_engine
 from lst.services.engines.google import GoogleSettings, create_google_engine
+from lst.services.engines.google_free import GoogleFreeSettings, create_google_free_engine
 from lst.services.engines.local_nmt import LocalNmtSettings, create_local_nmt_engine
+from lst.services.engines.microsoft_free import MicrosoftFreeSettings, create_microsoft_free_engine
 from lst.services.engines.openai_compat import OpenAICompatSettings, create_openai_compat_engine
 
 # 配置服务报告问题时使用的位置与原因，位置相对于数组节，例如 (2, "id")。
@@ -37,12 +42,15 @@ class EngineDeps:
 
     - secrets：读取 API key，实现方是 services.config；
     - client：网络引擎共用的 HTTP 客户端，生命周期由组合根管理，引擎模块不关闭它；
-    - nmt：NMT 进程的通道，实现方是 app 中的监管器。为 None 时本地 NMT 实例无法创建。
+    - nmt：NMT 进程的通道，实现方是 app 中的监管器。为 None 时本地 NMT 实例无法创建；
+    - dict_dir：词典目录（模型目录下的 dict），与模型管理模块安装词典包的目录相同。
+      为 None 时字典翻译实例无法创建。
     """
 
     secrets: SecretReader
     client: httpx.AsyncClient
     nmt: WorkerChannel | None = None
+    dict_dir: Path | None = None
 
 
 class EngineUnavailableError(RuntimeError):
@@ -105,6 +113,12 @@ def _build_local_nmt(settings: LocalNmtSettings, deps: EngineDeps) -> Engine:
     return create_local_nmt_engine(settings, deps.nmt)
 
 
+def _build_dictionary(settings: DictionarySettings, deps: EngineDeps) -> Engine:
+    if deps.dict_dir is None:
+        raise EngineUnavailableError(ErrorCode.MODEL_MISSING, "组合根没有提供词典目录，字典翻译实例无法创建")
+    return create_dictionary_engine(settings, deps.dict_dir)
+
+
 ENGINE_KINDS: Final[Mapping[str, EngineKindSpec]] = MappingProxyType(
     {
         spec.kind: spec
@@ -134,11 +148,29 @@ ENGINE_KINDS: Final[Mapping[str, EngineKindSpec]] = MappingProxyType(
                 requires_key=lambda _: True,
             ),
             define_kind(
+                "google_free",
+                GoogleFreeSettings,
+                lambda settings, deps: create_google_free_engine(settings, deps.client),
+                requires_key=lambda _: False,
+            ),
+            define_kind(
+                "microsoft_free",
+                MicrosoftFreeSettings,
+                lambda settings, deps: create_microsoft_free_engine(settings, deps.client),
+                requires_key=lambda _: False,
+            ),
+            define_kind(
                 "local_nmt",
                 LocalNmtSettings,
                 _build_local_nmt,
                 requires_key=lambda _: False,
                 uses_nmt=True,
+            ),
+            define_kind(
+                "dictionary",
+                DictionarySettings,
+                _build_dictionary,
+                requires_key=lambda _: False,
             ),
         )
     }
@@ -171,9 +203,23 @@ def dump_entry(spec: EngineKindSpec, settings: EngineSettings) -> dict[str, Json
     return {"kind": spec.kind, **fields}
 
 
-# 配置文件不存在时生成的引擎列表。网络引擎都需要 API key，默认不放。
+# 配置文件不存在时生成的引擎列表。需要 API key 的网络引擎默认不放。
+#
+# 谷歌与微软的免费接口不需要 key，默认列出，但不启用：文本只发给用户自己启用的在线引擎（需求 PRV-01），
+# 用户在设置里勾选后才会联网。它们的译文好于逐词粗译，排在本地 NMT 之后、字典翻译之前；
+# 两者都启用时谷歌在前。字典翻译最快、译文最粗，优先级排在最后（数值最大）：它先给出结果，
+# 其他引擎的译文到达后替换它。
 _DEFAULT_ENTRIES: Final[tuple[Mapping[str, JsonValue], ...]] = (
     {"kind": "local_nmt", "id": "argos", "name": "Argos", "priority": 1},
+    {"kind": "google_free", "id": "google_free", "name": "谷歌翻译（免费）", "priority": 2, "enabled": False},
+    {
+        "kind": "microsoft_free",
+        "id": "microsoft_free",
+        "name": "微软翻译（免费）",
+        "priority": 3,
+        "enabled": False,
+    },
+    {"kind": "dictionary", "id": "dictionary", "name": "词典", "priority": 4},
 )
 
 
@@ -240,7 +286,16 @@ class EngineListSchema:
         return [item for _, item in kept], problems
 
     def default_items(self) -> list[dict[str, JsonValue]]:
-        """配置文件不存在时的默认引擎列表：只有一个本地 NMT 实例（id 为 argos，优先级 1）。"""
+        """配置文件不存在时的默认引擎列表，按优先级：
+
+        1. 本地 NMT 实例（id 为 argos），已启用；
+        2. 谷歌免费翻译（id 为 google_free），未启用；
+        3. 微软免费翻译（id 为 microsoft_free），未启用；
+        4. 字典翻译实例（id 为 dictionary），已启用。
+
+        配置服务只在配置文件不存在时使用它；已有配置文件的用户不会自动得到字典翻译与两个免费接口的实例，
+        要在设置的翻译引擎页自己添加。
+        """
         return [self.validate_item(raw) for raw in _DEFAULT_ENTRIES]
 
 

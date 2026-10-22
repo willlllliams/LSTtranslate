@@ -124,13 +124,30 @@ def images_of(engine: FakeEngine) -> list[JobImage | None]:
     return [job.image for job in engine.jobs]
 
 
+async def run_everyone(rig: Rig, top: FakeEngine, *others: FakeEngine) -> None:
+    """开始截屏会话，让每个实例都拿到任务：优先级最高的 top 先停在闸门上，其余实例都开始执行后再放行。
+
+    竞速会取消已经不可能改变显示的尝试；这里要检查的是每个实例收到的任务内容，所以先让它们都开始。
+    """
+    texts = [s.text for s in SEGMENTS]
+    top.gate(*texts)
+    for engine in others:
+        engine.gate(*texts)
+    task = asyncio.create_task(rig.module.start_screenshot_session(SHOT, SEGMENTS))
+    await eventually(lambda: all(engine.jobs for engine in (top, *others)))
+    top.release(*texts)
+    for engine in others:
+        engine.release(*texts)
+    await task
+    await rig.settle()
+
+
 async def test_only_vision_engines_receive_scaled_image(make: MakeRig) -> None:
     vision = VisionEngine("vision", 1, side=10)
     plain = FakeEngine("argos", 2)
     rig = await started(make(vision, plain))
     rig.capture()
-    await rig.module.start_screenshot_session(SHOT, SEGMENTS)
-    await rig.settle()
+    await run_everyone(rig, vision, plain)
 
     (image,) = images_of(vision)
     assert image is not None
@@ -148,8 +165,7 @@ async def test_each_side_is_encoded_once_at_capture_time(make: MakeRig) -> None:
     await eventually(lambda: len(rig.encoder.calls) == 2)
     assert sorted(rig.encoder.calls) == [(40, 20, 8), (40, 20, 20)]
 
-    await rig.module.start_screenshot_session(SHOT, SEGMENTS)
-    await rig.settle()
+    await run_everyone(rig, small, large, same)
     small_image, large_image, same_image = (images_of(e)[0] for e in (small, large, same))
     assert small_image is not None and large_image is not None
     assert (small_image.width, large_image.width) == (8, 20)
@@ -224,7 +240,7 @@ async def test_bilingual_session_has_no_image(make: MakeRig) -> None:
     rig = await started(make(vision))
     rig.capture()
     await rig.settle()
-    rig.bus.send(TranslateText(SHOT, "Hello world", include_billing=True))
+    rig.bus.send(TranslateText(SHOT, "Hello world", engine_id=vision.info.id))
     await rig.settle()
     assert vision.jobs
     assert images_of(vision) == [None]
@@ -240,8 +256,7 @@ async def test_engine_added_after_capture_is_encoded_lazily(make: MakeRig) -> No
     vision = VisionEngine("vision", 2, side=10)
     rig.roster(plain, vision)
     await rig.settle()
-    await rig.module.start_screenshot_session(SHOT, SEGMENTS)
-    await rig.settle()
+    await run_everyone(rig, plain, vision)
     assert rig.encoder.calls == [(40, 20, 10)]
     assert images_of(vision)[0] is not None
 

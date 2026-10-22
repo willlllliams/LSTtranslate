@@ -1,7 +1,11 @@
 """卸载时的用户数据清理（需求 INS-06，架构文档第 15 章）。
 
 卸载程序在用户选择“同时删除用户数据”时，先运行 `launcher\\worker.py purge-secrets` 删除凭据管理器中
-本程序保存的 API key，再由安装程序删除数据目录。
+本程序保存的 API key，再运行 `launcher\\worker.py purge-data` 删除用户在设置里选的数据目录与模型目录
+（``purge_user_data``），最后由安装程序删除默认数据目录。
+
+用户选的目录可能是“D:\\资料”这样还放着别的文件的目录，所以 ``purge_user_data`` 不整个删除它们，
+只删程序创建的条目（``lst.app.storage.data_entries``、``model_entries``），删完目录为空时再删目录本身。
 
 keyring 的 Windows 后端（WinVaultKeyring）把通用凭据的目标名设为服务名本身（LSTtranslate）。
 同一服务下再写入另一个条目时，它先把原来占着服务名的旧条目改存到“旧条目名@服务名”，新条目占用服务名。
@@ -11,12 +15,27 @@ CredEnumerateW 的过滤器只支持末尾的星号，``*@LSTtranslate`` 这样�
 这里不带过滤器列出当前用户的全部凭据，再在 Python 里按目标名筛选（不区分大小写，与凭据管理器一致）。
 """
 
+import contextlib
 import ctypes
 import ctypes.wintypes
 import logging
+import os
 import sys
+import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Protocol, cast
+
+from lst.app.paths import DATA_DIR_ENV, default_data_dir, location_file, read_location
+from lst.app.storage import (
+    data_entries,
+    default_models_root,
+    is_inside,
+    model_entries,
+    remove_paths,
+    same_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,3 +154,84 @@ def purge_secrets(service: str = SERVICE, *, advapi32: Advapi32 | None = None) -
         logger.warning("删除一条凭据失败（错误码 %s）", error)
     logger.info("已删除 %s 条凭据，%s 条删除失败", deleted, failed)
     return PurgeResult(deleted, failed)
+
+
+# ---------------------------------------------------------------- 数据目录与模型目录
+
+
+@dataclass(frozen=True, slots=True)
+class DataPurgeResult:
+    """删除的条目数与没能删掉的条目数。"""
+
+    deleted: int = 0
+    failed: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.failed == 0
+
+
+def looks_like_data_dir(directory: Path) -> bool:
+    """目录里有 config/settings.toml：是本程序的数据目录。"""
+    return (directory / "config" / "settings.toml").is_file()
+
+
+def configured_models_dir(data_dir: Path) -> Path | None:
+    """数据目录的配置里 [storage].models_dir 指定的模型目录；没有指定、读不出来时为 None。"""
+    try:
+        with (data_dir / "config" / "settings.toml").open("rb") as handle:
+            document = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    section = document.get("storage")
+    value = cast(dict[str, object], section).get("models_dir") if isinstance(section, dict) else None
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        return None
+    return Path(value)
+
+
+def _rmdir_if_empty(directory: Path) -> None:
+    with contextlib.suppress(OSError):
+        directory.rmdir()
+
+
+def purge_user_data(
+    *, location: Path | None = None, environ: Mapping[str, str] | None = None
+) -> DataPurgeResult:
+    r"""删除用户选的数据目录、各数据目录配置里指定的模型目录中由程序创建的内容，以及位置文件。
+
+    默认数据目录（%LOCALAPPDATA%\LSTtranslate）与 LST_DATA_DIR 指定的目录由卸载脚本整个删除，这里只读它们的
+    配置，找出放在别处的模型目录。位置文件指向的目录里没有 config\settings.toml 时不当作数据目录，不删。
+    """
+    env = os.environ if environ is None else environ
+    pointer = location if location is not None else location_file()
+    data_dirs = [default_data_dir()]
+    from_env = env.get(DATA_DIR_ENV, "").strip()
+    if from_env and Path(from_env).is_absolute() and looks_like_data_dir(Path(from_env)):
+        data_dirs.append(Path(from_env))
+    targets: list[Path] = []
+    emptied: list[Path] = []
+    chosen = read_location(pointer)
+    if chosen is not None and looks_like_data_dir(chosen):
+        data_dirs.append(chosen)
+        targets.extend(data_entries(chosen))
+        targets.extend(model_entries(default_models_root(chosen)))
+        emptied.extend((default_models_root(chosen), chosen))
+    for data_dir in data_dirs:
+        root = configured_models_dir(data_dir)
+        if root is None or same_path(root, data_dir) or is_inside(root, data_dir):
+            continue  # 放在数据目录里面的模型目录随数据目录一起删
+        targets.extend(model_entries(root))
+        emptied.append(root)
+    left = remove_paths(targets)
+    for directory in emptied:
+        _rmdir_if_empty(directory)
+    try:
+        pointer.unlink(missing_ok=True)
+    except OSError:
+        left.append(pointer)
+    _rmdir_if_empty(pointer.parent)
+    for path in left:
+        logger.warning("没能删除 %s", path)
+    logger.info("已删除 %d 项用户数据，%d 项删除失败", len(targets) - len(left), len(left))
+    return DataPurgeResult(len(targets) - len(left), len(left))

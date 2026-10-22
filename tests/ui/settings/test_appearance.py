@@ -9,11 +9,12 @@ from PySide6.QtGui import QColor, QEnterEvent
 from PySide6.QtWidgets import QApplication, QLabel, QStyle, QStyleOptionViewItem
 
 from lst.contracts.config import ConfigRejected
+from lst.contracts.ocr_engines import OcrStage
 from lst.ui.settings.controls import SettingCard, SwitchEditor, ThemedLabel
+from lst.ui.settings.page_ocr_engine import OcrEnginePage
 from lst.ui.settings.window import NavDelegate, SettingsWindow
 from lst.ui.theme import TOKENS, apply_app_style, is_dark, theme_colors
 from tests.ui.settings.conftest import Harness
-from tests.ui.settings.support import default_config
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -40,7 +41,7 @@ def pixel(window: SettingsWindow, x: int, y: int) -> QColor:
 
 async def test_typography_sizes(harness: Harness) -> None:
     window = await harness.open()
-    page = window.page("capture")
+    page = window.page("capture.options")
     assert page.heading.font().pixelSize() == TOKENS.page_title_px == 28
     card = page.bindings[0].card
     assert card.title_label.font().pixelSize() == TOKENS.title_px == 14
@@ -52,10 +53,10 @@ async def test_typography_sizes(harness: Harness) -> None:
 
 async def test_page_margins_and_card_spacing(harness: Harness) -> None:
     window = await harness.open()
-    window.show_page("capture")
+    window.show_page("capture.options")
     window.resize(1200, 900)
     QApplication.processEvents()
-    page = window.page("capture")
+    page = window.page("capture.options")
     margins = page.body.contentsMargins()
     assert margins.left() == margins.right() == TOKENS.page_margin
     assert page.body.spacing() == TOKENS.card_gap == 4
@@ -67,10 +68,10 @@ async def test_page_margins_and_card_spacing(harness: Harness) -> None:
 
 async def test_cards_have_the_documented_geometry(harness: Harness) -> None:
     window = await harness.open()
-    window.show_page("capture")
+    window.show_page("capture.options")
     window.resize(1200, 900)
     QApplication.processEvents()
-    for binding in window.page("capture").bindings:
+    for binding in window.page("capture.options").bindings:
         card = binding.card
         assert card.height() >= TOKENS.card_min_height
         assert card.layout() is not None
@@ -91,12 +92,12 @@ async def test_cards_have_the_documented_geometry(harness: Harness) -> None:
 
 async def test_group_titles_separate_the_groups(harness: Harness) -> None:
     window = await harness.open()
-    window.show_page("capture")
+    window.show_page("capture.options")
     window.resize(1200, 1100)
     QApplication.processEvents()
-    page = window.page("capture")
+    page = window.page("capture.options")
     cards = [b.card for b in page.bindings]
-    # ocr 的第 4 张卡片（识别语言）与“识别内容”分组的第一张卡片（表格识别）之间隔着分组标题。
+    # ocr 的第 4 张卡片（识别语言）与“截图预处理”分组的第一张卡片（灰度化）之间隔着分组标题。
     gap = cards[4].geometry().top() - cards[3].geometry().bottom()
     assert gap >= TOKENS.group_gap + 14  # 组间距加上一行标题的高度
 
@@ -174,10 +175,10 @@ async def test_labels_recolor_when_the_theme_changes(
 
 async def test_error_text_goes_below_the_control_without_moving_it(harness: Harness) -> None:
     window = await harness.open()
-    window.show_page("capture")
+    window.show_page("capture.options")
     window.resize(1200, 900)
     QApplication.processEvents()
-    page = window.page("capture")
+    page = window.page("capture.options")
     binding = next(b for b in page.bindings if b.location == ("ocr", "resize_max_side"))
     card, editor = binding.card, binding.editor
     before = (editor.geometry().left(), editor.geometry().top(), card.title_label.geometry().topLeft())
@@ -188,16 +189,15 @@ async def test_error_text_goes_below_the_control_without_moving_it(harness: Harn
     assert card.error_label.geometry().top() >= card.desc_label.geometry().bottom()  # 在说明的下方
     assert card.error_label.palette().windowText().color() == theme_colors().critical
     assert card.error_label.font().pixelSize() == TOKENS.caption_px
-    other = next(b for b in page.bindings if b.location == ("ocr", "table")).card
+    other = next(b for b in page.bindings if b.location == ("ocr", "grayscale")).card
     assert other.error_text == ""
 
 
 async def test_switch_shows_on_off_text_and_is_a_toggle_not_a_checkbox(harness: Harness) -> None:
-    await harness.publish(
-        default_config({"ocr": {"engine": "paddle"}}, revision=2)
-    )  # 表格等开关只对 PaddleOCR 可用
     window = await harness.open()
-    editor = next(b.editor for b in window.page("capture").bindings if b.location == ("ocr", "table"))
+    page = window.page("capture.paddle")
+    assert isinstance(page, OcrEnginePage)
+    editor = page.pipeline.toggles[OcrStage.REGION].editor  # 环节标题行里的开关（版面区域检测默认开）
     assert isinstance(editor, SwitchEditor)
     assert editor.state_label.text() == "开"
     editor.switch.click()
@@ -221,8 +221,8 @@ async def test_nav_delegate_metrics_and_painting(harness: Harness) -> None:
     window.resize(1200, 700)
     window.show_page("general")
     QApplication.processEvents()
-    selected_rect = window.nav.visualItemRect(window.nav.item(0))
-    other_rect = window.nav.visualItemRect(window.nav.item(2))
+    selected_rect = window.nav.visualItemRect(window.nav.item_of("general"))
+    other_rect = window.nav.visualItemRect(window.nav.item_of("race"))
     origin = window.nav.mapTo(window, QPoint(0, 0))
     accent = theme_colors().accent
     bar_x = origin.x() + TOKENS.spacing_s + 1
@@ -248,7 +248,7 @@ async def test_mica_unavailable_falls_back_to_an_opaque_window(harness: Harness)
 async def test_primary_buttons_use_the_accent_fill(harness: Harness) -> None:
     window = await harness.open()
     engines = window.page("engines")
-    models = window.page("models")
+    models = window.page("models.nmt")
     assert engines.add_button.property("primary") is True  # type: ignore[attr-defined]
     assert models.download_button.property("primary") is True  # type: ignore[attr-defined]
     assert "palette(highlight)" in engines.add_button.styleSheet()  # type: ignore[attr-defined]

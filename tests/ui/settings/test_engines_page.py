@@ -448,9 +448,15 @@ async def test_add_dialog_lists_every_registered_kind_with_names(harness: Harnes
         "deepl",
         "google",
         "baidu",
+        "google_free",
+        "microsoft_free",
         "local_nmt",
+        "dictionary",
     ]
     assert dialog.kind_combo.itemText(0) == "OpenAI 兼容的大语言模型"
+    assert dialog.kind_combo.itemText(4) == "谷歌翻译（免费接口）"
+    assert dialog.kind_combo.itemText(5) == "微软翻译（免费接口）"
+    assert dialog.kind_combo.itemText(7) == "词典（逐词粗译）"
 
 
 async def test_new_instance_is_selected_once_it_appears(harness: Harness) -> None:

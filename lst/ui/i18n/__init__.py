@@ -14,6 +14,7 @@ from typing import Final
 
 from lst.contracts.config import AppConfig
 from lst.contracts.errors import ErrorCode
+from lst.contracts.nmt_runtime import NmtRuntimeErrorCode
 from lst.contracts.ocr_engines import OcrEngineErrorCode
 from lst.contracts.updates import UpdateErrorCode
 
@@ -35,6 +36,11 @@ def register_catalog(catalog: Catalog) -> None:
         if key in _catalog and _catalog[key] != dict(texts):
             logger.warning("文案键 %s 被重复登记，以后登记的为准", key)
         _catalog[key] = dict(texts)
+
+
+def is_registered(key: str) -> bool:
+    """文案键是否已由某个界面模块登记。"""
+    return key in _catalog
 
 
 def set_language(language: str) -> str:
@@ -89,10 +95,16 @@ def tr(key: str, **params: object) -> str:
         return text
 
 
-type AnyErrorCode = ErrorCode | OcrEngineErrorCode | UpdateErrorCode
-"""界面按错误码显示原因与处理建议的三类错误码：翻译引擎与竞速、OCR 引擎的安装与运行、应用更新。"""
+type AnyErrorCode = ErrorCode | OcrEngineErrorCode | UpdateErrorCode | NmtRuntimeErrorCode
+"""界面按错误码显示原因与处理建议的四类错误码：翻译引擎与竞速、OCR 引擎的安装与运行、应用更新、
+本地翻译的显卡运行库。"""
 
-ERROR_CODE_FAMILIES: Final[tuple[type[AnyErrorCode], ...]] = (ErrorCode, OcrEngineErrorCode, UpdateErrorCode)
+ERROR_CODE_FAMILIES: Final[tuple[type[AnyErrorCode], ...]] = (
+    ErrorCode,
+    OcrEngineErrorCode,
+    UpdateErrorCode,
+    NmtRuntimeErrorCode,
+)
 
 _KNOWN_CODES: Final = frozenset(code.value for family in ERROR_CODE_FAMILIES for code in family)
 
@@ -102,8 +114,8 @@ def error_text(
 ) -> tuple[str, str]:
     """错误码 → (原因, 处理建议)。
 
-    code 可以是三类错误码中的任何一个，也可以是它们的字符串值。未知或缺失的错误码按 default 处理，
-    default 缺省为 engine.internal；OCR 引擎与更新的调用方传入各自的 internal。
+    code 可以是四类错误码中的任何一个，也可以是它们的字符串值。未知或缺失的错误码按 default 处理，
+    default 缺省为 engine.internal；OCR 引擎、更新与显卡运行库的调用方传入各自的 internal。
     """
     value = str(code) if code is not None else ""
     if value not in _KNOWN_CODES:
@@ -187,6 +199,14 @@ _COMMON: Catalog = {
         "zh-Hans": "在设置 → 模型中下载该语言对的模型",
         "en": "Download a model for this language pair in Settings → Models",
     },
+    "error.engine.no_match.reason": {
+        "zh-Hans": "词典里查不到这段文字中的任何词",
+        "en": "None of the words are in the dictionary",
+    },
+    "error.engine.no_match.suggestion": {
+        "zh-Hans": "其他引擎的译文会替换它；确认源语言设置正确",
+        "en": "Other engines' translations take its place; check the source language",
+    },
     "error.engine.worker_crashed.reason": {
         "zh-Hans": "推理进程出错，已重启",
         "en": "Inference process crashed and restarted",
@@ -265,8 +285,58 @@ _COMMON: Catalog = {
         "zh-Hans": "卸载后重新下载该引擎，或改用其他 OCR 引擎",
         "en": "Uninstall and download this engine again, or switch to another OCR engine",
     },
+    "error.ocr_engine.runtime_mismatch.reason": {
+        "zh-Hans": "推理设备选了显卡，但运行环境是 CPU 版，或显卡驱动不支持所需的 CUDA 版本",
+        "en": "The GPU was chosen as the inference device, but the runtime is the CPU build "
+        "or the graphics driver does not support the required CUDA version",
+    },
+    "error.ocr_engine.runtime_mismatch.suggestion": {
+        "zh-Hans": "把推理设备改为“自动”或“CPU”，或在引擎卡片上换成显卡版运行环境",
+        "en": "Set the inference device to Auto or CPU, or switch the engine to a GPU runtime",
+    },
+    "error.ocr_engine.bad_config.reason": {
+        "zh-Hans": "所选模型不支持识别语言，或所选模型还没有下载",
+        "en": "The selected model does not support the recognition language, or it has not been downloaded",
+    },
+    "error.ocr_engine.bad_config.suggestion": {
+        "zh-Hans": "在识别流水线里下载所选模型，或改选支持该语言的模型",
+        "en": "Download the selected model in the recognition pipeline, "
+        "or pick one that supports the language",
+    },
     "error.ocr_engine.internal.reason": {"zh-Hans": "内部错误", "en": "Internal error"},
     "error.ocr_engine.internal.suggestion": {
+        "zh-Hans": "导出诊断信息并检查日志",
+        "en": "Export diagnostics and check the logs",
+    },
+    # 本地翻译的显卡运行库（需求 MOD-06）
+    "error.nmt_runtime.network.reason": {"zh-Hans": "网络连接失败", "en": "Network connection failed"},
+    "error.nmt_runtime.network.suggestion": {
+        "zh-Hans": "检查网络连接或代理设置后重试；下载来自 PyPI（pypi.org）",
+        "en": "Check your network connection or proxy settings and try again; the download comes from PyPI "
+        "(pypi.org)",
+    },
+    "error.nmt_runtime.timeout.reason": {"zh-Hans": "下载超时", "en": "The download timed out"},
+    "error.nmt_runtime.timeout.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.nmt_runtime.http.reason": {
+        "zh-Hans": "PyPI 下载服务器返回错误",
+        "en": "The PyPI download server returned an error",
+    },
+    "error.nmt_runtime.http.suggestion": {"zh-Hans": "稍后重试", "en": "Try again later"},
+    "error.nmt_runtime.disk.reason": {
+        "zh-Hans": "无法写入数据目录，或磁盘空间不足",
+        "en": "Cannot write to the data folder, or the disk is full",
+    },
+    "error.nmt_runtime.disk.suggestion": {
+        "zh-Hans": "检查磁盘空间和数据目录的权限后重试",
+        "en": "Check free disk space and the data folder's permissions, then try again",
+    },
+    "error.nmt_runtime.invalid_package.reason": {
+        "zh-Hans": "下载的文件没有通过校验，或缺少所需的 DLL",
+        "en": "The downloaded file failed verification or lacks the required DLLs",
+    },
+    "error.nmt_runtime.invalid_package.suggestion": {"zh-Hans": "重新下载", "en": "Download it again"},
+    "error.nmt_runtime.internal.reason": {"zh-Hans": "内部错误", "en": "Internal error"},
+    "error.nmt_runtime.internal.suggestion": {
         "zh-Hans": "导出诊断信息并检查日志",
         "en": "Export diagnostics and check the logs",
     },

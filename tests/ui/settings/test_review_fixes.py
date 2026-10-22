@@ -199,7 +199,7 @@ async def test_ctrl_tab_from_the_stats_table(harness: Harness) -> None:
         page.stats.table.setCurrentCell(0, 0)
         return page.stats.table
 
-    assert await _ctrl_tab_from(harness, "race", table) == "models"
+    assert await _ctrl_tab_from(harness, "race", table) == "models.nmt"
 
 
 async def test_ctrl_tab_from_the_engine_list(harness: Harness) -> None:

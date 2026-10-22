@@ -68,6 +68,8 @@ def engine(kind: str, engine_id: str, priority: int, **fields: Any) -> dict[str,
         "deepl": {"name": "DeepL", "secret": engine_id},
         "google": {"name": "Google", "secret": engine_id},
         "baidu": {"name": "百度翻译", "appid": "2015063000000001", "secret": engine_id},
+        "google_free": {"name": "谷歌翻译（免费）"},
+        "microsoft_free": {"name": "微软翻译（免费）"},
     }
     raw = {"kind": kind, "id": engine_id, "priority": priority, **defaults[kind], **fields}
     return SCHEMA.validate_item(raw)
@@ -114,17 +116,31 @@ class FakeDialogs:
     def __init__(self, *, confirm: bool = True, directory: str | None = None) -> None:
         self.confirm_answer = confirm
         self.directory = directory
+        self.option_answer: bool | None = None
+        """confirm_option 的回答：None 表示照对话框的初始状态确认；取消用 confirm_answer = False。"""
         self.confirms: list[tuple[str, str]] = []
+        self.options: list[tuple[str, str, str, bool]] = []
         self.directories: list[tuple[str, str]] = []
         self.urls: list[str] = []
+        self.opened: list[str] = []
 
     def confirm(self, title: str, text: str) -> bool:
         self.confirms.append((title, text))
         return self.confirm_answer
 
+    def confirm_option(self, title: str, text: str, option: str, checked: bool) -> bool | None:
+        self.options.append((title, text, option, checked))
+        if not self.confirm_answer:
+            return None
+        return checked if self.option_answer is None else self.option_answer
+
     def choose_directory(self, title: str, start: str) -> str | None:
         self.directories.append((title, start))
         return self.directory
+
+    def open_path(self, path: str) -> bool:
+        self.opened.append(path)
+        return True
 
     def open_url(self, url: str) -> bool:
         self.urls.append(url)

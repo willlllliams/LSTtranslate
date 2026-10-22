@@ -7,7 +7,7 @@ import asyncio
 import logging
 import sqlite3
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -202,14 +202,28 @@ def transaction(conn: sqlite3.Connection) -> Generator[None]:
     conn.execute("COMMIT")
 
 
-def ensure_schema(conn: sqlite3.Connection, version: int, script: str) -> None:
-    """新库按 script 建表并把 ``user_version`` 设为 version；已有的库只核对版本号。
+def ensure_schema(
+    conn: sqlite3.Connection, version: int, script: str, migrations: Mapping[int, str] | None = None
+) -> None:
+    """新库按 script 建表并把 ``user_version`` 设为 version；已有的库按 migrations 逐级升级到 version。
 
-    版本号不符时抛出 ``sqlite3.DatabaseError``，由 ``SqliteThread`` 按文件不可用处理。
+    migrations 的键是旧版本号 v，值是把版本 v 的库改成版本 v + 1 的 SQL。每一级在一个事务里执行并写入
+    新版本号，中途出错时这一级整体回滚。版本号高于 version，或缺少某一级迁移时抛出
+    ``sqlite3.DatabaseError``，由 ``SqliteThread`` 按文件不可用处理。
     """
     found = conn.execute("PRAGMA user_version").fetchone()[0]
     if found == version:
         return
-    if found != 0:
+    if found == 0:
+        conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;")
+        return
+    steps = migrations or {}
+    if found > version or any(v not in steps for v in range(found, version)):
         raise sqlite3.DatabaseError(f"数据库版本为 {found}，本程序只认识版本 {version}")
-    conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {version};\nCOMMIT;")
+    for current in range(found, version):
+        try:
+            conn.executescript(f"BEGIN;\n{steps[current]}\nPRAGMA user_version = {current + 1};\nCOMMIT;")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise

@@ -5,7 +5,8 @@
 
 - 决定每个段由哪些引擎实例参赛，派发前查译文缓存（RACE-02、RACE-08、RACE-09）；
 - 把段按语言对打包成任务，放进各实例的两级队列，按实例的并发上限执行（6.4 节）；
-- 节省模式下剪掉不可能改变显示的排队尝试：胜出者改变时即时剪枝，任务出队时兜底（RACE-05）；
+- 取消不可能改变显示的尝试（RACE-05）：胜出者改变时，排队中的尝试立即取消，任务出队时再兜底一次；
+  正在执行的任务在它剩下的段都已不可能改变显示时取消；
 - 按入口维护当前会话，新会话开始时取消旧会话；引擎实例集合变化时让受影响的尝试结束（6.5 节）；
 - 把合并器的状态变化按帧合并后交给 sink（6.6 节）；
 - 截屏会话附带截图时，把截图交给接收截图的实例（EngineInfo.image_max_side 不为 None），
@@ -19,9 +20,8 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Protocol
 
 from lst.contracts.errors import ErrorCode
@@ -52,16 +52,6 @@ LangPair = tuple[Lang, Lang]
 
 # 两级队列的取用顺序：双语窗口的任务先于截屏的任务（架构文档 6.4 节）。
 _ENTRY_ORDER: tuple[Entry, ...] = (Entry.BILINGUAL, *(e for e in Entry if e is not Entry.BILINGUAL))
-
-
-class RaceMode(StrEnum):
-    """竞速的结束方式（需求 RACE-05）。"""
-
-    SAVER = "saver"
-    """节省模式：已经不可能改变显示的排队尝试被剪枝，不调用引擎。"""
-
-    FULL = "full"
-    """完整模式：所有参赛实例都跑完，不剪枝。"""
 
 
 class RaceSink(Protocol):
@@ -169,10 +159,9 @@ class _Lane:
 class _Session:
     """调度器内部的会话记录。closed 置位后，属于这个会话的结果和刷新全部丢弃。
 
-    lanes 是参加这个会话的实例，按实例号索引，初值是会话开始时的实例集合。之后新增的实例不加入这个会话；
-    被替换（EngineInfo 变化）的计费实例由 extend_session 换成同号的新实例，其余被替换或移除的实例
-    仍留在这里，以 retired 标记。一个实例号在会话里的尝试属于 lanes 中该号的实例，
-    _owns 据此判断某个实例产生的结果是否还属于这个会话。
+    lanes 是参加这个会话的实例，按实例号索引，是会话开始时选中的实例集合。之后新增的实例不加入这个会话；
+    被替换（EngineInfo 变化）或移除的实例仍留在这里，以 retired 标记。一个实例号在会话里的尝试属于
+    lanes 中该号的实例，_owns 据此判断某个实例产生的结果是否还属于这个会话。
     last_flush 是上一次刷新的事件循环时刻，用来判断会话是否空闲（架构文档 6.6 节）。
     images 是本会话的截图，按缩小时用的最大边长索引；双语窗口会话为空。
     """
@@ -189,6 +178,17 @@ class _Session:
     last_flush: float | None = None
     flush_handle: asyncio.Handle | None = None
     running: set[asyncio.Task[None]] = field(default_factory=lambda: set[asyncio.Task[None]]())
+    jobs: list["_RunningJob"] = field(default_factory=lambda: list[_RunningJob]())
+
+
+@dataclass(eq=False, slots=True)
+class _RunningJob:
+    """正在执行的一个任务。pruned 置位表示调度器因为它剩下的段都不可能再改变显示而取消了它。"""
+
+    lane: "_Lane"
+    job: Job
+    task: asyncio.Task[None]
+    pruned: bool = False
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -202,11 +202,10 @@ class _QueuedJob:
 
 @dataclass(frozen=True, slots=True)
 class _Pair:
-    """派发中的一个（段，实例）组合。joined 为 False 表示只在缓存命中时才参赛（计费实例未被纳入时）。"""
+    """派发中的一个（段，实例）组合。"""
 
     segment: Segment
     lane: _Lane
-    joined: bool
 
 
 # ---------------------------------------------------------------- 调度器
@@ -220,7 +219,6 @@ class RaceScheduler:
         engines: Sequence[Engine],
         sink: RaceSink,
         *,
-        mode: RaceMode = RaceMode.SAVER,
         cache: TranslationCache | None = None,
         clock: Callable[[], float] = time.monotonic,
         frame_interval: float = 1 / 60,
@@ -234,7 +232,6 @@ class RaceScheduler:
                 raise ValueError(f"引擎实例 {lane.id} 重复")
             self._lanes[lane.id] = lane
         self._sink = sink
-        self._mode = mode
         self._cache = cache
         self._clock = clock
         self._frame_interval = frame_interval
@@ -246,14 +243,6 @@ class RaceScheduler:
         self._closed = False
 
     # ---- 公开接口 ----
-
-    @property
-    def mode(self) -> RaceMode:
-        return self._mode
-
-    def set_mode(self, mode: RaceMode) -> None:
-        """切换竞速模式。已经执行的剪枝不会撤回；新模式只影响之后的判断。"""
-        self._mode = mode
 
     def set_engines(self, engines: Sequence[Engine]) -> None:
         """更新引擎实例集合（架构文档 6.5 节活性保证第 4 条），以 EngineInfo 是否相等判断实例有没有变化。
@@ -286,9 +275,9 @@ class RaceScheduler:
         entry: Entry,
         session_id: SessionId,
         segments: Sequence[Segment],
-        langs: Mapping[SegmentId, LangPair],
+        langs: Mapping[SegmentId, LangPair | None],
         *,
-        include_billing: bool = True,
+        engines: Collection[EngineId] | None = None,
         context: str = "",
         images: Mapping[int, JobImage] | None = None,
     ) -> None:
@@ -297,11 +286,12 @@ class RaceScheduler:
         langs 给出每个段的（源语言，目标语言）。双语窗口的互译规则（RACE-10）会让同一会话里
         不同段的目标语言不同，所以语言对按段指定。下列段不参加竞速，并标出原因：
 
+        - 语言对为 None：段里没有可翻译的文字（RACE-09），标为 NO_TEXT；
         - 源语言与目标语言相同（RACE-09），标为 SAME_LANGUAGE；
-        - 没有任何实例（包括计费实例）支持该语言对，标为 NO_ENGINE。
+        - 没有任何候选实例支持该语言对，标为 NO_ENGINE。
 
-        include_billing 为 False 时，计费实例只有缓存命中的组合参赛（命中不产生费用），
-        其余组合留给 extend_session（BI-04）；只因此暂时没有参赛者的段不标记跳过。
+        engines 限定候选实例：为 None 时是当前全部实例（截屏翻译的竞速），否则只取其中列出的实例号
+        （双语窗口只用用户选中的一个服务，需求 BI-04）。列出的实例号不在当前实例集合里时忽略。
         images 是截屏会话的截图，键是缩小时用的最大边长。image_max_side 为 n 的实例收到 images[n]，
         没有对应项的实例不带图；不接收截图的实例总是不带图。
         方法在任务入队后返回，不等待翻译结果。参数非法时抛出 ValueError，旧会话不受影响。
@@ -319,14 +309,15 @@ class RaceScheduler:
         if old is not None:
             self._cancel(old)
 
+        chosen = None if engines is None else frozenset(engines)
         session = _Session(
             id=session_id,
             entry=entry,
             race=race,
-            langs={s.id: langs[s.id] for s in segments},
+            langs={},
             context=context,
             order={s.id: i for i, s in enumerate(segments)},
-            lanes=dict(self._lanes),
+            lanes={eid: lane for eid, lane in self._lanes.items() if chosen is None or eid in chosen},
             images=dict(images) if images else {},
         )
         self._sessions[session_id] = session
@@ -336,7 +327,11 @@ class RaceScheduler:
         memo: dict[LangPair, list[_Lane]] = {}
         pairs: list[_Pair] = []
         for segment in segments:
-            pair = session.langs[segment.id]
+            pair = langs[segment.id]
+            if pair is None:
+                race.skip(segment.id, SkipReason.NO_TEXT)
+                continue
+            session.langs[segment.id] = pair
             if pair[0] == pair[1]:
                 race.skip(segment.id, SkipReason.SAME_LANGUAGE)
                 continue
@@ -345,66 +340,11 @@ class RaceScheduler:
                 race.skip(segment.id, SkipReason.NO_ENGINE)
                 continue
             for lane in lanes:
-                if lane.info.billing and not include_billing:
-                    if self._cache is not None:
-                        pairs.append(_Pair(segment, lane, joined=False))
-                    continue
                 race.add(segment.id, lane.id, lane.info.priority, now)
-                pairs.append(_Pair(segment, lane, joined=True))
+                pairs.append(_Pair(segment, lane))
         # 即使没有任何参赛实例也安排第一帧，界面由此拿到全部段的初始快照和进度。
         self._touch(session)
         await self._dispatch(session, pairs, now)
-
-    async def extend_session(self, session_id: SessionId) -> None:
-        """让计费实例加入一个已经开始的会话（需求 BI-04 的 Ctrl+Enter）。
-
-        候选实例是会话实例集合（_Session.lanes）中的计费实例；其中在会话开始后被替换的，换成当前的
-        同号新实例，例如用户补填 API key 之后按 Ctrl+Enter。会话开始后才新增的实例号不参加。
-        对每个没有被标记跳过的段，候选实例中支持该段语言对的按下列规则处理：
-
-        - 还没参赛：加入；
-        - 被替换的实例，且旧实例在这个段上的尝试已经失败：新实例的尝试替换它，重新参赛；
-        - 其余已经参赛的组合（被剪枝的、成功的、新实例自己失败的）保持原状，不会重新参赛。
-
-        会话不存在或已取消时什么也不做。
-        """
-        self._check_open()
-        session = self._sessions.get(session_id)
-        if session is None:
-            logger.debug("会话 %s 不存在或已取消，忽略 extend_session", session_id)
-            return
-        now = self._clock()
-        candidates: list[_Lane] = []
-        replaced: set[EngineId] = set()
-        for engine_id, lane in tuple(session.lanes.items()):
-            if lane.retired:
-                successor = self._lanes.get(engine_id)
-                if successor is None or not successor.info.billing:
-                    continue
-                # 旧实例在这个会话里已没有未结束的尝试（_retire 把它们记为失败）。换成新实例之后，
-                # 旧实例迟到的结果被 _owns 挡住；新实例再被移除时，_retire 能找到它在这里的尝试。
-                session.lanes[engine_id] = lane = successor
-                replaced.add(engine_id)
-            if lane.info.billing:
-                candidates.append(lane)
-        memo: dict[LangPair, list[_Lane]] = {}
-        pairs: list[_Pair] = []
-        for race in session.race.segments():
-            if race.skip_reason is not None:
-                continue
-            segment = race.segment
-            participants = set(race.participants())
-            for lane in self._supporting_lanes(candidates, session.langs[segment.id], memo):
-                if lane.id not in participants:
-                    session.race.add(segment.id, lane.id, lane.info.priority, now)
-                elif lane.id in replaced and race.attempt(lane.id).state is AttemptState.FAILED:
-                    session.race.rejoin(segment.id, lane.id, lane.info.priority, now)
-                else:
-                    continue
-                pairs.append(_Pair(segment, lane, joined=True))
-        if pairs:
-            self._touch(session)
-            await self._dispatch(session, pairs, now)
 
     def cancel_session(self, entry: Entry) -> None:
         """取消该入口的当前会话（RACE-01）。之后这个会话不再产生任何 sink 调用。"""
@@ -450,7 +390,7 @@ class RaceScheduler:
     def _supporting_lanes(
         lanes: Sequence[_Lane], pair: LangPair, memo: dict[LangPair, list[_Lane]]
     ) -> list[_Lane]:
-        """lanes 中支持该语言对的实例（含计费实例），顺序不变。supports 抛出异常时按不支持处理。"""
+        """lanes 中支持该语言对的实例，顺序不变。supports 抛出异常时按不支持处理。"""
         cached = memo.get(pair)
         if cached is not None:
             return cached
@@ -467,7 +407,7 @@ class RaceScheduler:
         return supporting
 
     async def _dispatch(self, session: _Session, pairs: list[_Pair], now: float) -> None:
-        """处理一批（段，实例）组合：先查缓存，再把参赛且仍在排队的组合打包入队。
+        """处理一批（段，实例）组合：先查缓存，再把仍在排队的组合打包入队。
 
         pairs 按段的顺序排列。now 是这批组合的派发时刻，缓存命中的结果以同一时刻完成，耗时为 0。
         """
@@ -484,19 +424,19 @@ class RaceScheduler:
                 pending.set_result(None)
             if session.closed:
                 return
-        self._enqueue_pairs(session, [p for p in pairs if p.joined])
+        self._enqueue_pairs(session, pairs)
 
     async def _apply_cache(
         self, session: _Session, cache: TranslationCache, pairs: list[_Pair], now: float
     ) -> None:
         """批量查缓存，命中的组合直接以耗时 0 完成（RACE-08）。缓存出错只记日志，按未命中处理。
 
-        未参赛的计费组合命中时先参赛再完成；没命中的保持不参赛。同一会话里原文相同的段共用一个缓存键，
-        命中时这些组合全部完成。查询期间实例被移除或替换的组合不再处理，它们的尝试已由 _retire 结束。
+        同一会话里原文相同的段共用一个缓存键，命中时这些组合全部完成。
+        查询期间实例被移除或替换的组合不再处理，它们的尝试已由 _retire 结束。
         """
         keys: dict[CacheKey, list[_Pair]] = {}
         for p in pairs:
-            if p.joined and self._state(session, p.segment.id, p.lane.id) is not AttemptState.QUEUED:
+            if self._state(session, p.segment.id, p.lane.id) is not AttemptState.QUEUED:
                 continue
             source, target = session.langs[p.segment.id]
             image = _image_for(session, p.lane)
@@ -515,7 +455,7 @@ class RaceScheduler:
             hits = await cache.get_many(tuple(keys))
         except asyncio.CancelledError:
             # 调用方在查缓存时被取消：这批组合不会再入队，把它们标为已取消，免得竞速永远挂起。
-            self._abandon(session, [p for p in pairs if p.joined])
+            self._abandon(session, pairs)
             raise
         except Exception:
             logger.exception("会话 %s 查询译文缓存失败，全部按未命中处理", session.id)
@@ -530,8 +470,6 @@ class RaceScheduler:
                 if not _owns(session, p.lane):
                     continue
                 race = session.race.segment(p.segment.id)
-                if p.lane.id not in race.participants():
-                    session.race.add(p.segment.id, p.lane.id, p.lane.info.priority, now)
                 if race.attempt(p.lane.id).state is AttemptState.QUEUED:
                     outcome = SegmentOutcome(p.segment.id, text=text)
                     self._resolve(session, p.lane.id, outcome, now, cached=True)
@@ -539,8 +477,7 @@ class RaceScheduler:
     def _enqueue_pairs(self, session: _Session, pairs: list[_Pair]) -> None:
         """把仍在排队的组合按实例、语言对分组打包，按首段顺序放进各实例的队列。
 
-        查缓存期间被移除或替换的实例不入队：它的尝试已由 _retire 记为失败，同号的 QUEUED 尝试
-        （如果有）属于 extend_session 换上的新实例。
+        查缓存期间被移除或替换的实例不入队：它的尝试已由 _retire 记为失败。
         """
         grouped: dict[_Lane, dict[LangPair, list[Segment]]] = {}
         for p in pairs:
@@ -595,23 +532,22 @@ class RaceScheduler:
         对任务里的每个段检查该实例的尝试：
 
         - 状态不是 QUEUED（例如已被即时剪枝）：移除；
-        - 节省模式下已经不可能改变显示（不属于集合 H）：标为 CANCELLED 并移除；
+        - 已经不可能改变显示（不属于集合 H）：标为 CANCELLED 并移除；
         - 其余标为 RUNNING 并保留。
 
-        即时剪枝只在胜出者改变时触发，下面两种情况要靠这里补上：晚加入的实例优先级低于已有的胜出者；
-        完整模式期间排队的尝试在切换到节省模式之后出队。已取消会话或已移除实例的任务、
-        剪枝后为空的任务都返回 None，不调用引擎。
+        即时剪枝在胜出者改变时就把同段满足判据的排队尝试全部取消，这里是兜底：即使某个尝试漏过了
+        即时剪枝，它也不会被交给引擎。已取消会话或已移除实例的任务、剪枝后为空的任务都返回 None，
+        不调用引擎。
         """
         session = item.session
         if session.closed or lane.retired:
             return None
-        saver = self._mode is RaceMode.SAVER
         kept: list[Segment] = []
         for segment in item.segments:
             race = session.race.segment(segment.id)
             if race.attempt(lane.id).state is not AttemptState.QUEUED:
                 continue
-            if saver and not race.contending(lane.id):
+            if not race.contending(lane.id):
                 self._cancel_attempt(session, race, lane.id, self._clock())
                 if session.closed:
                     return None
@@ -634,15 +570,26 @@ class RaceScheduler:
         )
 
     async def _execute(self, lane: _Lane, session: _Session, job: Job) -> None:
-        """在独立的 asyncio 任务里执行 job。会话取消或实例移除时只取消这个任务。"""
+        """在独立的 asyncio 任务里执行 job。会话取消、实例移除或任务被剪枝时只取消这个任务。
+
+        任务因剪枝被取消时（_prune_running），它还没出结果的段记为 CANCELLED：这是调度器主动放弃，
+        不是引擎失败。取消沿引擎自己的取消通路传下去：本地 NMT 引擎向推理进程发 cancel 消息，
+        在线引擎的 HTTP 请求随 asyncio 取消而关闭。
+        """
         task = asyncio.create_task(self._run_job(lane, session, job), name=f"race-job-{lane.id}")
+        running = _RunningJob(lane, job, task)
         session.running.add(task)
+        session.jobs.append(running)
         lane.running.add(task)
         try:
             await asyncio.wait((task,))
         finally:
             session.running.discard(task)
+            session.jobs.remove(running)
             lane.running.discard(task)
+        if running.pruned and task.cancelled():
+            self._finish_pruned(session, running)
+            return
         if not task.cancelled() and (exc := task.exception()) is not None:
             logger.error("实例 %s 的任务执行出错（会话 %s）", lane.id, session.id, exc_info=exc)
 
@@ -758,7 +705,7 @@ class RaceScheduler:
         except Exception:
             logger.exception("实例 %s 的任务被丢弃后无法结束其中的尝试（会话 %s）", lane.id, session.id)
 
-    # ---- 合并器状态变更 ----
+    # ---- 合并器状态变更与取消 ----
 
     @staticmethod
     def _state(session: _Session, segment_id: SegmentId, engine_id: EngineId) -> AttemptState:
@@ -773,10 +720,10 @@ class RaceScheduler:
         *,
         cached: bool = False,
     ) -> None:
-        """把一个结果交给合并器；尝试进入终态时通知 sink。
+        """把一个结果交给合并器；尝试进入终态时通知 sink，再取消已经不可能改变显示的尝试（RACE-05）。
 
-        节省模式下，结果让胜出者改变时立即剪枝（架构文档 6.4 节）：该段处于 QUEUED、且优先级
-        不高于新胜出者的尝试标为 CANCELLED。胜出者不变时没有尝试会离开 H，不必检查。
+        胜出者改变时，该段处于 QUEUED、且优先级不高于新胜出者的尝试立即标为 CANCELLED（即时剪枝）。
+        之后检查涉及这个段的执行中任务：一个任务剩下的段全都不可能再改变显示时取消它（_prune_running）。
         """
         race = session.race.segment(outcome.segment_id)
         if not race.attempt(engine_id).state.pending:
@@ -784,12 +731,49 @@ class RaceScheduler:
         changed = session.race.resolve(engine_id, outcome, now, cached=cached)
         self._touch(session)
         self._record(session, race, engine_id)
-        if changed and self._mode is RaceMode.SAVER:
+        if changed:
             for other in race.participants():
                 if session.closed:
                     return
                 if race.attempt(other).state is AttemptState.QUEUED and not race.contending(other):
                     self._cancel_attempt(session, race, other, now)
+        self._prune_running(session, outcome.segment_id)
+
+    def _prune_running(self, session: _Session, segment_id: SegmentId) -> None:
+        """取消包含 segment_id、并且剩下的段都已不可能改变显示的执行中任务。
+
+        任务里还在执行（RUNNING）的段只要有一个仍可能改变显示，任务就继续：批量请求的其他段还需要它。
+        已经出过结果的段不影响判断。
+        """
+        if session.closed:
+            return
+        for running in tuple(session.jobs):
+            if running.pruned or running.task.done() or not _owns(session, running.lane):
+                continue
+            if all(s.id != segment_id for s in running.job.segments):
+                continue
+            lane_id = running.lane.id
+            pending = [
+                session.race.segment(s.id)
+                for s in running.job.segments
+                if session.race.segment(s.id).attempt(lane_id).state is AttemptState.RUNNING
+            ]
+            if pending and not any(race.contending(lane_id) for race in pending):
+                running.pruned = True
+                running.task.cancel()
+
+    def _finish_pruned(self, session: _Session, running: _RunningJob) -> None:
+        """剪枝取消的任务结束后，把它还没出结果的段记为 CANCELLED。"""
+        if session.closed or not _owns(session, running.lane):
+            return
+        now = self._clock()
+        for segment in running.job.segments:
+            race = session.race.segment(segment.id)
+            if race.attempt(running.lane.id).state is AttemptState.RUNNING and session.race.cancel(
+                segment.id, running.lane.id, now, running=True
+            ):
+                self._touch(session)
+                self._record(session, race, running.lane.id)
 
     def _cancel_attempt(self, session: _Session, race: SegmentRace, engine_id: EngineId, now: float) -> None:
         if session.race.cancel(race.segment.id, engine_id, now):
@@ -882,7 +866,7 @@ class RaceScheduler:
 
 
 def _owns(session: _Session, lane: _Lane) -> bool:
-    """lane 是否仍是会话里该实例号的实例：没有被移除或替换，也没有被 extend_session 换掉。"""
+    """lane 是否仍是会话里该实例号的实例：没有被移除或替换。"""
     return not lane.retired and session.lanes.get(lane.id) is lane
 
 

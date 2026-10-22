@@ -1,6 +1,6 @@
 """Windows 自带 OCR 的真实测试：调用系统的 Windows.Media.Ocr。
 
-- 在内存里用 PySide6 的 QImage、QPainter 画几行中文和英文，转成 BGRA，直接调用后端识别，
+- 在内存里用 PySide6 画几行中文和英文（tests/workers/ocr/screens.py），转成 BGRA，直接调用后端识别，
   检查关键字与行的包围盒落在画字的位置附近；
 - 起一个真实的 OCR 子进程（主环境解释器，--backend 指向 Windows OCR 后端），做一次握手与识别；
 - 检查选 Windows OCR 后端时子进程的导入链不含 paddle、paddlex、cv2（这一项不需要 OCR 语言）。
@@ -14,13 +14,8 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QRect
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from lst.contracts.worker_protocol import OcrRequest, OcrResult, Shutdown
@@ -28,13 +23,12 @@ from lst.services.ocr.blocks import decode_blocks
 from lst.workers.ocr_worker.image import bgra_to_bgr
 from lst.workers.ocr_worker.winocr_backend import WinOcrBackend, WinRtOcrApi, match_language
 from tests.workers.ocr.harness import ROOT, OcrWorkerProcess, leftover_workers
+from tests.workers.ocr.screens import FONT_FILE, assert_near, ensure_font, render
 from tests.workers.ocr.validation import validate_blocks
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 WINOCR_BACKEND = "lst.workers.ocr_worker.winocr_backend:WinOcrBackend"
-FONT_FILE = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "msyh.ttc"
-"""微软雅黑，同时覆盖中文和拉丁字母。offscreen 平台没有字体库，要显式加载系统字体文件（只读）。"""
 
 
 def _available_languages() -> list[str]:
@@ -52,50 +46,6 @@ def no_progress(kind: str, detail: str = "", done: int | None = None, total: int
     del kind, detail, done, total
 
 
-@dataclass(frozen=True, slots=True)
-class Drawn:
-    """画在截图上的一行：文字与它在截图中的范围（x0, y0, x1, y1）。"""
-
-    text: str
-    box: tuple[int, int, int, int]
-
-
-@dataclass(frozen=True, slots=True)
-class Screenshot:
-    width: int
-    height: int
-    stride: int
-    data: bytes
-    lines: tuple[Drawn, ...]
-
-
-def render(
-    lines: Sequence[tuple[str, int, int]], width: int, height: int, pixel_size: int = 32
-) -> Screenshot:
-    """白底黑字画出各行（文字，左边 x，基线 y），返回 BGRA 像素和每行的实际范围。"""
-    image = QImage(width, height, QImage.Format.Format_ARGB32)
-    image.fill(QColor("white"))
-    font = QFont("Microsoft YaHei")
-    font.setPixelSize(pixel_size)
-    metrics = QFontMetrics(font)
-    painter = QPainter(image)
-    painter.setFont(font)
-    painter.setPen(QColor("black"))
-    drawn: list[Drawn] = []
-    for text, x, baseline in lines:
-        painter.drawText(x, baseline, text)
-        rect: QRect = metrics.tightBoundingRect(text).translated(x, baseline)
-        drawn.append(Drawn(text, (rect.left(), rect.top(), rect.right() + 1, rect.bottom() + 1)))
-    painter.end()
-    stride = image.bytesPerLine()
-    data = bytes(image.constBits())[: stride * height]  # pyright: ignore[reportArgumentType]
-    return Screenshot(width, height, stride, data, tuple(drawn))
-
-
-def assert_near(box: Sequence[int], expected: tuple[int, int, int, int], tolerance: int) -> None:
-    assert all(abs(a - b) <= tolerance for a, b in zip(box, expected, strict=True)), (box, expected)
-
-
 def load(language: str) -> WinOcrBackend:
     backend = WinOcrBackend()
     backend.load({"mode": "text", "engine": "windows", "language": language}, no_progress)
@@ -104,10 +54,8 @@ def load(language: str) -> WinOcrBackend:
 
 @pytest.fixture
 def app(qapp: QApplication) -> QApplication:
-    if not FONT_FILE.is_file():
+    if not ensure_font():
         pytest.skip(f"没有字体文件 {FONT_FILE}")
-    if "Microsoft YaHei" not in QFontDatabase.families():
-        assert QFontDatabase.addApplicationFont(str(FONT_FILE)) >= 0
     return qapp
 
 

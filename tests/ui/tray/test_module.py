@@ -424,7 +424,7 @@ async def test_hotkey_failure_notification(
     assert shown_messages == [
         ShownMessage(
             "热键注册失败",
-            "热键 Alt+E 注册失败：已被其他程序占用。请在设置 → 热键中换一个组合。",
+            "热键 Alt+E 注册失败：已被其他程序占用。请在“设置 › 热键与键位 › 全局热键”里换一个组合。",
             QSystemTrayIcon.MessageIcon.Warning,
             NOTICE_DURATION_MS,
         )

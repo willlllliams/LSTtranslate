@@ -5,14 +5,20 @@ OcrRequest 后面的原始字节帧是 BGRA 像素：每像素 4 字节，每行
 所以去掉行尾填充和 alpha 通道，复制成连续数组。
 
 预处理只作用于送入 OCR 的图像：灰度化在这里用 numpy 完成（BT.601 系数，与 OpenCV 的 BGR2GRAY 相同的
-定点算法），结果仍是三通道，产线的输入格式不变；缩放需要 OpenCV 的面积插值，由后端调用（geometry.plan_resize
-给出目标尺寸）。
+定点算法），结果仍是三通道，产线的输入格式不变。缩放由后端调用（geometry.plan_resize 给出目标尺寸）：
+PaddleOCR 后端用 OpenCV 的面积插值；Windows OCR 与 RapidOCR 后端用这里的 resize_area，它用 numpy 实现
+同一种面积平均，单元测试不需要 OpenCV。
 """
+
+from typing import Final
 
 import numpy as np
 from numpy.typing import NDArray
 
 type Pixels = NDArray[np.uint8]
+
+# 面积平均缩放时每次处理的条带宽度（像素），限制中间数组的内存。
+_RESIZE_STRIP: Final = 1024
 
 
 class BadImage(ValueError):
@@ -42,3 +48,44 @@ def to_grayscale(image: Pixels) -> Pixels:
     gray = (channels[:, :, 0] * 1868 + channels[:, :, 1] * 9617 + channels[:, :, 2] * 4899 + 8192) >> 14
     gray8 = gray.astype(np.uint8)
     return np.ascontiguousarray(np.repeat(gray8[:, :, np.newaxis], 3, axis=2))
+
+
+def _area_rows(image: NDArray[np.float32], rows: int) -> NDArray[np.float32]:
+    """沿第 0 轴把 n 行面积平均成 rows 行（rows ≤ n）。
+
+    把每一列看成分段常数函数 f，积分 F(x) = Σ_{i<⌊x⌋} f_i + (x − ⌊x⌋)·f_{⌊x⌋}；
+    第 k 个输出行是 f 在 [k·s, (k+1)·s) 上的平均值 (F((k+1)·s) − F(k·s)) / s，其中 s = n / rows。
+    """
+    n = image.shape[0]
+    scale = n / rows
+    edges = np.arange(rows + 1, dtype=np.float64) * scale
+    edges[-1] = n
+    index = np.minimum(np.floor(edges).astype(np.int64), n - 1)
+    frac = (edges - index).astype(np.float32)
+    prefix = np.concatenate([np.zeros((1, *image.shape[1:]), np.float32), np.cumsum(image, axis=0)], axis=0)
+    shape = (rows + 1,) + (1,) * (image.ndim - 1)
+    integral = prefix[index] + frac.reshape(shape) * image[index]
+    return (integral[1:] - integral[:-1]) / np.float32(scale)
+
+
+def resize_area(image: Pixels, size: tuple[int, int]) -> Pixels:
+    """把 height × width × c 的 uint8 图像面积平均缩小到 size = (宽, 高)。尺寸不变时原样返回。
+
+    先缩行再缩列，按条带处理，中间数组最多是一个条带的 float32 副本。
+    """
+    height, width = image.shape[:2]
+    new_width, new_height = size
+    if (new_width, new_height) == (width, height):
+        return image
+    if new_width > width or new_height > height or new_width <= 0 or new_height <= 0:
+        raise ValueError(f"只能缩小：{width}×{height} → {new_width}×{new_height}")
+    rows = np.empty((new_height, width, *image.shape[2:]), np.float32)
+    for start in range(0, width, _RESIZE_STRIP):
+        strip = image[:, start : start + _RESIZE_STRIP].astype(np.float32)
+        rows[:, start : start + _RESIZE_STRIP] = _area_rows(strip, new_height)
+    out = np.empty((new_height, new_width, *image.shape[2:]), np.uint8)
+    for start in range(0, new_height, _RESIZE_STRIP):
+        strip = np.swapaxes(rows[start : start + _RESIZE_STRIP], 0, 1)
+        cols = np.swapaxes(_area_rows(np.ascontiguousarray(strip), new_width), 0, 1)
+        out[start : start + _RESIZE_STRIP] = np.clip(np.rint(cols), 0, 255).astype(np.uint8)
+    return out

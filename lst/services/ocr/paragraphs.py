@@ -147,10 +147,15 @@ def _center_y(box: BBox) -> float:
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    """拼好的一行：成员下标按从左到右排列，bbox 是成员的并集。"""
+    """拼好的一行：成员下标按从左到右排列，bbox 是成员的并集，height 是成员字高的中位数。
+
+    成段时用 height 而不用 bbox 的高度：同一行的碎片上下错开一两个像素时，并集会比字高高出这么多，
+    以它为单位的间距阈值随之放宽，段间空白就可能被当成行间距。
+    """
 
     members: tuple[int, ...]
     bbox: BBox
+    height: float
 
 
 class _DisjointSet:
@@ -207,7 +212,7 @@ class GeometricMerger:
                     text=join_lines(lines[index].text for index in members),
                 )
             )
-        unit = _median([row.bbox.height for row in rows])
+        unit = _median([row.height for row in rows])
         order = _reading_order([p.bbox for p in paragraphs], self._params.min_column_gap * unit)
         return tuple(paragraphs[index] for index in order)
 
@@ -279,15 +284,18 @@ class GeometricMerger:
         rows: list[_Row] = []
         for group in members.values():
             group.sort(key=lambda i: (boxes[i].x0, boxes[i].y0))
-            rows.append(_Row(tuple(group), _union(boxes[i] for i in group)))
+            rows.append(
+                _Row(tuple(group), _union(boxes[i] for i in group), _median([boxes[i].height for i in group]))
+            )
         return rows
 
     # ---- 第 3 步：成段 ----
 
-    def _same_paragraph(self, upper: BBox, lower: BBox) -> bool:
+    def _same_paragraph(self, upper_row: _Row, lower_row: _Row) -> bool:
         p = self._params
-        h = min(upper.height, lower.height)
-        if abs(upper.height - lower.height) > p.height_tolerance * h:
+        upper, lower = upper_row.bbox, lower_row.bbox
+        h = min(upper_row.height, lower_row.height)
+        if abs(upper_row.height - lower_row.height) > p.height_tolerance * h:
             return False
         gap = lower.y0 - upper.y1
         if gap > p.line_gap * h or gap < -p.max_line_overlap * h:
@@ -303,15 +311,22 @@ class GeometricMerger:
         downs: list[list[int]] = [[] for _ in ordered]
         ups: list[list[int]] = [[] for _ in ordered]
         for a, upper in enumerate(ordered):
-            limit = upper.bbox.y1 + self._params.line_gap * upper.bbox.height
+            limit = upper.bbox.y1 + self._params.line_gap * upper.height
             for b in range(a + 1, len(ordered)):
                 lower = ordered[b]
                 # 按上边缘排序，后面的行只会更靠下；间距上限不超过上行行高的 line_gap 倍。
                 if lower.bbox.y0 > limit:
                     break
-                if self._same_paragraph(upper.bbox, lower.bbox):
+                if self._same_paragraph(upper, lower):
                     downs[a].append(b)
-                    ups[b].append(a)
+        # 去掉跨过中间一行的关系：a → c → b 都成立时，a → b 只是行距较小造成的跳行，不是第二个候选。
+        # 碎片上下错开时拼出的行框会变高，隔一行的间距可能落进 line_gap 以内（随机生成的文档实测）；
+        # 不去掉的话 a 有两个下方候选，段落从这里断开。两栏的行之间没有关系，扇出到两栏的判断不受影响。
+        reachable = [set(candidates) for candidates in downs]
+        for a, candidates in enumerate(downs):
+            downs[a] = [b for b in candidates if not any(b in reachable[c] for c in candidates if c != b)]
+            for b in downs[a]:
+                ups[b].append(a)
         nxt: dict[int, int] = {}
         has_prev: set[int] = set()
         for a, candidates in enumerate(downs):
@@ -329,6 +344,20 @@ class GeometricMerger:
                 chain.append(ordered[current])
             chains.append(chain)
         return chains
+
+
+class LineMerger:
+    """不合并的“合并器”：每个非空行单独成段，按输入顺序排列。
+
+    结构归一化的聚合步骤关闭时（lst/services/ocr/normalize.py），文本模式按它一行一段切分。
+    """
+
+    def merge(self, lines: Sequence[TextLine]) -> tuple[Paragraph, ...]:
+        return tuple(
+            Paragraph(lines=(index,), bbox=line.bbox, text=line.text.strip())
+            for index, line in enumerate(lines)
+            if line.text.strip()
+        )
 
 
 # ---------------------------------------------------------------- 第 4 步：阅读顺序

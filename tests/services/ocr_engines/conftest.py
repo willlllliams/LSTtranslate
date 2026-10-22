@@ -17,10 +17,18 @@ from lst.contracts.ocr_engines import (
     OcrEngineKind,
     OcrEnginesChanged,
     OcrEngineState,
+    OcrRuntimeVariant,
 )
 from lst.kernel import EventBus, ModuleContext
-from lst.services.ocr_engines import DevPaddleEnvironment, OcrEnginesModule, PaddleInstallPaths
-from tests.services.ocr_engines.helpers import BASE_URL, MODELS, FakeServer, FakeUv, make_paths
+from lst.services.ocr_engines import DevPaddleEnvironment, GpuAdapter, OcrEnginesModule, PaddleInstallPaths
+from tests.services.ocr_engines.helpers import (
+    BASE_URL,
+    PADDLE_TEST_MODELS,
+    RAPID_TEST_MODELS,
+    FakeServer,
+    FakeUv,
+    make_paths,
+)
 
 MODULE_LOGGER = "lst.ocr_engines"
 
@@ -130,17 +138,26 @@ async def start_module(
         poll_interval: float = 0.001,
         clock: Callable[[], float] = time.monotonic,
         runtime_bytes: int = 10_000,
+        rapid_runtime_bytes: int = 10_000,
+        gpu_probe: Callable[[], list[GpuAdapter]] = list[GpuAdapter],
         **extra: Any,
     ) -> OcrEnginesModule:
+        sizes = {
+            **{(OcrEngineKind.PADDLE, variant): runtime_bytes for variant in OcrRuntimeVariant},
+            **{(OcrEngineKind.RAPID, variant): rapid_runtime_bytes for variant in OcrRuntimeVariant},
+        }
+        extra.setdefault("paddle_models", PADDLE_TEST_MODELS)
+        extra.setdefault("rapid_models", RAPID_TEST_MODELS)
         module = OcrEnginesModule(
             paddle if paddle is not None else paths,
             client,
-            models=MODELS,
             model_base_url=BASE_URL,
             runner=uv,
             windows_probe=windows_probe,
+            gpu_probe=gpu_probe,
             environ={"PATH": "C:\\Windows", "UV_INDEX_URL": "https://evil.invalid", "PYTHONPATH": "x"},
-            runtime_bytes=runtime_bytes,
+            runtime_bytes=sizes,
+            download_bytes=sizes,
             progress_interval=progress_interval,
             poll_interval=poll_interval,
             clock=clock,

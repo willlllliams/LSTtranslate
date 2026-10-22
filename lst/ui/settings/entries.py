@@ -22,7 +22,7 @@ from lst.ui.settings.schema import describe_validation
 
 type Entry = dict[str, JsonValue]
 
-KEYLESS_KINDS: Final = frozenset({"local_nmt"})
+KEYLESS_KINDS: Final = frozenset({"local_nmt", "dictionary", "google_free", "microsoft_free"})
 """不需要 API key 的引擎类别。"""
 
 OPTIONAL_KEY_PROVIDERS: Final = frozenset({"ollama", "llamacpp"})
@@ -60,6 +60,9 @@ KIND_DEFAULT_NAMES: Final = {
     "google": "Google",
     "baidu": "百度翻译",
     "local_nmt": "Argos",
+    "dictionary": "词典",
+    "google_free": "谷歌翻译（免费）",
+    "microsoft_free": "微软翻译（免费）",
 }
 """新建实例时各类引擎的默认名称；openai_compat 由所选服务决定。"""
 

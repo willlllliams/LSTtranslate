@@ -24,6 +24,7 @@ from lst.services.ocr_engines import PaddleInstallPaths
 from lst.services.ocr_engines.layout import RUNTIME_STAMP
 from tests.services.ocr_engines.conftest import Published, StartModule, wait_until
 from tests.services.ocr_engines.helpers import (
+    CPU,
     MODELS,
     FakeServer,
     FakeUv,
@@ -69,21 +70,21 @@ async def test_install_success(
     no_leftovers(paths)
     # 模型：顶层的 <模型名>_infer/ 改名为 official_models/<模型名>/。
     for model in MODELS:
-        assert sorted(p.name for p in paths.model_dir(model.name).iterdir()) == [
+        assert sorted(p.name for p in paths.model_dir(model.id).iterdir()) == [
             "inference.json",
             "inference.pdiparams",
             "inference.yml",
         ]
-    assert sorted(p.name for p in paths.models_dir.iterdir()) == sorted(m.name for m in MODELS)
+    assert sorted(p.name for p in paths.models_dir.iterdir()) == sorted(m.id for m in MODELS)
     marker = json.loads(paths.marker.read_text(encoding="utf-8"))
-    assert marker["models"] == [m.name for m in MODELS]
+    assert marker["models"] == [m.id for m in MODELS]
     # uv 的命令行与环境变量。
     [args] = uv.calls
     assert args[:3] == [str(paths.uv), "pip", "install"]
     assert args[args.index("--python") + 1] == str(paths.python)
     assert args[args.index("--target") + 1] == str(paths.site_part)
     assert "--no-deps" in args and "--require-hashes" in args and "--no-config" in args
-    assert args[-2:] == ["-r", str(paths.requirements)]
+    assert args[-2:] == ["-r", str(paths.requirements(CPU))]
     [env] = uv.envs
     assert env["UV_CACHE_DIR"] == str(paths.uv_cache)
     assert "UV_INDEX_URL" not in env and "PYTHONPATH" not in env
@@ -120,8 +121,8 @@ async def test_progress_is_monotonic_and_throttled(
         now[0] += 0.05
 
     for model in MODELS:
-        body = model_tar(model.name, payload=b"p" * 4000)
-        server.add_model(model.name, Route(body=body, chunk_size=256, on_chunk=tick))
+        body = model_tar(model.id, payload=b"p" * 4000)
+        server.add_model(model.id, Route(body=body, chunk_size=256, on_chunk=tick))
     uv.cache_bytes = 4000
     await start_module(progress_interval=0.2, clock=clock)
     bus.send(InstallOcrEngine(K.PADDLE))
@@ -145,7 +146,7 @@ async def test_runtime_progress_from_uv_cache(
     await start_module(runtime_bytes=10_000)
     bus.send(InstallOcrEngine(K.PADDLE))
     await asyncio.wait_for(uv.reached.wait(), 5)
-    total = 10_000 + sum(model.size_bytes for model in MODELS)
+    total = 10_000 + sum(model.size_bytes or 0 for model in MODELS)
     # 缓存里有 5000 字节，运行环境阶段完成一半：整体进度约为 5000 / total。
     await wait_until(lambda: (published.engine(K.PADDLE).progress or 0) > 0)
     progress = published.engine(K.PADDLE).progress
@@ -190,25 +191,25 @@ async def test_cancel_during_model_download_keeps_runtime(
     paths: PaddleInstallPaths,
 ) -> None:
     first, second, third = MODELS
-    server.add_model(first.name)
+    server.add_model(first.id)
     gate = asyncio.Event()
-    route = server.add_model(second.name, Route(body=model_tar(second.name, payload=b"q" * 5000), gate=gate))
-    server.add_model(third.name)
+    route = server.add_model(second.id, Route(body=model_tar(second.id, payload=b"q" * 5000), gate=gate))
+    server.add_model(third.id)
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
     await asyncio.wait_for(route.reached.wait(), 5)
-    assert paths.download_part(second.name).is_file()
+    assert paths.download_part(second.id).is_file()
     bus.send(CancelOcrEngineInstall(K.PADDLE))
     await bus.drain()
 
     assert published.engine(K.PADDLE).state is S.NOT_INSTALLED
     assert published.changed == []
     no_leftovers(paths)
-    assert not paths.download_part(second.name).exists()
-    assert not paths.model_dir(second.name).exists()
+    assert not paths.download_part(second.id).exists()
+    assert not paths.model_dir(second.id).exists()
     # 已经完整的运行环境与模型保留，重试时复用。
     assert paths.site_dir.is_dir()
-    assert paths.model_dir(first.name).is_dir()
+    assert paths.model_dir(first.id).is_dir()
     assert not paths.marker.exists()
 
     gate.set()
@@ -219,8 +220,8 @@ async def test_cancel_during_model_download_keeps_runtime(
     assert len(uv.calls) == 1, "运行环境的版本清单没变，重试不应再运行 uv"
     retried = server.requests[requests_before:]
     assert [url.rsplit("/", 1)[1] for url in retried] == [
-        f"{second.name}_infer.tar",
-        f"{third.name}_infer.tar",
+        f"{second.id}_infer.tar",
+        f"{third.id}_infer.tar",
     ]
 
 
@@ -299,15 +300,15 @@ async def test_http_error_cleans_up(
     server: FakeServer,
     paths: PaddleInstallPaths,
 ) -> None:
-    server.add_model(MODELS[0].name)
-    server.add_model(MODELS[1].name, Route(status=503))
+    server.add_model(MODELS[0].id)
+    server.add_model(MODELS[1].id, Route(status=503))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
     await bus.drain()
     paddle = published.engine(K.PADDLE)
     assert paddle.state is S.ERROR and paddle.error_code is OcrEngineErrorCode.HTTP
     no_leftovers(paths)
-    assert not paths.model_dir(MODELS[1].name).exists()
+    assert not paths.model_dir(MODELS[1].id).exists()
     assert not paths.marker.exists()
     assert published.changed == []
 
@@ -315,7 +316,7 @@ async def test_http_error_cleans_up(
 async def test_network_error_is_classified(
     bus: EventBus, start_module: StartModule, published: Published, server: FakeServer
 ) -> None:
-    server.add_model(MODELS[0].name, Route(error=httpx.ReadTimeout("timed out")))
+    server.add_model(MODELS[0].id, Route(error=httpx.ReadTimeout("timed out")))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
     await bus.drain()
@@ -329,8 +330,8 @@ async def test_truncated_download_is_invalid(
     server: FakeServer,
     paths: PaddleInstallPaths,
 ) -> None:
-    body = model_tar(MODELS[0].name)
-    server.add_model(MODELS[0].name, Route(body=body, content_length=len(body) + 100))
+    body = model_tar(MODELS[0].id)
+    server.add_model(MODELS[0].id, Route(body=body, content_length=len(body) + 100))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
     await bus.drain()
@@ -347,7 +348,7 @@ async def test_path_traversal_tar_is_rejected(
     paths: PaddleInstallPaths,
     tmp_path: Path,
 ) -> None:
-    name = MODELS[0].name
+    name = MODELS[0].id
     evil = model_tar(name, extra={f"{name}_infer/../../../../evil.txt": b"pwned"})
     server.add_model(name, Route(body=evil))
     await start_module()
@@ -368,7 +369,7 @@ async def test_symlink_tar_is_rejected(
     server: FakeServer,
     paths: PaddleInstallPaths,
 ) -> None:
-    name = MODELS[0].name
+    name = MODELS[0].id
     server.add_model(name, Route(body=symlink_tar(name)))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
@@ -380,7 +381,7 @@ async def test_symlink_tar_is_rejected(
 async def test_tar_without_model_files_is_rejected(
     bus: EventBus, start_module: StartModule, published: Published, server: FakeServer
 ) -> None:
-    name = MODELS[0].name
+    name = MODELS[0].id
     server.add_model(name, Route(body=model_tar(name, files=False)))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
@@ -396,12 +397,12 @@ async def test_existing_models_are_not_downloaded_again(
     paths: PaddleInstallPaths,
 ) -> None:
     server.add_models()
-    write_model(paths.model_dir(MODELS[0].name))
+    write_model(paths.model_dir(MODELS[0].id))
     await start_module()
     bus.send(InstallOcrEngine(K.PADDLE))
     await bus.drain()
     assert published.engine(K.PADDLE).state is S.INSTALLED
-    assert not any(MODELS[0].name in url for url in server.requests)
+    assert not any(MODELS[0].id in url for url in server.requests)
 
 
 async def test_uninstall_removes_runtime_and_models(
@@ -441,7 +442,7 @@ async def test_runtime_update_reinstalls_runtime_and_keeps_models(
     paths: PaddleInstallPaths,
 ) -> None:
     install_layout(paths, MODELS)
-    paths.requirements.write_text("paddlepaddle==3.4.0\n", encoding="utf-8")
+    paths.requirements(CPU).write_text("paddlepaddle==3.4.0\n", encoding="utf-8")
     (paths.site_dir / "old.txt").write_text("old runtime", encoding="utf-8")
     seen: list[tuple[OcrEngineKind, bool]] = []
 
@@ -459,7 +460,7 @@ async def test_runtime_update_reinstalls_runtime_and_keeps_models(
     assert server.requests == []  # 模型全部复用
     assert seen == [(K.PADDLE, True)]
     assert not (paths.site_dir / "old.txt").exists()
-    digest = hashlib.sha256(paths.requirements.read_bytes()).hexdigest()
+    digest = hashlib.sha256(paths.requirements(CPU).read_bytes()).hexdigest()
     assert (
         json.loads((paths.site_dir / RUNTIME_STAMP).read_text(encoding="utf-8"))["requirements_sha256"]
         == digest

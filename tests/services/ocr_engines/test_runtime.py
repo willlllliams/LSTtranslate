@@ -256,3 +256,14 @@ def test_extract_model_limits_total_size(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(InvalidArchive, match="解压后的大小"):
         extract_model(archive, tmp_path / "x", final, "M")
     assert not final.exists() and not (tmp_path / "x").exists()
+
+
+def test_resolve_marker_drops_no_deps() -> None:
+    from lst.services.ocr_engines.runtime import RESOLVE_MARKER, requires_resolution
+
+    assert requires_resolution(f"# header\n{RESOLVE_MARKER}\nnumpy==2.3.0\n")
+    assert not requires_resolution("numpy==2.3.0\n# lst: resolve-dependencies is mentioned inline\n")
+    args = uv_install_args(
+        Path("uv.exe"), Path("python.exe"), Path("t"), Path("r.txt"), hashed=False, resolve=True
+    )
+    assert "--no-deps" not in args and "--no-build" in args

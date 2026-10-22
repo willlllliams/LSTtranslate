@@ -1,7 +1,8 @@
 """OCR 后端协议。
 
 OCR 进程把“怎么识别”交给后端，处理器（handler.py）只负责解包像素、把后端接到运行时上。默认后端是
-PaddleOCR（paddle_backend.py），另有 Windows 自带 OCR 的后端（winocr_backend.py）；
+PaddleOCR（paddle_backend.py），另有 Windows 自带 OCR（winocr_backend.py）与 RapidOCR（rapid_backend.py）
+的后端；
 测试通过 `--backend module:attr` 换成假后端，`attr` 是一个无参可调用对象，调用它得到后端实例。
 
 后端要实现两个方法，都只在推理线程上调用：

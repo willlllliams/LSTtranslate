@@ -56,43 +56,43 @@ class Topics:
 
 async def test_values_come_from_the_config_with_model_defaults(harness: Harness) -> None:
     presenter = harness.presenter
-    assert presenter.value("race", ("mode",)) == "saver"  # 默认值
-    assert presenter.value("race", ("show_source_marker", "bilingual")) is True
+    assert presenter.value("ocr", ("mode",)) == "structure"  # 默认值
+    assert presenter.value("bilingual", ("debounce_ms",)) == 400
     assert presenter.value("nope", ("x",)) is None  # 没有这一节
-    assert presenter.value("race", ("nope",)) is None
-    await harness.publish(default_config({"race": {"mode": "full"}}, revision=2))
-    assert presenter.value("race", ("mode",)) == "full"
+    assert presenter.value("ocr", ("nope",)) is None
+    await harness.publish(default_config({"ocr": {"mode": "text"}}, revision=2))
+    assert presenter.value("ocr", ("mode",)) == "text"
 
 
 async def test_set_value_sends_a_field_level_patch(harness: Harness) -> None:
-    harness.presenter.set_value("race", ("mode",), "full")
-    harness.presenter.set_value("race", ("show_source_marker", "bilingual"), False)
+    harness.presenter.set_value("ocr", ("mode",), "text")
+    harness.presenter.set_value("bilingual", ("debounce_ms",), 900)
     await harness.flush()
     assert [command.patch for command in harness.recorded.updates] == [
-        {"race": {"mode": "full"}},
-        {"race": {"show_source_marker": {"bilingual": False}}},
+        {"ocr": {"mode": "text"}},
+        {"bilingual": {"debounce_ms": 900}},
     ]
 
 
 async def test_rejection_is_recorded_per_location_and_cleared_on_edit(harness: Harness) -> None:
     presenter = harness.presenter
     topics = Topics(presenter)
-    await harness.publish(ConfigRejected(("race", "mode"), "不是可选值"))
-    assert presenter.rejection_for(("race", "mode")) == "不是可选值"
-    assert presenter.rejection_for(("race",)) == "不是可选值"  # 更粗的位置也能看到
-    assert presenter.rejection_for(("race", "show_source_marker")) is None
+    await harness.publish(ConfigRejected(("ocr", "mode"), "不是可选值"))
+    assert presenter.rejection_for(("ocr", "mode")) == "不是可选值"
+    assert presenter.rejection_for(("ocr",)) == "不是可选值"  # 更粗的位置也能看到
+    assert presenter.rejection_for(("ocr", "device")) is None
     assert topics.seen == [Topic.REJECTIONS]
 
-    presenter.set_value("race", ("mode",), "full")  # 用户换了一个值：提示消失
-    assert presenter.rejection_for(("race", "mode")) is None
+    presenter.set_value("ocr", ("mode",), "text")  # 用户换了一个值：提示消失
+    assert presenter.rejection_for(("ocr", "mode")) is None
     assert presenter.rejections == {}
 
 
 async def test_clear_rejection_of_unrelated_location_does_nothing(harness: Harness) -> None:
     topics = Topics(harness.presenter)
-    await harness.publish(ConfigRejected(("race", "mode"), "x"))
+    await harness.publish(ConfigRejected(("ocr", "mode"), "x"))
     topics.seen.clear()
-    harness.presenter.clear_rejection(("ocr", "mode"))
+    harness.presenter.clear_rejection(("ocr", "device"))
     assert topics.seen == []
 
 
@@ -407,7 +407,7 @@ async def test_language_follows_the_config_and_notifies(harness: Harness) -> Non
 async def test_closed_presenter_ignores_everything(harness: Harness) -> None:
     presenter = harness.presenter
     presenter.close()
-    presenter.set_value("race", ("mode",), "full")
+    presenter.set_value("ocr", ("mode",), "text")
     presenter.reset_stats()
     assert not presenter.set_engine_field("deepseek", "name", "x")
     await harness.flush()

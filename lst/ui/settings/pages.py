@@ -1,10 +1,10 @@
-"""设置窗口的页面基类，以及由声明生成的三个页面：常规、热键、竞速（需求 UI-05）。
+"""设置窗口的页面基类，以及常规、全局热键、竞速三个页面（需求 UI-05、UI-09）。
 
 页面是一个可滚动的区域，里面从上到下排列分组标题、说明文字和设置卡片。页面不保存状态：
 展示器通过 ``Topic`` 通知哪类数据变了，页面据此刷新自己的控件。
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -28,6 +28,8 @@ from lst.ui.i18n import tr
 from lst.ui.settings.cards import Binding, CardBuilder, FieldDef
 from lst.ui.settings.controls import SettingCard, ThemedLabel
 from lst.ui.settings.dialogs import Dialogs
+from lst.ui.settings.nav import nav_title
+from lst.ui.settings.page_storage import StorageSection
 from lst.ui.settings.presenter import Location, SettingsPresenter, Topic
 from lst.ui.settings.strings import format_duration, format_percent
 from lst.ui.theme import TOKENS, Glyph, fluent_icon
@@ -53,6 +55,10 @@ class Intro:
 type PageItem = Title | Intro | FieldDef
 
 
+def _no_navigation(_page_id: str) -> None:
+    return None
+
+
 class SettingsPage(QScrollArea):
     """页面基类：标题、可滚动的内容区，以及与展示器的连接。"""
 
@@ -65,6 +71,8 @@ class SettingsPage(QScrollArea):
         self.builder = builder
         self.dialogs = dialogs
         self.bindings: list[Binding] = []
+        self.navigate: Callable[[str], None] = _no_navigation
+        """跳到另一个页面（参数是页面标识）。窗口在页面构造完成后接上；单独使用页面时什么也不做。"""
         self._titles: list[tuple[QLabel, str]] = []
         self._intros: list[tuple[QLabel, str]] = []
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -146,7 +154,7 @@ class SettingsPage(QScrollArea):
     # ------------------------------------------------------------------ 刷新
 
     def retranslate(self) -> None:
-        self.heading.setText(tr(f"settings.nav.{self.page_id}"))
+        self.heading.setText(nav_title(self.page_id))
         for label, key in self._titles:
             label.setText(tr(key))
         for label, key in self._intros:
@@ -186,11 +194,26 @@ class SettingsPage(QScrollArea):
             binding.editor.flush()
 
     def on_shown(self) -> None:
-        """页面被切换到前台时调用。"""
+        """页面被切换到前台时调用：立即按当前内容排版。
+
+        页面隐藏时到达的数据（引擎目录、配置）会让卡片显示或隐藏，内容的最小高度要等页面显示后的下一轮事件
+        才传到滚动区域；在那之前卡片挤在一起，Tab 顺序与屏幕位置对不上。
+        """
+        content = self.widget()
+        layout = content.layout() if content is not None else None
+        if content is not None and layout is not None:
+            self.body.activate()
+            layout.activate()
+            hint = content.minimumSizeHint()
+            if content.height() < hint.height():
+                content.resize(content.width(), hint.height())
 
 
 class GeneralPage(SettingsPage):
-    """常规：界面语言、主题。日志级别没有对应的配置节，暂不提供。"""
+    """常规：界面语言、主题，以及存储位置（数据目录与模型目录，``page_storage``）。
+
+    日志级别没有对应的配置节，暂不提供。
+    """
 
     page_id = "general"
     icon = Glyph.SETTINGS
@@ -203,14 +226,30 @@ class GeneralPage(SettingsPage):
                 FieldDef("ui", ("language",)),
                 Title("settings.section.appearance"),
                 FieldDef("ui", ("theme",)),
+                Title("settings.section.storage"),
             ]
         )
+        self.storage = StorageSection(presenter, dialogs)
+        for card in self.storage.cards:
+            self.add_card(card)
+
+    def retranslate(self) -> None:
+        super().retranslate()
+        self.storage.retranslate()
+
+    def refresh(self, topic: Topic) -> None:
+        super().refresh(topic)
+        if topic is Topic.STORAGE:
+            self.storage.refresh()
 
 
-class HotkeysPage(SettingsPage):
-    """热键：截屏翻译与双语窗口的全局热键。"""
+class GlobalHotkeysPage(SettingsPage):
+    """热键与键位 › 全局热键：截屏翻译与双语窗口两个全局热键（需求 UI-09）。
 
-    page_id = "hotkeys"
+    三个窗口里的键位各占一个子页，见 ``page_bindings.BindingsPage``。
+    """
+
+    page_id = "hotkeys.global"
     icon = Glyph.KEYBOARD
 
     def __init__(self, presenter: SettingsPresenter, builder: CardBuilder, dialogs: Dialogs) -> None:
@@ -352,7 +391,7 @@ class StatsPanel(QWidget):
 
 
 class RacePage(SettingsPage):
-    """竞速：结束方式、来源标记、双语窗口的设置，以及竞速统计。"""
+    """竞速：覆盖窗口的来源标记、双语窗口的设置，以及竞速统计。"""
 
     page_id = "race"
     icon = Glyph.LIGHTNING
@@ -362,13 +401,10 @@ class RacePage(SettingsPage):
         self.build(
             [
                 Title("settings.section.race_mode"),
-                FieldDef("race", ("mode",)),
                 FieldDef("race", ("show_source_marker", "overlay")),
-                FieldDef("race", ("show_source_marker", "bilingual")),
                 Title("settings.section.bilingual"),
                 FieldDef("bilingual", ("pair",), widget="pair"),
                 FieldDef("bilingual", ("debounce_ms",), suffix="settings.suffix.ms"),
-                FieldDef("bilingual", ("auto_billing",)),
                 FieldDef("bilingual", ("layout",)),
                 Title("settings.section.stats"),
             ]

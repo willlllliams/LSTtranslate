@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import httpx
@@ -21,8 +21,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+import lst.app.bootstrap as bootstrap
 from lst.app.bootstrap import Application, AppOptions
-from lst.app.paths import AppPaths
+from lst.app.paths import AppPaths, DataDirChoice
 from lst.contracts.config import ConfigRejected, UpdateConfig
 from lst.contracts.events import (
     EngineRoster,
@@ -34,8 +35,9 @@ from lst.contracts.events import (
 )
 from lst.contracts.ids import EngineId, Lang, SessionId
 from lst.contracts.models import ModelCatalog, ModelsInstalled
-from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineKind
+from lst.contracts.ocr_engines import OcrEngineCatalog, OcrEngineErrorCode, OcrEngineKind, OcrEngineState
 from lst.contracts.ports import WorkerState
+from lst.contracts.storage import ChangeDataDir, ChangeModelsDir, DataDirSource, RestartApp, StorageLocations
 from lst.kernel import ModuleContext
 from lst.services.config import MemorySecretStore
 from lst.ui.settings.window import SettingsWindow
@@ -55,6 +57,7 @@ OCR_FAKE = (
     "tests.workers.ocr.fake_backend:FakeOcrBackend",
 )
 INDEX_URL = "https://index.invalid/index.json"
+DICT_INDEX_URL = "https://dicts.invalid/dict-index.json"
 INDEX = [
     {
         "from_code": "en",
@@ -73,6 +76,8 @@ class _Network:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(str(request.url))
+        if str(request.url) == DICT_INDEX_URL:
+            return httpx.Response(200, content=b'{"version": 1, "packs": []}')
         if str(request.url) == INDEX_URL:
             return httpx.Response(200, content=json.dumps(INDEX).encode())
         return httpx.Response(404)
@@ -90,6 +95,7 @@ async def test_app_starts_translates_in_bilingual_entry_and_quits(qapp: QApplica
             tray_icon=None,
             http_transport=httpx.MockTransport(network.handle),
             models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
         ),
         qapp,
     )
@@ -98,11 +104,15 @@ async def test_app_starts_translates_in_bilingual_entry_and_quits(qapp: QApplica
         bus = app.bus
         assert bus is not None and app.nmt is not None
 
-        # 配置文件自动生成，默认引擎是本地 NMT。
+        # 配置文件自动生成，默认引擎是本地 NMT、两个未启用的免费接口与词典（词典优先级最低）。
         config_file = tmp_path / "data" / "config" / "settings.toml"
         assert config_file.is_file()
-        assert [e["kind"] for e in tomllib.loads(config_file.read_text(encoding="utf-8"))["engines"]] == [
-            "local_nmt"
+        engines = tomllib.loads(config_file.read_text(encoding="utf-8"))["engines"]
+        assert [(e["kind"], e["enabled"]) for e in engines] == [
+            ("local_nmt", True),
+            ("google_free", False),
+            ("microsoft_free", False),
+            ("dictionary", True),
         ]
 
         assert await asyncio.wait_for(app.nmt.wait_for_state(WorkerState.READY, WorkerState.FAILED), 60) is (
@@ -133,13 +143,15 @@ async def test_app_starts_translates_in_bilingual_entry_and_quits(qapp: QApplica
 
         updates: list[SegmentsUpdated] = []
         bus.subscribe(SegmentsUpdated, updates.append)
-        bus.send(TranslateText(SessionId("s1"), "hello world", Lang("en"), Lang("zh-Hans")))
+        bus.send(
+            TranslateText(SessionId("s1"), "hello world", Lang("en"), Lang("zh-Hans"), EngineId("argos"))
+        )
 
         async def translated() -> str:
             while True:
                 for update in updates:
                     for view in update.views:
-                        if view.finished and view.winner == EngineId("argos"):
+                        if view.finished and view.shown_engine == EngineId("argos"):
                             return view.display_text
                 await asyncio.sleep(0.05)
 
@@ -158,7 +170,7 @@ async def test_app_starts_translates_in_bilingual_entry_and_quits(qapp: QApplica
 
         catalog = await asyncio.wait_for(index_loaded(), 10)
         assert any((str(m.source), str(m.target)) == ("en", "ja") for m in catalog.models)
-        assert network.requests == [INDEX_URL]
+        assert sorted(network.requests) == sorted([INDEX_URL, DICT_INDEX_URL])
 
         # 托盘菜单的“设置”发送 OpenSettings，设置窗口显示出来（需求 UI-05）。
         bus.send(OpenSettings())
@@ -196,6 +208,7 @@ async def test_changing_model_dir_replaces_models_module(qapp: QApplication, tmp
             tray_icon=None,
             http_transport=httpx.MockTransport(network.handle),
             models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
         ),
         qapp,
     )
@@ -243,6 +256,7 @@ async def test_switching_ocr_engine_restarts_ocr_process_with_new_command(
             tray_icon=None,
             http_transport=httpx.MockTransport(_Network().handle),
             models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
         ),
         qapp,
     )
@@ -306,6 +320,7 @@ async def test_startup_config_errors_reach_modules_started_after_the_tray(
             extra_modules=(recorder,),
             http_transport=httpx.MockTransport(_Network().handle),
             models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
         ),
         qapp,
     )
@@ -314,5 +329,178 @@ async def test_startup_config_errors_reach_modules_started_after_the_tray(
         assert app.bus is not None
         await app.bus.drain()
         assert [r.location for r in recorder.rejections] == [("ocr", "mode")]
+    finally:
+        await app.stop()
+
+
+@pytest.mark.timeout(120)
+async def test_paddle_gpu_on_cpu_runtime_shows_error_in_the_catalog(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """用户报告的问题：PaddleOCR 选了显卡推理而装的是 CPU 版。进程以依赖错误退出进入 FAILED，引擎目录里
+    PaddleOCR 显示出错与原因；之后保存与 OCR 无关的设置不会把进程重新拉起（卡片不会回到“正在加载”）。"""
+    failing = (
+        sys.executable,
+        "-m",
+        "lst.workers.ocr_worker",
+        "--backend",
+        "tests.integration.gpu_failure_backend:CpuOnlyBackend",
+    )
+
+    def command(engine: OcrEngineKind) -> Sequence[str]:
+        return failing if engine is OcrEngineKind.PADDLE else OCR_FAKE
+
+    paths = AppPaths(tmp_path / "data")
+    paths.ensure()
+    paths.config_file.write_text('[ocr]\nengine = "paddle"\ndevice = "gpu"\n', encoding="utf-8")
+    app = Application(
+        AppOptions(
+            paths=paths,
+            secrets=MemorySecretStore(),
+            nmt_command=NMT_FAKE,
+            ocr_command=command,
+            tray_icon=None,
+            http_transport=httpx.MockTransport(_Network().handle),
+            models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
+        ),
+        qapp,
+    )
+    await app.start()
+    try:
+        bus, ocr, engines = app.bus, app.ocr, app.ocr_engines
+        assert bus is not None and ocr is not None and engines is not None
+        if not engines.can_run(OcrEngineKind.PADDLE):
+            pytest.skip("本机没有可用的 PaddleOCR 开发环境")
+        assert await asyncio.wait_for(ocr.wait_for_state(WorkerState.FAILED), 60) is WorkerState.FAILED
+
+        def paddle_state() -> tuple[OcrEngineState, OcrEngineErrorCode | None, str]:
+            catalog = bus.latest(OcrEngineCatalog)
+            info = catalog.engine(OcrEngineKind.PADDLE) if catalog is not None else None
+            assert info is not None
+            return info.state, info.error_code, info.detail
+
+        await bus.drain()
+        state, code, detail = paddle_state()
+        assert state is OcrEngineState.ERROR and code is OcrEngineErrorCode.RUNTIME_MISMATCH
+        assert "DEPENDENCY_ERROR" in detail
+        bus.send(UpdateConfig({"ui": {"theme": "dark"}}))
+        await asyncio.sleep(1.0)
+        await bus.drain()
+        assert ocr.state is WorkerState.FAILED, "无关的设置变化不应重新启动确定性故障的进程"
+        assert paddle_state()[0] is OcrEngineState.ERROR
+    finally:
+        await app.stop()
+
+
+def _storage_app(qapp: QApplication, tmp_path: Path, network: _Network) -> Application:
+    data = tmp_path / "data"
+    return Application(
+        AppOptions(
+            paths=AppPaths(data),
+            secrets=MemorySecretStore(),
+            nmt_command=NMT_FAKE,
+            ocr_command=lambda _engine: OCR_FAKE,
+            tray_icon=None,
+            http_transport=httpx.MockTransport(network.handle),
+            models_index_url=INDEX_URL,
+            dict_index_url=DICT_INDEX_URL,
+            data=DataDirChoice(data, DataDirSource.CHOSEN, tmp_path / "roaming" / "location.json"),
+        ),
+        qapp,
+    )
+
+
+async def _settled(app: Application, predicate: Callable[[StorageLocations], bool]) -> StorageLocations:
+    assert app.bus is not None
+    while True:
+        state = app.bus.latest(StorageLocations)
+        if state is not None and state.task is None and predicate(state):
+            return state
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.timeout(120)
+async def test_moving_the_models_dir_at_runtime(
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """设置里更改模型目录并移动现有模型：NMT 与 OCR 进程停下再按新目录启动，模型管理、OCR 引擎、显卡运行库
+    模块与字典引擎都换到新目录，配置写入 [storage].models_dir，不需要重启程序（需求 MOD-04、CFG-07）。"""
+    # 源码版在模型目录里没有模型时回退到仓库的 assets 目录；这里检查的是新目录本身，关掉回退。
+    monkeypatch.setattr(bootstrap, "LEGACY_NMT_MODELS", tmp_path / "no-legacy")
+    monkeypatch.setattr(bootstrap, "LEGACY_OCR_MODELS", tmp_path / "no-legacy")
+    app = _storage_app(qapp, tmp_path, _Network())
+    await app.start()
+    try:
+        bus = app.bus
+        assert bus is not None and app.nmt is not None and app.ocr is not None
+        assert await asyncio.wait_for(app.nmt.wait_for_state(WorkerState.READY, WorkerState.FAILED), 60) is (
+            WorkerState.READY
+        )
+        old_root = tmp_path / "data" / "models"
+        (old_root / "dict" / "dict-en-ja.tsv.gz").write_bytes(b"not really a pack")
+        (old_root / "engines" / "rapid").mkdir(parents=True)
+        (old_root / "engines" / "rapid" / "installed.json").write_text("{}", encoding="utf-8")
+        old_pid, old_ocr_engines, old_models = app.nmt.pid, app.ocr_engines, app.models
+
+        new_root = tmp_path / "second-drive" / "LST models"
+        bus.send(ChangeModelsDir(str(new_root), move=True))
+        state = await asyncio.wait_for(_settled(app, lambda s: s.models_dir == str(new_root)), 60)
+
+        assert state.failure is None and not state.models_default
+        assert (new_root / "dict" / "dict-en-ja.tsv.gz").is_file()
+        assert (new_root / "engines" / "rapid" / "installed.json").is_file()
+        assert not (old_root / "dict").exists() and not (old_root / "engines").exists()
+        config = tomllib.loads((tmp_path / "data" / "config" / "settings.toml").read_text(encoding="utf-8"))
+        assert config["storage"]["models_dir"] == str(new_root)
+        assert app.models is not old_models and app.models is not None
+        assert app.models.models_dir == new_root / "nmt" and app.models.dict_dir == new_root / "dict"
+        assert app.ocr_engines is not old_ocr_engines
+        assert app.nmt_runtime is not None and app.nmt_runtime.root == new_root / "runtimes" / "cublas12"
+        assert app.engines is not None and app.engines.dict_dir == new_root / "dict"
+        catalog = bus.latest(OcrEngineCatalog)
+        assert catalog is not None
+
+        nmt = app.nmt
+
+        async def nmt_restarted() -> None:
+            while nmt.pid in (None, old_pid) or nmt.state is not WorkerState.READY:
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(nmt_restarted(), 60)
+        assert await asyncio.wait_for(app.ocr.wait_for_state(WorkerState.READY, WorkerState.FAILED), 60) is (
+            WorkerState.READY
+        )
+        # 停止时三个新模块按启动的逆序停止，旧模块不在启动记录里。
+        started = [module for module, _ in app._started]  # pyright: ignore[reportPrivateUsage]
+        assert app.models in started and old_models not in started and old_ocr_engines not in started
+    finally:
+        await app.stop()
+
+
+@pytest.mark.timeout(120)
+async def test_changing_the_data_dir_copies_then_restarts(qapp: QApplication, tmp_path: Path) -> None:
+    """设置里更改数据目录：在后台复制现有数据（缓存库正被使用），写位置文件，重启前继续用旧目录；
+    RestartApp 让组合根退出并记下“退出后重新启动”（需求 CFG-06）。"""
+    app = _storage_app(qapp, tmp_path, _Network())
+    await app.start()
+    try:
+        bus = app.bus
+        assert bus is not None
+        target = tmp_path / "new data"
+        bus.send(ChangeDataDir(str(target), copy=True))
+        state = await asyncio.wait_for(_settled(app, lambda s: s.pending_data_dir is not None), 60)
+        assert state.failure is None and state.pending_data_dir == str(target)
+        assert state.data_dir == str(tmp_path / "data")
+        location = json.loads((tmp_path / "roaming" / "location.json").read_text(encoding="utf-8"))
+        assert location == {"data_dir": str(target)}
+        assert (target / "config" / "settings.toml").is_file()
+        assert (target / "cache.sqlite3").is_file() and (target / "stats.sqlite3").is_file()
+        assert not (target / "tmp").exists() and not (target / "lsttranslate.lock").exists()
+
+        assert not app.restart_requested
+        bus.send(RestartApp())
+        await asyncio.wait_for(app.wait_closed(), 5)
+        assert app.restart_requested
     finally:
         await app.stop()

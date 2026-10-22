@@ -12,13 +12,18 @@ from hypothesis import strategies as st
 
 from lst.contracts.ids import Lang
 from lst.services.race.langid import (
+    CONTEXT_FALLBACK,
     DEFAULT_CANDIDATES,
+    LONG_TEXT_LETTERS,
     SIMPLIFIED_ONLY,
     TRADITIONAL_ONLY,
+    Detection,
     LanguageDetector,
     SupportsLanguageDetection,
     chinese_variant,
+    has_text,
     normalize_lang,
+    resolve_with_context,
 )
 
 # ---------------------------------------------------------------- 规范化
@@ -236,9 +241,103 @@ def test_invalid_candidates(languages: list[str]) -> None:
 
 
 async def test_detect_many_keeps_order(detector: LanguageDetector) -> None:
-    texts = ["Wo ist der Bahnhof?", "12345", "這是繁體中文的句子", "今日はいい天気"]
+    texts = [
+        "Ich möchte heute Abend ins Kino gehen, wenn es nicht regnet.",
+        "12345",
+        "這是繁體中文的句子",
+        "今日はいい天気",
+    ]
     assert await detector.detect_many(texts) == ["de", None, "zh-Hant", "ja"]
     assert await detector.detect_many([]) == []
+
+
+# ---------------------------------------------------------------- 有没有可翻译的文字
+
+
+@pytest.mark.parametrize(
+    "text", ["•", "☆4", "12345", "2024-10-21", "$100.00", "😀🎉", "", "   ", "a", "v1.2.3"]
+)
+def test_symbols_and_single_letters_have_no_text(text: str) -> None:
+    assert not has_text(text)
+
+
+@pytest.mark.parametrize("text", ["中", "の", "Hi", "Star", "Python ☆4"])
+def test_words_and_single_cjk_characters_have_text(text: str) -> None:
+    assert has_text(text)
+
+
+# ---------------------------------------------------------------- 按上下文修正短文本
+
+
+GITHUB_PAGE = [
+    "Star",
+    "Code",
+    "Actions",
+    "Wiki",
+    "Sign in",
+    "Python ☆4",
+    "GitHub is where people build software and work together on projects.",
+    "This repository has been archived by the owner and is now read-only.",
+]
+
+
+async def test_short_words_follow_long_text_of_the_same_page(detector: LanguageDetector) -> None:
+    """英文页面上的短词单独检测会判成葡、德、法、越语（实测），按同一截屏里长文本的语言改判为英语。"""
+    for word, wrong in (("Star", "pt"), ("Code", "de"), ("Actions", "fr"), ("Wiki", "vi")):
+        assert detector.detect(word) == wrong  # 单段检测的误判，正是本规则要修正的
+    results = await detector.detect_many(GITHUB_PAGE)
+    assert results == ["en"] * len(GITHUB_PAGE)
+
+
+async def test_long_foreign_paragraph_keeps_its_own_language(detector: LanguageDetector) -> None:
+    """整段真正的外语长文本按自己的检测结果，不被页面上的多数语言改写。"""
+    german = "Die Bundesregierung hat am Mittwoch neue Regeln für den Datenschutz beschlossen."
+    results = await detector.detect_many([*GITHUB_PAGE, german])
+    assert results[-1] == "de"
+    assert results[:4] == ["en"] * 4
+
+
+async def test_short_words_follow_majority_of_long_texts(detector: LanguageDetector) -> None:
+    """长文本里德语多于英语时，短词取德语。"""
+    texts = [
+        "Wiki",
+        "Die Bundesregierung hat am Mittwoch neue Regeln für den Datenschutz beschlossen.",
+        "Der Zug nach Berlin fährt heute wegen Bauarbeiten eine Stunde später ab.",
+        "GitHub is where people build software and work together on projects.",
+    ]
+    assert (await detector.detect_many(texts))[0] == "de"
+
+
+async def test_short_words_without_long_text_fall_back_to_english(detector: LanguageDetector) -> None:
+    assert CONTEXT_FALLBACK == "en"
+    assert await detector.detect_many(["Star", "Code", "Actions", "Wiki", "Sign in"]) == ["en"] * 5
+
+
+async def test_chinese_context_does_not_capture_latin_words(detector: LanguageDetector) -> None:
+    """投票只在拉丁字母文本之间进行：中文页面上的英文短词仍按英语处理，中文段照常判为中文。"""
+    texts = ["今天天气很好，我们一起去公园散步，顺便看看新开的书店。", "Wiki", "设置"]
+    assert await detector.detect_many(texts) == ["zh-Hans", "en", "zh-Hans"]
+
+
+def test_resolve_with_context_rules() -> None:
+    """纯函数规则：可信的结果原样保留；不可信的拉丁字母文本取可信拉丁字母文本的众数，没有时取英语。"""
+    long_fr = Detection(Lang("fr"), LONG_TEXT_LETTERS, latin=True, confidence=0.9)
+    long_de = Detection(Lang("de"), LONG_TEXT_LETTERS + 5, latin=True, confidence=0.95)
+    low_conf_long = Detection(Lang("it"), LONG_TEXT_LETTERS + 10, latin=True, confidence=0.3)
+    short = Detection(Lang("pt"), 4, latin=True, confidence=0.9)
+    russian = Detection(Lang("ru"), 3, latin=False, confidence=0.6)
+    none = Detection(None, 0, latin=False, confidence=0.0)
+    assert resolve_with_context([short, long_fr, long_de, long_fr, low_conf_long, russian, none]) == [
+        "fr",
+        "fr",
+        "de",
+        "fr",
+        "fr",
+        "ru",
+        None,
+    ]
+    assert resolve_with_context([short, low_conf_long]) == ["en", "en"]
+    assert resolve_with_context([long_de, long_fr, short]) == ["de", "fr", "de"]  # 票数相同取先出现的
 
 
 async def test_detect_many_does_not_block_event_loop(detector: LanguageDetector) -> None:
@@ -315,8 +414,8 @@ async def test_concurrent_first_use_builds_once() -> None:
     detector = CountingDetector()
     results = await asyncio.gather(
         detector.warm_up(),
-        detector.detect_many(["Where is the station?"]),
-        detector.detect_many(["Où se trouve la gare ?"]),
+        detector.detect_many(["Where is the station? I would like to buy a ticket."]),
+        detector.detect_many(["Où se trouve la gare ? Je voudrais acheter un billet."]),
     )
     assert results[1:] == [["en"], ["fr"]]
     assert len(detector.builds) == 1

@@ -9,7 +9,15 @@
 """
 
 from lst.contracts.models import default_model_ids
+from lst.services.models.dictionary import DEFAULT_DICT_INDEX_URL
 from lst.services.models.index import DEFAULT_INDEX_URL, IndexEntry, parse_index
 from lst.services.models.module import ModelsModule
 
-__all__ = ["DEFAULT_INDEX_URL", "IndexEntry", "ModelsModule", "default_model_ids", "parse_index"]
+__all__ = [
+    "DEFAULT_DICT_INDEX_URL",
+    "DEFAULT_INDEX_URL",
+    "IndexEntry",
+    "ModelsModule",
+    "default_model_ids",
+    "parse_index",
+]
