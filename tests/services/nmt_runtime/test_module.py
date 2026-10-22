@@ -262,8 +262,11 @@ async def test_install_reports_persistent_or_unrelated_rename_errors(
         calls.append(1)
         raise PermissionError(13, "rename denied", str(source), winerror)
 
+    def skip_wait(_delay: float) -> None:
+        return None
+
     monkeypatch.setattr(runtime_package.os, "replace", denied)
-    monkeypatch.setattr(runtime_package.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(runtime_package.time, "sleep", skip_wait)
     rig.bus.send(InstallNmtRuntime())
     await rig.settle()
     assert len(calls) == attempts
