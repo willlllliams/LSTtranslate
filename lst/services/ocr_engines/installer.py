@@ -64,11 +64,13 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Final, Protocol
 
+from lst._fileops import publish_directory
 from lst.contracts.ocr_engines import (
     OcrEngineErrorCode,
     OcrEngineInfo,
@@ -194,16 +196,64 @@ def runtime_stamp(site: Path) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def runtime_generation(site: Path) -> str | None:
+    """每次发布新环境的独立代号，用于区分版本清单相同的两次安装。旧环境没有此字段。"""
+    data = read_marker(site / RUNTIME_STAMP)
+    value = data.get("generation") if data is not None else None
+    return value if isinstance(value, str) and value else None
+
+
+def discard_runtime_backup(paths: RuntimeInstallPaths) -> None:
+    """新安装标记已提交，旧环境仅作清理；清理失败保留备份供下次启动处理。"""
+    try:
+        remove_tree(paths.site_backup)
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "旧 OCR 运行环境暂时无法清理：%s", paths.site_backup, exc_info=True
+        )
+
+
+def recover_runtime(paths: RuntimeInstallPaths) -> None:
+    """恢复中断的环境切换：安装标记匹配当前环境则保留它，否则恢复旧环境。"""
+    if not paths.site_backup.is_dir():
+        return
+    marker = read_marker(paths.marker)
+    committed = marker.get("runtime_requirements_sha256") if marker is not None else None
+    current = runtime_stamp(paths.site_dir)
+    generation = marker.get("runtime_generation") if marker is not None else None
+    current_generation = runtime_generation(paths.site_dir)
+    if (
+        current
+        and current == committed
+        and current_generation is not None
+        and current_generation == generation
+    ):
+        discard_runtime_backup(paths)
+        return
+    # 新目录尚未提交，旧目录仍完整地留在备份中。
+    remove_tree(paths.site_dir)
+    publish_directory(paths.site_backup, paths.site_dir)
+
+
 def commit_runtime(paths: RuntimeInstallPaths, requirements_sha256: str) -> None:
-    """uv 成功后：写运行环境标记，原子改名 site.part → site，删除 uv 缓存。"""
+    """uv 成功后发布新环境；旧环境保留到最终安装标记提交，失败可恢复。"""
     part = paths.site_part
     if not part.is_dir() or not any(part.iterdir()):
         raise InstallFailure(OcrEngineErrorCode.INSTALL_FAILED, "uv 成功退出，但目标目录是空的")
     (part / RUNTIME_STAMP).write_text(
-        json.dumps({"requirements_sha256": requirements_sha256}), encoding="utf-8"
+        json.dumps({"requirements_sha256": requirements_sha256, "generation": uuid.uuid4().hex}),
+        encoding="utf-8",
     )
-    remove_tree(paths.site_dir)
-    os.replace(part, paths.site_dir)
+    recover_runtime(paths)
+    if paths.site_backup.exists():
+        raise PermissionError(f"旧运行环境备份尚未清理：{paths.site_backup}")
+    if paths.site_dir.exists():
+        publish_directory(paths.site_dir, paths.site_backup)
+    try:
+        publish_directory(part, paths.site_dir)
+    except BaseException:
+        recover_runtime(paths)
+        raise
     remove_tree(paths.uv_cache)
 
 
@@ -457,6 +507,8 @@ class RuntimeEngine:
         variant = marker_variant(marker)
         if self.missing_parts(paths):
             return False, "", variant
+        if runtime_generation(paths.site_dir) != marker.get("runtime_generation"):
+            return False, self.outdated_detail, variant
         requirements = paths.requirements(variant)
         if not requirements.is_file():
             return True, "", variant
@@ -485,6 +537,17 @@ class RuntimeEngine:
             return
         paths = self._paths
         if cleanup:
+            try:
+                await blocking(recover_runtime, paths)
+            except OSError as exc:
+                self.logger.warning("恢复 %s 运行环境失败：%s", self.title, exc)
+                self._installed_variant = None
+                self._runtime_intact = False
+                self.set_state(
+                    OcrEngineState.ERROR, error=OcrEngineErrorCode.DISK, detail=describe_error(exc)
+                )
+                await self.scan_models()
+                return
             removed = await blocking(
                 remove_leftovers, [paths.site_part, paths.uv_cache], self.leftover_dir(paths), self.logger
             )
@@ -725,6 +788,13 @@ class RuntimeEngine:
     async def _settle_after_abort(self) -> None:
         """取消或任务没跑起来之后：旧运行环境还在就回到 INSTALLED（旧版本），否则 NOT_INSTALLED。"""
         paths = self.require_paths()
+        try:
+            await blocking(recover_runtime, paths)
+        except OSError as exc:
+            self._installed_variant = None
+            self._runtime_intact = False
+            self.set_state(OcrEngineState.ERROR, error=OcrEngineErrorCode.DISK, detail=describe_error(exc))
+            return
         installed, detail, variant = await blocking(self.install_status, paths)
         self._installed_variant = variant if installed else None
         self._runtime_intact = installed
@@ -785,6 +855,7 @@ class RuntimeEngine:
             paths.site_part,
             paths.uv_cache,
             paths.site_dir,
+            paths.site_backup,
             *self.uninstall_targets(paths),
         ):
             remove_tree(target)
@@ -829,10 +900,10 @@ class RuntimeEngine:
         try:
             await self._install_steps(paths, variant)
         except asyncio.CancelledError:
+            await self._settle_after_abort()
             await self._cleanup(paths)
             self.logger.info("已取消 %s 的安装", self.title)
             await self.scan_models()
-            await self._settle_after_abort()
             raise
         except InstallFailure as failure:
             await self._fail(paths, failure.code, failure.detail)
@@ -894,6 +965,7 @@ class RuntimeEngine:
         self.set_state(OcrEngineState.INSTALLING)
         self._progress = 1.0
         await blocking(self._write_marker, paths, variant)
+        await blocking(discard_runtime_backup, paths)
 
     def advance(self, part: str, fraction: float, *, force: bool = False) -> None:
         """更新一段的完成比例，按节流间隔发布进度。进度只增不减。"""
@@ -973,15 +1045,16 @@ class RuntimeEngine:
         paths.engine_dir.mkdir(parents=True, exist_ok=True)
         temporary = paths.marker_part
         defaults = [spec.id for spec in self.model_specs() if spec.default]
+        marker: dict[str, object] = {
+            "runtime_requirements_sha256": runtime_stamp(paths.site_dir),
+            "variant": variant.value,
+            "models": defaults,
+        }
+        generation = runtime_generation(paths.site_dir)
+        if generation is not None:
+            marker["runtime_generation"] = generation
         temporary.write_text(
-            json.dumps(
-                {
-                    "runtime_requirements_sha256": runtime_stamp(paths.site_dir),
-                    "variant": variant.value,
-                    "models": defaults,
-                },
-                indent=2,
-            ),
+            json.dumps(marker, indent=2),
             encoding="utf-8",
         )
         os.replace(temporary, paths.marker)
@@ -997,6 +1070,14 @@ class RuntimeEngine:
             self.logger.warning("清理 %s 的安装半成品失败", self.title, exc_info=True)
 
     async def _fail(self, paths: RuntimeInstallPaths, code: OcrEngineErrorCode, detail: str) -> None:
+        try:
+            await blocking(recover_runtime, paths)
+        except OSError as exc:
+            self.logger.warning("恢复 %s 运行环境失败：%s", self.title, exc)
+            detail = f"{detail}；恢复旧运行环境失败：{describe_error(exc)}"
+        installed, _, variant = await blocking(self.install_status, paths)
+        self._runtime_intact = installed
+        self._installed_variant = variant if installed else None
         await self._cleanup(paths)
         await self.scan_models()
         self.logger.warning("安装 %s 失败（%s）：%s", self.title, code.value, detail)

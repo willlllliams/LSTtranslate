@@ -864,6 +864,8 @@ class Application:
             if self.ocr is not None and self._ocr_engine is kind:
                 await self.ocr.stop()
                 self._ocr_key = None
+                # 显式停机后的回滚可能恢复同一版本，目录指纹相同也必须重新启动。
+                self._engines_fingerprint = None
                 if self.ocr_engines is not None:
                     self.ocr_engines.set_process_state(kind, None)
 

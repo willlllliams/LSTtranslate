@@ -4,6 +4,7 @@ r"""需要下载的 OCR 引擎（PaddleOCR、RapidOCR）的目录约定、运行
 （``RuntimeInstallPaths``，组合根构造时传入，本模块不导入 lst.app）：
 
 - ``<模型目录>\engines\<引擎>\site``：运行环境；
+- ``<模型目录>\engines\<引擎>\site.previous``：版本切换中的旧运行环境，安装标记提交后清理；
 - ``<模型目录>\engines\<引擎>\site.part``：安装中的运行环境，uv 成功后用 ``os.replace`` 原子改名为 site；
 - ``<模型目录>\engines\<引擎>\uv-cache``：安装期间 uv 的缓存目录，装完删除；
 - ``<模型目录>\engines\<引擎>\installed.json``：安装完成的标记，运行环境与默认模型都就位后最后写入，
@@ -134,6 +135,11 @@ class RuntimeInstallPaths:
     @property
     def site_part(self) -> Path:
         return self.engine_dir / "site.part"
+
+    @property
+    def site_backup(self) -> Path:
+        """换版本时保留的旧运行环境，安装标记提交后才清理。"""
+        return self.engine_dir / "site.previous"
 
     @property
     def uv_cache(self) -> Path:

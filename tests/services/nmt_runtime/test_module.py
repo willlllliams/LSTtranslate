@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 import pytest
 
+from lst import _fileops
 from lst.contracts.nmt_runtime import (
     CancelNmtRuntimeInstall,
     DeleteNmtRuntime,
@@ -31,7 +32,6 @@ from lst.contracts.nmt_runtime import (
 from lst.kernel import EventBus, ModuleContext
 from lst.services._shared.gpu import NVIDIA_VENDOR_ID, GpuAdapter
 from lst.services.nmt_runtime import NmtRuntimeModule, WheelSpec, installed_bin_dir
-from lst.services.nmt_runtime import package as runtime_package
 from lst.services.nmt_runtime.package import MARKER, PART_SUFFIX, TMP_SUFFIX, scan_installed
 
 VERSION = "12.9.2.10"
@@ -242,8 +242,8 @@ async def test_install_recovers_from_transient_rename_denial(
             raise PermissionError(13, "temporary rename denial", str(source), winerror)
         replace(source, target)
 
-    monkeypatch.setattr(runtime_package.os, "replace", temporarily_locked)
-    monkeypatch.setattr(runtime_package.time, "sleep", delays.append)
+    monkeypatch.setattr(_fileops.os, "replace", temporarily_locked)
+    monkeypatch.setattr(_fileops.time, "sleep", delays.append)
     rig.bus.send(InstallNmtRuntime())
     await rig.settle()
     assert rig.info.state is NmtRuntimeState.INSTALLED
@@ -265,8 +265,8 @@ async def test_install_reports_persistent_or_unrelated_rename_errors(
     def skip_wait(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr(runtime_package.os, "replace", denied)
-    monkeypatch.setattr(runtime_package.time, "sleep", skip_wait)
+    monkeypatch.setattr(_fileops.os, "replace", denied)
+    monkeypatch.setattr(_fileops.time, "sleep", skip_wait)
     rig.bus.send(InstallNmtRuntime())
     await rig.settle()
     assert len(calls) == attempts

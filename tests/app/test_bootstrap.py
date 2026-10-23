@@ -438,6 +438,19 @@ async def test_before_uninstall_stops_the_process_using_the_engine(rig: Rig) -> 
     assert rig.ocr.reloads("language") == ["en", "en"]
 
 
+async def test_rolled_back_runtime_restarts_even_when_the_installed_variant_is_unchanged(rig: Rig) -> None:
+    rig.engines.runnable = {W, P}
+    rig.engines.variants = {P: "cpu"}
+    rig.configure({"ocr": {"engine": "paddle", "device": "cpu"}})
+    await rig.bus.drain()
+    assert rig.ocr.reloads("device") == ["cpu"]
+    # 更新前显式停机；发布失败并回滚，最终可用性与版本和更新前相同。
+    await rig.app._before_ocr_uninstall(P)  # pyright: ignore[reportPrivateUsage]
+    rig.engines.publish()
+    await rig.bus.drain()
+    assert rig.ocr.reloads("device") == ["cpu", "cpu"]
+
+
 @pytest.mark.parametrize(
     ("state", "overlay"),
     [

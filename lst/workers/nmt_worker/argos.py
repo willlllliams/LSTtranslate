@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from lst._fileops import publish_directory
 from lst.workers.nmt_worker.backend import Pair
 from lst.workers.nmt_worker.languages import from_argos_code
 
@@ -175,7 +176,7 @@ def extract_package(package: ArgosPackage, extract_root: Path) -> Path:
                     shutil.copyfileobj(source, sink, 1 << 20)
         (staging / _COMPLETE_MARKER).write_text(package.digest, encoding="ascii")
         try:
-            staging.rename(target)
+            publish_directory(staging, target)
         except OSError:
             # 另一个进程刚好解压完同一个包。
             if not (target / _COMPLETE_MARKER).is_file():

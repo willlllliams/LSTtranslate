@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from lst import _fileops
 from lst.workers.nmt_worker.argos import (
     InvalidPackage,
     extract_package,
@@ -139,3 +140,59 @@ def test_unsafe_member_path_is_rejected(tmp_path: Path) -> None:
         extract_package(package, tmp_path / "extracted")
     assert not (tmp_path / "evil.txt").exists()
     assert not any((tmp_path / "extracted").iterdir())
+
+
+def test_extract_recovers_from_transient_publish_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = read_package(make_package(tmp_path / "models", "en", "de"))
+    replace = _fileops.os.replace
+    calls: list[Path] = []
+    delays: list[float] = []
+
+    def transient(source: Path, target: Path) -> None:
+        calls.append(source)
+        assert (source / ".complete").read_text("ascii") == package.digest
+        if len(calls) < 3:
+            raise PermissionError(13, "temporarily busy", str(source), 5)
+        replace(source, target)
+
+    monkeypatch.setattr(_fileops.os, "replace", transient)
+    monkeypatch.setattr(_fileops.time, "sleep", delays.append)
+    root = extract_package(package, tmp_path / "extracted")
+    assert (root / "model" / "model.bin").read_bytes() == b"model"
+    assert len(calls) == 3 and delays == [0.025, 0.05]
+    assert not list(root.parent.glob(".tmp-*"))
+
+
+def test_extract_reports_persistent_denial_and_cleans_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = read_package(make_package(tmp_path / "models", "en", "de"))
+
+    def denied(source: Path, _target: Path) -> None:
+        raise PermissionError(13, "busy", str(source), 5)
+
+    delays: list[float] = []
+    monkeypatch.setattr(_fileops.os, "replace", denied)
+    monkeypatch.setattr(_fileops.time, "sleep", delays.append)
+    with pytest.raises(PermissionError):
+        extract_package(package, tmp_path / "extracted")
+    assert len(delays) == 6
+    assert not extracted_dir(package, tmp_path / "extracted").exists()
+    assert not list((tmp_path / "extracted").glob(".tmp-*"))
+
+
+def test_concurrent_completed_extraction_is_reused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package = read_package(make_package(tmp_path / "models", "en", "de"))
+
+    def another_process(_source: Path, target: Path) -> None:
+        target.mkdir()
+        (target / ".complete").write_text(package.digest, encoding="ascii")
+        (target / "winner").write_bytes(b"other process")
+        raise FileExistsError("another process finished first")
+
+    monkeypatch.setattr(_fileops.os, "replace", another_process)
+    root = extract_package(package, tmp_path / "extracted")
+    assert (root / "winner").read_bytes() == b"other process"
+    assert not list(root.parent.glob(".tmp-*"))

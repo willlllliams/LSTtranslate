@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from lst import _fileops
 from lst.contracts.ocr_engines import OcrEngineErrorCode
 from lst.services.ocr_engines import archive as archive_module
 from lst.services.ocr_engines.archive import InvalidArchive, dir_size, extract_model
@@ -145,6 +146,35 @@ def test_extract_model_replaces_stale_directory(tmp_path: Path) -> None:
     (final / "stale").write_bytes(b"old")
     extract_model(write_tar(tmp_path / "a.tar", model_tar("M")), tmp_path / "x", final, "M")
     assert not (final / "stale").exists()
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_model_publication_handles_temporary_and_persistent_rename_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persistent: bool
+) -> None:
+    archive = write_tar(tmp_path / "a.tar.part", model_tar("M"))
+    final, staging = tmp_path / "models" / "M", tmp_path / ".M.extract"
+    replace = _fileops.os.replace
+    calls: list[Path] = []
+    delays: list[float] = []
+
+    def locked(source: Path, target: Path) -> None:
+        calls.append(source)
+        if persistent or len(calls) < 3:
+            raise PermissionError(13, "busy", str(source), 32)
+        replace(source, target)
+
+    monkeypatch.setattr(_fileops.os, "replace", locked)
+    monkeypatch.setattr(_fileops.time, "sleep", delays.append)
+    if persistent:
+        with pytest.raises(PermissionError):
+            extract_model(archive, staging, final, "M")
+        assert not final.exists() and archive.exists() and len(delays) == 6
+    else:
+        extract_model(archive, staging, final, "M")
+        assert (final / "inference.yml").is_file() and not archive.exists()
+        assert len(calls) == 3 and delays == [0.025, 0.05]
+    assert not staging.exists()
 
 
 @pytest.mark.parametrize(

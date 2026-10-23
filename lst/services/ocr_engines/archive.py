@@ -19,6 +19,7 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+from lst._fileops import publish_directory
 from lst.services._shared.download import dir_size
 from lst.services.ocr_engines.layout import model_ready
 
@@ -84,7 +85,7 @@ def extract_model(archive: Path, extract_dir: Path, final_dir: Path, model_name:
         root = _select_root(extract_dir, model_name)
         remove_tree(final_dir)
         final_dir.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(root, final_dir)
+        publish_directory(root, final_dir)
     finally:
         remove_tree(extract_dir)
     archive.unlink(missing_ok=True)
