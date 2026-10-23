@@ -207,11 +207,11 @@ def _save_shot(widget: QWidget, name: str) -> Path | None:
     return path
 
 
-def _write_config(paths: AppPaths) -> None:
+def _write_config(paths: AppPaths, *, language: str = "en") -> None:
     """预先写好的配置：Windows OCR（英文）、只有本地 NMT 一个引擎实例、截屏译成简体中文、不冲突的热键。"""
     paths.ensure()
     document: dict[str, Any] = {
-        "ocr": {"engine": "windows", "language": "en"},
+        "ocr": {"engine": "windows", "language": language},
         "screenshot": {"target_lang": "zh-Hans"},
         "hotkeys": {"capture": "Ctrl+Alt+Shift+F20", "bilingual": "Ctrl+Alt+Shift+F21"},
         "engines": [{"kind": "local_nmt", "id": "argos", "name": "Argos", "priority": 1}],

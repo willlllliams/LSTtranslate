@@ -1,0 +1,842 @@
+{
+  "sample": "blog-en",
+  "width": 1908,
+  "height": 1150,
+  "source_sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2",
+  "language": "en-US",
+  "truth": [],
+  "lines": [
+    [
+      {
+        "text": "'roduct",
+        "x": 0.0,
+        "y": 39.0,
+        "width": 75.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "Development",
+        "x": 110.0,
+        "y": 39.0,
+        "width": 138.0,
+        "height": 22.0
+      }
+    ],
+    [
+      {
+        "text": "Mobile",
+        "x": 283.0,
+        "y": 39.0,
+        "width": 68.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "Community",
+        "x": 386.0,
+        "y": 39.0,
+        "width": 118.0,
+        "height": 22.0
+      }
+    ],
+    [
+      {
+        "text": "Tips",
+        "x": 538.0,
+        "y": 39.0,
+        "width": 43.0,
+        "height": 22.0
+      },
+      {
+        "text": "&",
+        "x": 589.0,
+        "y": 39.0,
+        "width": 15.0,
+        "height": 17.0
+      },
+      {
+        "text": "Guides",
+        "x": 612.0,
+        "y": 39.0,
+        "width": 73.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "GET",
+        "x": 1811.0,
+        "y": 39.0,
+        "width": 48.0,
+        "height": 17.0
+      },
+      {
+        "text": "THU",
+        "x": 1866.0,
+        "y": 39.0,
+        "width": 42.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "LATEST",
+        "x": 167.0,
+        "y": 157.0,
+        "width": 75.0,
+        "height": 14.0
+      },
+      {
+        "text": "POST",
+        "x": 249.0,
+        "y": 157.0,
+        "width": 53.0,
+        "height": 14.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 161.0,
+        "y": 212.0,
+        "width": 365.0,
+        "height": 50.0
+      },
+      {
+        "text": "for",
+        "x": 550.0,
+        "y": 211.0,
+        "width": 81.0,
+        "height": 51.0
+      },
+      {
+        "text": "iOS:",
+        "x": 654.0,
+        "y": 211.0,
+        "width": 123.0,
+        "height": 51.0
+      },
+      {
+        "text": "A",
+        "x": 802.0,
+        "y": 212.0,
+        "width": 46.0,
+        "height": 49.0
+      },
+      {
+        "text": "First",
+        "x": 872.0,
+        "y": 212.0,
+        "width": 129.0,
+        "height": 50.0
+      },
+      {
+        "text": "Look",
+        "x": 1025.0,
+        "y": 212.0,
+        "width": 144.0,
+        "height": 50.0
+      },
+      {
+        "text": "at",
+        "x": 1191.0,
+        "y": 213.0,
+        "width": 55.0,
+        "height": 49.0
+      },
+      {
+        "text": "the",
+        "x": 1266.0,
+        "y": 212.0,
+        "width": 92.0,
+        "height": 50.0
+      }
+    ],
+    [
+      {
+        "text": "Native",
+        "x": 165.0,
+        "y": 313.0,
+        "width": 187.0,
+        "height": 50.0
+      },
+      {
+        "text": "iPhone",
+        "x": 378.0,
+        "y": 313.0,
+        "width": 207.0,
+        "height": 50.0
+      },
+      {
+        "text": "Email",
+        "x": 612.0,
+        "y": 313.0,
+        "width": 162.0,
+        "height": 50.0
+      },
+      {
+        "text": "App",
+        "x": 798.0,
+        "y": 313.0,
+        "width": 119.0,
+        "height": 63.0
+      },
+      {
+        "text": "in",
+        "x": 943.0,
+        "y": 313.0,
+        "width": 46.0,
+        "height": 49.0
+      },
+      {
+        "text": "Development",
+        "x": 1017.0,
+        "y": 313.0,
+        "width": 399.0,
+        "height": 63.0
+      }
+    ],
+    [
+      {
+        "text": "g",
+        "x": 163.0,
+        "y": 432.0,
+        "width": 18.0,
+        "height": 20.0
+      },
+      {
+        "text": "October",
+        "x": 191.0,
+        "y": 432.0,
+        "width": 83.0,
+        "height": 17.0
+      },
+      {
+        "text": "1,",
+        "x": 283.0,
+        "y": 432.0,
+        "width": 16.0,
+        "height": 20.0
+      },
+      {
+        "text": "2026",
+        "x": 308.0,
+        "y": 432.0,
+        "width": 51.0,
+        "height": 17.0
+      },
+      {
+        "text": "R",
+        "x": 398.0,
+        "y": 432.0,
+        "width": 14.0,
+        "height": 20.0
+      },
+      {
+        "text": "Aly_BlenKjn",
+        "x": 423.0,
+        "y": 432.0,
+        "width": 118.0,
+        "height": 22.0
+      }
+    ],
+    [
+      {
+        "text": "Q",
+        "x": 583.0,
+        "y": 432.0,
+        "width": 13.0,
+        "height": 13.0
+      },
+      {
+        "text": "30",
+        "x": 605.0,
+        "y": 432.0,
+        "width": 24.0,
+        "height": 17.0
+      },
+      {
+        "text": "responses",
+        "x": 638.0,
+        "y": 436.0,
+        "width": 107.0,
+        "height": 18.0
+      }
+    ],
+    [
+      {
+        "text": "The",
+        "x": 160.0,
+        "y": 511.0,
+        "width": 40.0,
+        "height": 17.0
+      },
+      {
+        "text": "team",
+        "x": 207.0,
+        "y": 511.0,
+        "width": 52.0,
+        "height": 17.0
+      },
+      {
+        "text": "has",
+        "x": 268.0,
+        "y": 511.0,
+        "width": 36.0,
+        "height": 17.0
+      },
+      {
+        "text": "been",
+        "x": 313.0,
+        "y": 511.0,
+        "width": 49.0,
+        "height": 17.0
+      },
+      {
+        "text": "working",
+        "x": 370.0,
+        "y": 511.0,
+        "width": 81.0,
+        "height": 22.0
+      },
+      {
+        "text": "hard",
+        "x": 460.0,
+        "y": 511.0,
+        "width": 45.0,
+        "height": 17.0
+      },
+      {
+        "text": "behind",
+        "x": 514.0,
+        "y": 511.0,
+        "width": 69.0,
+        "height": 17.0
+      },
+      {
+        "text": "the",
+        "x": 591.0,
+        "y": 511.0,
+        "width": 32.0,
+        "height": 17.0
+      },
+      {
+        "text": "scenes",
+        "x": 631.0,
+        "y": 515.0,
+        "width": 74.0,
+        "height": 13.0
+      },
+      {
+        "text": "laying",
+        "x": 714.0,
+        "y": 511.0,
+        "width": 60.0,
+        "height": 22.0
+      },
+      {
+        "text": "a",
+        "x": 782.0,
+        "y": 515.0,
+        "width": 12.0,
+        "height": 13.0
+      },
+      {
+        "text": "strong",
+        "x": 802.0,
+        "y": 511.0,
+        "width": 64.0,
+        "height": 22.0
+      }
+    ],
+    [
+      {
+        "text": "foundation",
+        "x": 160.0,
+        "y": 545.0,
+        "width": 109.0,
+        "height": 17.0
+      },
+      {
+        "text": "for",
+        "x": 278.0,
+        "y": 545.0,
+        "width": 28.0,
+        "height": 17.0
+      },
+      {
+        "text": "the",
+        "x": 312.0,
+        "y": 545.0,
+        "width": 33.0,
+        "height": 17.0
+      },
+      {
+        "text": "Thunderbird",
+        "x": 353.0,
+        "y": 545.0,
+        "width": 126.0,
+        "height": 17.0
+      },
+      {
+        "text": "iOS",
+        "x": 488.0,
+        "y": 545.0,
+        "width": 37.0,
+        "height": 17.0
+      },
+      {
+        "text": "app.",
+        "x": 533.0,
+        "y": 549.0,
+        "width": 44.0,
+        "height": 18.0
+      },
+      {
+        "text": "Rather",
+        "x": 587.0,
+        "y": 545.0,
+        "width": 70.0,
+        "height": 17.0
+      },
+      {
+        "text": "than",
+        "x": 664.0,
+        "y": 545.0,
+        "width": 45.0,
+        "height": 17.0
+      },
+      {
+        "text": "leveraging",
+        "x": 718.0,
+        "y": 545.0,
+        "width": 107.0,
+        "height": 22.0
+      },
+      {
+        "text": "existing",
+        "x": 834.0,
+        "y": 545.0,
+        "width": 79.0,
+        "height": 22.0
+      }
+    ],
+    [
+      {
+        "text": "code,",
+        "x": 160.0,
+        "y": 578.0,
+        "width": 56.0,
+        "height": 20.0
+      },
+      {
+        "text": "we",
+        "x": 225.0,
+        "y": 582.0,
+        "width": 29.0,
+        "height": 13.0
+      },
+      {
+        "text": "are",
+        "x": 262.0,
+        "y": 582.0,
+        "width": 33.0,
+        "height": 13.0
+      },
+      {
+        "text": "building",
+        "x": 304.0,
+        "y": 578.0,
+        "width": 80.0,
+        "height": 22.0
+      },
+      {
+        "text": "natively",
+        "x": 393.0,
+        "y": 578.0,
+        "width": 79.0,
+        "height": 22.0
+      },
+      {
+        "text": "from",
+        "x": 479.0,
+        "y": 578.0,
+        "width": 47.0,
+        "height": 17.0
+      },
+      {
+        "text": "scratch.",
+        "x": 534.0,
+        "y": 578.0,
+        "width": 81.0,
+        "height": 17.0
+      },
+      {
+        "text": "This",
+        "x": 624.0,
+        "y": 578.0,
+        "width": 44.0,
+        "height": 17.0
+      },
+      {
+        "text": "fresh",
+        "x": 675.0,
+        "y": 578.0,
+        "width": 52.0,
+        "height": 17.0
+      },
+      {
+        "text": "start",
+        "x": 736.0,
+        "y": 578.0,
+        "width": 46.0,
+        "height": 17.0
+      },
+      {
+        "text": "allows",
+        "x": 789.0,
+        "y": 578.0,
+        "width": 65.0,
+        "height": 17.0
+      },
+      {
+        "text": "us",
+        "x": 863.0,
+        "y": 582.0,
+        "width": 23.0,
+        "height": 13.0
+      },
+      {
+        "text": "to",
+        "x": 893.0,
+        "y": 578.0,
+        "width": 19.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "take",
+        "x": 160.0,
+        "y": 612.0,
+        "width": 44.0,
+        "height": 17.0
+      },
+      {
+        "text": "everything",
+        "x": 212.0,
+        "y": 612.0,
+        "width": 108.0,
+        "height": 22.0
+      },
+      {
+        "text": "we've",
+        "x": 328.0,
+        "y": 612.0,
+        "width": 60.0,
+        "height": 17.0
+      },
+      {
+        "text": "learned",
+        "x": 397.0,
+        "y": 612.0,
+        "width": 76.0,
+        "height": 17.0
+      },
+      {
+        "text": "from",
+        "x": 481.0,
+        "y": 612.0,
+        "width": 46.0,
+        "height": 17.0
+      },
+      {
+        "text": "Thunderbird",
+        "x": 536.0,
+        "y": 612.0,
+        "width": 126.0,
+        "height": 17.0
+      },
+      {
+        "text": "Desktop",
+        "x": 671.0,
+        "y": 612.0,
+        "width": 85.0,
+        "height": 22.0
+      },
+      {
+        "text": "and",
+        "x": 764.0,
+        "y": 612.0,
+        "width": 37.0,
+        "height": 17.0
+      },
+      {
+        "text": "Android",
+        "x": 809.0,
+        "y": 612.0,
+        "width": 81.0,
+        "height": 17.0
+      },
+      {
+        "text": "to",
+        "x": 898.0,
+        "y": 612.0,
+        "width": 19.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "ensure",
+        "x": 160.0,
+        "y": 650.0,
+        "width": 72.0,
+        "height": 13.0
+      },
+      {
+        "text": "a",
+        "x": 240.0,
+        "y": 650.0,
+        "width": 12.0,
+        "height": 13.0
+      },
+      {
+        "text": "fast,",
+        "x": 259.0,
+        "y": 646.0,
+        "width": 44.0,
+        "height": 20.0
+      },
+      {
+        "text": "reliable,",
+        "x": 312.0,
+        "y": 646.0,
+        "width": 81.0,
+        "height": 20.0
+      },
+      {
+        "text": "and",
+        "x": 403.0,
+        "y": 646.0,
+        "width": 37.0,
+        "height": 17.0
+      },
+      {
+        "text": "modern",
+        "x": 449.0,
+        "y": 646.0,
+        "width": 78.0,
+        "height": 17.0
+      },
+      {
+        "text": "experience",
+        "x": 535.0,
+        "y": 646.0,
+        "width": 115.0,
+        "height": 22.0
+      },
+      {
+        "text": "on",
+        "x": 658.0,
+        "y": 650.0,
+        "width": 24.0,
+        "height": 13.0
+      },
+      {
+        "text": "your",
+        "x": 691.0,
+        "y": 650.0,
+        "width": 46.0,
+        "height": 18.0
+      },
+      {
+        "text": "iPhone",
+        "x": 745.0,
+        "y": 646.0,
+        "width": 71.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "READ",
+        "x": 190.0,
+        "y": 764.0,
+        "width": 63.0,
+        "height": 17.0
+      },
+      {
+        "text": "MORE",
+        "x": 262.0,
+        "y": 764.0,
+        "width": 68.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "Latest",
+        "x": 846.0,
+        "y": 990.0,
+        "width": 122.0,
+        "height": 32.0
+      },
+      {
+        "text": "Posts",
+        "x": 985.0,
+        "y": 990.0,
+        "width": 111.0,
+        "height": 32.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 753.0,
+        "y": 1110.0,
+        "width": 154.0,
+        "height": 19.0
+      },
+      {
+        "text": "Dev",
+        "x": 918.0,
+        "y": 1111.0,
+        "width": 48.0,
+        "height": 18.0
+      },
+      {
+        "text": "Diges",
+        "x": 975.0,
+        "y": 1110.0,
+        "width": 68.0,
+        "height": 23.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 1231.0,
+        "y": 577.0,
+        "width": 284.0,
+        "height": 36.0
+      }
+    ],
+    [
+      {
+        "text": "An",
+        "x": 1226.0,
+        "y": 639.0,
+        "width": 23.0,
+        "height": 14.0
+      },
+      {
+        "text": "open",
+        "x": 1256.0,
+        "y": 642.0,
+        "width": 44.0,
+        "height": 14.0
+      },
+      {
+        "text": "source,",
+        "x": 1307.0,
+        "y": 642.0,
+        "width": 65.0,
+        "height": 14.0
+      },
+      {
+        "text": "privacy",
+        "x": 1381.0,
+        "y": 638.0,
+        "width": 64.0,
+        "height": 19.0
+      },
+      {
+        "text": "focused",
+        "x": 1451.0,
+        "y": 638.0,
+        "width": 72.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "and",
+        "x": 1241.0,
+        "y": 661.0,
+        "width": 32.0,
+        "height": 15.0
+      },
+      {
+        "text": "ad-free",
+        "x": 1280.0,
+        "y": 661.0,
+        "width": 67.0,
+        "height": 15.0
+      },
+      {
+        "text": "email",
+        "x": 1353.0,
+        "y": 661.0,
+        "width": 47.0,
+        "height": 15.0
+      },
+      {
+        "text": "app",
+        "x": 1407.0,
+        "y": 665.0,
+        "width": 33.0,
+        "height": 14.0
+      },
+      {
+        "text": "for",
+        "x": 1447.0,
+        "y": 661.0,
+        "width": 24.0,
+        "height": 15.0
+      },
+      {
+        "text": "iOS.",
+        "x": 1478.0,
+        "y": 661.0,
+        "width": 36.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "Get",
+        "x": 1330.0,
+        "y": 756.0,
+        "width": 30.0,
+        "height": 14.0
+      },
+      {
+        "text": "started",
+        "x": 1366.0,
+        "y": 755.0,
+        "width": 59.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "Desktop",
+        "x": 1309.0,
+        "y": 1113.0,
+        "width": 123.0,
+        "height": 27.0
+      },
+      {
+        "text": "Settings",
+        "x": 1442.0,
+        "y": 1111.0,
+        "width": 123.0,
+        "height": 29.0
+      }
+    ]
+  ]
+}

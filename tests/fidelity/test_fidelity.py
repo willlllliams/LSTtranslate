@@ -39,7 +39,7 @@ def test_real_outputs_preserve_text_and_separate_controls(engine: str, image: st
     assert metrics.content_accuracy >= 0.99, metrics
     assert metrics.merged_segments == 0, metrics
     assert metrics.split_units == 0, metrics
-    if engine == "windows":
+    if engine in {"windows", "windows-auto"}:
         assert metrics.unit_recall >= 0.94, metrics
         assert metrics.separate_units >= (0.84 if image == "addons" else 0.94), metrics
     else:

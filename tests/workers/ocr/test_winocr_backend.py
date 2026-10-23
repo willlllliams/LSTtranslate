@@ -147,14 +147,14 @@ def test_match_language(requested: str, tag: str | None) -> None:
     assert match_language(requested, AVAILABLE) == tag
 
 
-def test_auto_uses_the_user_profile_language() -> None:
+def test_auto_pairs_the_profile_language_with_english() -> None:
     api = FakeApi(["en-US", "zh-Hans-CN"], profile="zh-Hans-CN")
     result = WinOcrBackend(api).load({"language": "auto"}, no_progress)
-    assert api.created == [None]
+    assert api.created == [None, "en-US"]
     assert result.capabilities == {
         "mode": "text",
         "engine": "windows",
-        "language": "zh-Hans",
+        "language": "auto",
         "languages": ["en", "zh-Hans"],
         "features": ["text"],
     }
@@ -164,8 +164,56 @@ def test_auto_uses_the_user_profile_language() -> None:
 def test_auto_falls_back_to_the_first_available_language() -> None:
     api = FakeApi(["en-US", "zh-Hans-CN"], profile=None)
     result = WinOcrBackend(api).load({}, no_progress)
-    assert api.created == [None, "en-US"]
+    assert api.created == [None, "en-US", "zh-Hans-CN"]
+    assert result.capabilities["language"] == "auto"
+
+
+def test_auto_keeps_other_profile_languages() -> None:
+    api = FakeApi(["en-US", "de-DE", "zh-Hans-CN"], profile="de-DE")
+    result = WinOcrBackend(api).load({}, no_progress)
+    assert api.created == [None]
+    assert result.capabilities["language"] == "de"
+
+
+def test_auto_with_one_language_uses_one_recognizer() -> None:
+    api = FakeApi(["en-US"], profile="en-US")
+    result = WinOcrBackend(api).load({}, no_progress)
+    assert api.created == [None]
     assert result.capabilities["language"] == "en"
+
+
+def test_auto_partner_creation_failure_preserves_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = FakeApi(["en-US", "zh-Hans-CN"], profile="zh-Hans-CN")
+    create = api.create
+
+    def with_failure(tag: str | None) -> FakeRecognizer | None:
+        return None if tag == "en-US" else create(tag)
+
+    monkeypatch.setattr(api, "create", with_failure)
+    result = WinOcrBackend(api).load({}, no_progress)
+    assert result.capabilities["language"] == "zh-Hans"
+
+
+@pytest.mark.parametrize("profile", ["en-US", "zh-Hans-CN"])
+def test_auto_runs_both_recognizers_on_the_same_prepared_image(
+    profile: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    english = FakeRecognizer("en-US", [[Word("Screen", 100, 10, 80, 20)]])
+    native = FakeRecognizer("zh-Hans-CN", [[Word("屏", 10, 10, 20, 20), Word("幕", 32, 10, 20, 20),
+                                         Word("Screen", 100, 10, 80, 20)]])  # fmt: skip
+    handles = {"en-US": english, "zh-Hans-CN": native}
+    api = FakeApi(list(handles), profile=profile)
+
+    def create(tag: str | None) -> FakeRecognizer | None:
+        return handles.get(profile if tag is None else tag)
+
+    monkeypatch.setattr(api, "create", create)
+    backend = WinOcrBackend(api)
+    backend.load({}, no_progress)
+    blocks = backend.recognize(np.zeros((80, 400, 3), np.uint8), {})
+    (block,) = validate_blocks(blocks, 400, 80)
+    assert block["lines"] == [{"bbox": [10, 10, 180, 30], "text": "屏幕 Screen", "score": 1.0}]
+    assert english.calls == native.calls == [(400 * 80 * 4, 400, 80)]
 
 
 def test_explicit_language_is_mapped_to_the_system_tag() -> None:

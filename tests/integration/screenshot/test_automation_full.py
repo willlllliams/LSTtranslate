@@ -2,7 +2,7 @@
 （需求 DEV-05、DEV-06）。
 
 环境与 test_full_interaction.py 相同（虚构的两屏布局、白底黑字的英文冻结画面、Argos 英中模型、
-Windows OCR 英文），
+Windows OCR 分别使用英文与自动语言），
 区别是交互全部经过命名管道上的自动化接口，不直接调用窗口与总线：
 
 status → capture（mask，真实蒙版，模拟拖动）→ wait_result（两段英文、含汉字的译文）→ overlay.select 与 copy
@@ -64,8 +64,9 @@ _HAN = re.compile(r"[一-鿿]")
 
 
 @pytest.mark.timeout(300)
+@pytest.mark.parametrize("language", ["en", "auto"])
 async def test_screenshot_translation_driven_through_the_interface(
-    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, language: str
 ) -> None:
     if not ensure_font():
         pytest.skip(f"没有用来画英文冻结画面的字体文件 {FONT_FILE}")
@@ -80,7 +81,7 @@ async def test_screenshot_translation_driven_through_the_interface(
         lambda: OverlayModule(clipboard=copied.append, prepare_window=hide_from_desktop),
     )
     paths = AppPaths(tmp_path / "data")
-    _write_config(paths)
+    _write_config(paths, language=language)
     pipe = normalize_pipe_name(f"lst-test-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     requests: list[str] = []
 

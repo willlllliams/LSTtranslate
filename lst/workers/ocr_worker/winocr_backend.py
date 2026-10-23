@@ -29,8 +29,10 @@ mode、language 与当前设置不同时只记 WARNING（切换由主进程重�
 Windows 的 OCR 引擎一次只识别一种语言，可用的语言取决于系统装了哪些语言的 OCR 功能
 （OcrEngine.available_recognizer_languages，例如 en-US、zh-Hans-CN）。
 
-- auto：用 OcrEngine.try_create_from_user_profile_languages（用户语言列表里第一个装了 OCR 的语言）；
-  返回 None 时取第一个可用语言。
+- auto：先按系统用户语言列表创建识别器，失败时取第一个可用语言。首选中文或日文且已安装英文时，
+  同时运行英文识别器；首选英文时，用第一个已安装的中日文识别器补充。其他首选语言和只有一种
+  可用语言时沿用单识别器。纯西文行取英文结果，中日文行按文字系统与位置选择并去重，
+  少量中文标题不因页面大部分为英文而丢失。
 - 指定语言：在可用语言里找规范写法（lst.contracts.langs.normalize_lang）相同的一项，例如 zh-Hans 对应
   zh-Hans-CN、en 对应 en-US。找不到时按配置错误处理，消息列出系统可用的语言。
 - 系统一个 OCR 语言都没有时按配置错误处理（退出码 66），消息说明要在 Windows 设置里添加语言的 OCR 功能。
@@ -47,6 +49,8 @@ Windows 的 OCR 引擎一次只识别一种语言，可用的语言取决于系�
    没有识别到文字时返回空数组。
 
 Windows OCR 不给置信度，行和块的 score 都写 1.0；主进程只用 score 做展示和排序之外的判断时要注意这一点。
+互补识别额外运行一次系统 OCR。重复字形与计数间有明显空隙、且英文结果确认相同计数时，保留英文计数，
+防止评分星形变成重复汉字；真实的重复文字与紧接的计数仍保留。歧义短字与语言包自身的漏字继续受系统模型限制。
 
 recognize_async 返回 WinRT 的异步操作。推理线程在测试里可能是单线程套间（Qt 已初始化 COM），
 单线程套间不允许阻塞等待（IAsyncOperation.get 会抛 RuntimeError），所以用 asyncio.run 等待它完成。
@@ -56,6 +60,8 @@ import asyncio
 import importlib.metadata
 import logging
 import platform
+import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol
@@ -68,7 +74,14 @@ from lst.contracts.text import is_cjk, needs_space
 from lst.contracts.worker_protocol import JsonValue
 from lst.workers._runtime import ConfigError, LoadResult, ProgressReporter
 from lst.workers.ocr_worker.blocks import OutBlock, OutLine, blocks_to_json
-from lst.workers.ocr_worker.geometry import Box, CoordinateMap, plan_resize, union_box
+from lst.workers.ocr_worker.geometry import (
+    Box,
+    CoordinateMap,
+    box_area,
+    intersection_area,
+    plan_resize,
+    union_box,
+)
 from lst.workers.ocr_worker.image import Pixels, resize_area, to_grayscale
 from lst.workers.ocr_worker.settings import KNOWN_KEYS, BadOptions
 
@@ -225,6 +238,119 @@ class Word:
         return (self.x, self.y, self.x + self.width, self.y + self.height)
 
 
+def _same_region(a: Box, b: Box) -> bool:
+    """同一文字行或行内片段：交集覆盖较小框的一半，且中线相近。"""
+    height = min(a[3] - a[1], b[3] - b[1])
+    return (
+        height > 0
+        and min(box_area(a), box_area(b)) > 0
+        and abs((a[1] + a[3]) - (b[1] + b[3])) <= height
+        and intersection_area(a, b) >= 0.5 * min(box_area(a), box_area(b))
+    )
+
+
+def _native_letters(words: Sequence[Word]) -> str:
+    return "".join(c for word in words for c in word.text if is_cjk(c) and c.isalpha())
+
+
+def _separate_script_word(row: Sequence[Word]) -> bool:
+    """孤立汉字与邻接西文之间有词间距；避免保留英文单词内部误识别的汉字。"""
+    ordered = sorted((word for word in row if word.text.strip()), key=lambda word: word.x)
+    for index, word in enumerate(ordered):
+        if not _native_letters([word]):
+            continue
+        if index and word.x - ordered[index - 1].box[2] < MIXED_GAP_RATIO * word.height:
+            return False
+        if index + 1 < len(ordered) and ordered[index + 1].x - word.box[2] < MIXED_GAP_RATIO * word.height:
+            return False
+    return True
+
+
+def _distant_counter(native: Sequence[Word], english: Sequence[Sequence[Word]], letters: str) -> bool:
+    """重复字形与远处计数构成的弱证据，交给英文结果保留数字和原图符号。
+
+    评分星形会被中文识别器反复识别成同一个汉字。只有两种结果的计数相同，英文没有完整单词，
+    且计数与重复字形之间至少空一个字高时才采用此规则；紧接文字的计数仍按正文处理。
+    """
+    if len(set(letters)) != 1:
+        return False
+    last = max((word for word in native if _native_letters([word])), key=lambda w: w.box[2])
+    native_digits = _last_count(native)
+    if not native_digits:
+        return False
+    for row in english:
+        if sum(c.isalpha() for word in row for c in word.text) > 1:
+            continue
+        digits = _last_count(row)
+        if not digits or native_digits != digits:
+            continue
+        counter = next((word for word in reversed(row) if any(c.isdecimal() for c in word.text)), None)
+        if counter is not None and counter.x - last.box[2] >= last.height:
+            return True
+    return False
+
+
+def _last_count(row: Sequence[Word]) -> str:
+    assembled = assemble_line(row)
+    counts = re.findall(r"\d+(?:[,，]\d{3})*", assembled[0]) if assembled is not None else []
+    return "".join(str(unicodedata.decimal(c)) for c in counts[-1] if c.isdecimal()) if counts else ""
+
+
+def fuse_languages(english: Sequence[Sequence[Word]], native: Sequence[Sequence[Word]]) -> list[list[Word]]:
+    """英文行优先，含明确中日文的行采用本地文字识别器，按位置去重。
+
+    逐行选择保留英文页面中的少量中文。单个孤立汉字须避开英文识别器在同位置给出的字符，
+    防止把序号、标点或英文单词中的一部分改成汉字。指定识别语言时不调用本函数。
+    """
+    latin = [(list(row), union_box(word.box for word in row if word.text.strip())) for row in english]
+    script_context = any(len(set(_native_letters(row))) >= 2 for row in native)
+    chosen: list[tuple[list[Word], Box]] = []
+    for row in native:
+        letters = _native_letters(row)
+        box = union_box(word.box for word in row if word.text.strip())
+        if not letters or box is None:
+            continue
+        matching = [words for words, other in latin if other is not None and _same_region(box, other)]
+        if _distant_counter(row, matching, letters):
+            continue
+        if (
+            len(letters) == 1
+            and not (script_context and _separate_script_word(row))
+            and any(
+                box_area(word.box) > 0 and intersection_area(word.box, other.box) >= 0.5 * box_area(word.box)
+                for word in row
+                if _native_letters([word])
+                for words in matching
+                for other in words
+            )
+        ):
+            continue
+        chosen.append((list(row), box))
+    result: list[list[Word]] = []
+    used: set[int] = set()
+    for row, box in latin:
+        if box is None:
+            continue
+        matching = [index for index, (_, native_box) in enumerate(chosen) if _same_region(box, native_box)]
+        kept = [
+            word
+            for word in row
+            if word.text.strip()
+            and not any(
+                box_area(word.box) > 0 and intersection_area(word.box, native_box) >= 0.5 * box_area(word.box)
+                for _, native_box in chosen
+            )
+        ]
+        for index in matching:
+            if index not in used:
+                kept.extend(chosen[index][0])
+                used.add(index)
+        if kept:
+            result.append(sorted(kept, key=lambda word: word.x))
+    result.extend(row for index, (row, _) in enumerate(chosen) if index not in used)
+    return sorted(result, key=lambda row: (min(w.y for w in row), min(w.x for w in row)))
+
+
 def assemble_line(words: Sequence[Word]) -> tuple[str, Box] | None:
     """把一行的词拼成（文字，包围盒）；没有非空词时返回 None。
 
@@ -376,6 +502,7 @@ class WinOcrBackend:
         self._api = api
         self._settings: WinOcrSettings | None = None
         self._recognizer: RecognizerHandle | None = None
+        self._partner: RecognizerHandle | None = None
         self._available: list[str] = []
 
     def load(self, settings: Mapping[str, JsonValue], progress: ProgressReporter) -> LoadResult:
@@ -388,15 +515,42 @@ class WinOcrBackend:
         if not available:
             raise ConfigError(NO_LANGUAGE_MESSAGE)
         recognizer = self._create(api, parsed.language, available)
+        partner = (
+            self._auto_partner(api, recognizer, available) if parsed.language.casefold() == AUTO else None
+        )
         self._settings, self._recognizer, self._available = parsed, recognizer, available
+        self._partner = partner
         log.info(
             "Windows OCR 已就绪：识别语言 %s（设置为 %s），系统可用 %s，图像边长上限 %d",
-            recognizer.language_tag,
+            "+".join(r.language_tag for r in (recognizer, partner) if r is not None),
             parsed.language,
             ", ".join(available),
             api.max_image_dimension,
         )
-        return LoadResult(self._capabilities(recognizer, available), self._versions())
+        capabilities = self._capabilities(recognizer, available)
+        if partner is not None:
+            capabilities["language"] = AUTO
+        return LoadResult(capabilities, self._versions())
+
+    @staticmethod
+    def _auto_partner(
+        api: OcrApi, primary: RecognizerHandle, available: list[str]
+    ) -> RecognizerHandle | None:
+        """英文和一种已安装的中日文互补；其他首选语言沿用系统识别器。"""
+        language = canonical_language(primary.language_tag)
+        native = {"zh-Hans", "zh-Hant", "ja"}
+        if language in native:
+            tag = match_language("en", available)
+        elif language == "en":
+            tag = next((tag for tag in available if canonical_language(tag) in native), None)
+        else:
+            tag = None
+        if tag is None:
+            return None
+        partner = api.create(tag)
+        if partner is None:
+            log.warning("无法创建补充识别语言 %s，继续使用 %s", tag, primary.language_tag)
+        return partner
 
     @staticmethod
     def _create(api: OcrApi, language: str, available: list[str]) -> RecognizerHandle:
@@ -451,5 +605,12 @@ class WinOcrBackend:
         prepared = resize_area(image, target)
         if parsed.grayscale:
             prepared = to_grayscale(prepared)
-        lines = recognizer.recognize(to_bgra(prepared), *target)
+        pixels = to_bgra(prepared)
+        lines = recognizer.recognize(pixels, *target)
+        if self._partner is not None:
+            other = self._partner.recognize(pixels, *target)
+            if canonical_language(recognizer.language_tag) == "en":
+                lines = fuse_languages(lines, other)
+            else:
+                lines = fuse_languages(other, lines)
         return blocks_to_json(build_blocks(lines, CoordinateMap((width, height), target)))

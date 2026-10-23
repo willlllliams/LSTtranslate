@@ -12,9 +12,10 @@
 | paddle-text | PaddleBackend | .venv-ocr | 文本模式 |
 | rapid | RapidBackend | .venv-ocr | 文本模式 |
 | windows | WinOcrBackend | 主环境 | 文本模式，识别语言 en |
+| windows-auto | WinOcrBackend | 主环境 | 文本模式，自动选择互补识别器 |
 
-Windows OCR 一次只认一种语言，识别语言取 en：用户语言列表里第一个装了 OCR 的语言是简体中文时，“自动”
-会用中文识别器去认英文页面，词间空格大量丢失，测出来的是语言设置的问题，不是版面还原的问题。
+Windows OCR 的 en 与 auto 分别保留基线。auto 在英文与已安装的中日文之间互补，避免系统首选中文时
+英文页面被中文识别器误读。两种配置使用同一套人工标注，分别约束指定语言和默认配置。
 
 ``python -m tests.fidelity.pipeline [引擎 ...]`` 把各引擎对各测试图的原始识别结果写到 data/tmp/fidelity/raw，
 调参时可以只重跑主进程一侧（``load_raw``）。
@@ -146,6 +147,14 @@ ENGINES: dict[str, Engine] = {
         WINOCR_BACKEND,
         Path(sys.executable),
         OcrConfig(engine=OcrEngineKind.WINDOWS, language="en"),
+        WindowsOcrConfig(),
+        _windows_missing,
+    ),
+    "windows-auto": Engine(
+        "windows-auto",
+        WINOCR_BACKEND,
+        Path(sys.executable),
+        OcrConfig(engine=OcrEngineKind.WINDOWS),
         WindowsOcrConfig(),
         _windows_missing,
     ),

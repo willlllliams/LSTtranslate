@@ -1,0 +1,263 @@
+{
+ "source_sha256": "18bb847e02ac84bc2201ecb25abdc6d6eb939607565591abdf76189e9fd9a1c2",
+ "width": 1908,
+ "height": 1150,
+ "seconds": 0.1958674999186769,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    1908,
+    1150
+   ],
+   "order": 0,
+   "score": 1.0,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      0,
+      39,
+      75,
+      56
+     ],
+     "text": "'roduct",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      110,
+      39,
+      248,
+      61
+     ],
+     "text": "Development",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      283,
+      39,
+      351,
+      56
+     ],
+     "text": "Mobile",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      386,
+      39,
+      504,
+      61
+     ],
+     "text": "Community",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      538,
+      39,
+      685,
+      61
+     ],
+     "text": "Tips & Guides",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1811,
+      39,
+      1908,
+      56
+     ],
+     "text": "GET THU",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      167,
+      157,
+      302,
+      171
+     ],
+     "text": "LATEST POST",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      161,
+      211,
+      1358,
+      262
+     ],
+     "text": "Thunderbird for iOS: A First Look at the",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      165,
+      313,
+      1416,
+      376
+     ],
+     "text": "Native iPhone Email App in Development",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      163,
+      432,
+      541,
+      454
+     ],
+     "text": "g October 1, 2026 R Aly_BlenKjn",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      583,
+      432,
+      745,
+      454
+     ],
+     "text": "Q 30 responses",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      160,
+      511,
+      866,
+      533
+     ],
+     "text": "The team has been working hard behind the scenes laying a strong",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      160,
+      545,
+      913,
+      567
+     ],
+     "text": "foundation for the Thunderbird iOS app. Rather than leveraging existing",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1231,
+      577,
+      1515,
+      613
+     ],
+     "text": "Thunderbird",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      160,
+      578,
+      912,
+      600
+     ],
+     "text": "code, we are building natively from scratch. This fresh start allows us to",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      160,
+      612,
+      917,
+      634
+     ],
+     "text": "take everything we've learned from Thunderbird Desktop and Android to",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1226,
+      638,
+      1523,
+      657
+     ],
+     "text": "An open source, privacy focused",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      160,
+      646,
+      816,
+      668
+     ],
+     "text": "ensure a fast, reliable, and modern experience on your iPhone",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1241,
+      661,
+      1514,
+      679
+     ],
+     "text": "and ad-free email app for iOS.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1330,
+      755,
+      1425,
+      770
+     ],
+     "text": "Get started",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      190,
+      764,
+      330,
+      781
+     ],
+     "text": "READ MORE",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      846,
+      990,
+      1096,
+      1022
+     ],
+     "text": "Latest Posts",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      753,
+      1110,
+      1043,
+      1133
+     ],
+     "text": "Thunderbird Dev Diges",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1309,
+      1111,
+      1565,
+      1140
+     ],
+     "text": "Desktop Settings",
+     "score": 1.0
+    }
+   ]
+  }
+ ]
+}

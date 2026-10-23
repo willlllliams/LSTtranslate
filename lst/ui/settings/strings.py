@@ -217,9 +217,10 @@ CATALOG: Final[Catalog] = {
     },
     "settings.ocr.language.windows": {
         "zh-Hans": "Windows 自带 OCR 只能识别系统已安装 OCR 功能的语言，这里只列出这些语言。"
-        "自动：按 Windows 的显示语言选择。",
+        "自动：英文与一种已安装的中日文互补识别；其他情况跟随系统首选语言。指定语言只运行该语言的识别。",
         "en": "Windows built-in OCR only reads languages whose OCR feature is installed, so only those are listed. "
-        "Auto picks one from the Windows display language.",
+        "Auto combines English with one installed Chinese or Japanese recognizer; otherwise it follows the "
+        "system's preferred language. Choosing a language runs only that recognizer.",
     },
     "settings.ocr.language.rapid": {
         "zh-Hans": "RapidOCR 的识别模型覆盖中文、日文、英文和常见的拉丁字母语言，这里只列出这些语言。"

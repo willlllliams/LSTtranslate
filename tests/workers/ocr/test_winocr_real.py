@@ -93,6 +93,35 @@ def test_english_lines_with_padding_and_downscaling(app: QApplication) -> None:
 
 
 @needs_ocr
+@pytest.mark.skipif(
+    match_language("en", AVAILABLE) is None or match_language("zh-Hans", AVAILABLE) is None,
+    reason="系统没有同时安装中文与英文 OCR",
+)
+@pytest.mark.parametrize(
+    "rows",
+    [
+        ["Hello Windows OCR", "Screen translation 2026"],
+        ["屏幕翻译测试文字", "今天天气很好"],
+        ["屏幕翻译 Screen translation", "Settings 屏幕翻译 Microsoft"],
+        [
+            "屏幕翻译",
+            "The team has been working hard behind the scenes.",
+            "A fast reliable and modern experience for all users.",
+        ],
+    ],
+)
+def test_auto_keeps_english_chinese_and_mixed_text(app: QApplication, rows: list[str]) -> None:
+    del app
+    shot = render([(text, 40, 60 + i * 60) for i, text in enumerate(rows)], 1600, 300, 28)
+    backend = load("auto")
+    blocks = backend.recognize(bgra_to_bgr(shot.data, shot.width, shot.height, shot.stride), {})
+    (decoded,) = decode_blocks(blocks, width=shot.width, height=shot.height)
+    assert [line.text for line in decoded.lines] == rows
+    for line, drawn in zip(decoded.lines, shot.lines, strict=True):
+        assert_near((line.bbox.x0, line.bbox.y0, line.bbox.x1, line.bbox.y1), drawn.box, 10)
+
+
+@needs_ocr
 def test_blank_screenshot_gives_no_blocks(app: QApplication) -> None:
     del app
     shot = render([], 320, 200)

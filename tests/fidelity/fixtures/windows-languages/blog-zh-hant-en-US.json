@@ -1,0 +1,251 @@
+{
+  "sample": "blog-zh-hant",
+  "width": 2219,
+  "height": 1144,
+  "source_sha256": "42db5703fcc17ce3c650679c958d253a81921ca2637a1e2ee63231ad21313d3f",
+  "language": "en-US",
+  "truth": [],
+  "lines": [
+    [
+      {
+        "text": "THUNDERBIRD",
+        "x": 1948.0,
+        "y": 25.0,
+        "width": 170.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "iOS",
+        "x": 420.0,
+        "y": 196.0,
+        "width": 107.0,
+        "height": 51.0
+      },
+      {
+        "text": "fi",
+        "x": 556.0,
+        "y": 189.0,
+        "width": 56.0,
+        "height": 60.0
+      }
+    ],
+    [
+      {
+        "text": "iPhone",
+        "x": 556.0,
+        "y": 298.0,
+        "width": 207.0,
+        "height": 50.0
+      }
+    ],
+    [
+      {
+        "text": "30",
+        "x": 633.0,
+        "y": 435.0,
+        "width": 25.0,
+        "height": 17.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 413.0,
+        "y": 514.0,
+        "width": 127.0,
+        "height": 17.0
+      },
+      {
+        "text": "iOS",
+        "x": 549.0,
+        "y": 514.0,
+        "width": 37.0,
+        "height": 17.0
+      },
+      {
+        "text": "o",
+        "x": 880.0,
+        "y": 520.0,
+        "width": 5.0,
+        "height": 5.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 245.0,
+        "y": 582.0,
+        "width": 126.0,
+        "height": 17.0
+      },
+      {
+        "text": "Android",
+        "x": 455.0,
+        "y": 582.0,
+        "width": 81.0,
+        "height": 17.0
+      },
+      {
+        "text": "iPhone",
+        "x": 790.0,
+        "y": 582.0,
+        "width": 71.0,
+        "height": 17.0
+      },
+      {
+        "text": "_EfiE'Y{",
+        "x": 870.0,
+        "y": 580.0,
+        "width": 67.0,
+        "height": 20.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 785.0,
+        "y": 1097.0,
+        "width": 154.0,
+        "height": 19.0
+      },
+      {
+        "text": "Dev",
+        "x": 949.0,
+        "y": 1098.0,
+        "width": 49.0,
+        "height": 18.0
+      },
+      {
+        "text": "Diges",
+        "x": 1007.0,
+        "y": 1097.0,
+        "width": 68.0,
+        "height": 23.0
+      }
+    ],
+    [
+      {
+        "text": "Thunderbird",
+        "x": 1263.0,
+        "y": 564.0,
+        "width": 284.0,
+        "height": 36.0
+      }
+    ],
+    [
+      {
+        "text": "An",
+        "x": 1258.0,
+        "y": 626.0,
+        "width": 23.0,
+        "height": 14.0
+      },
+      {
+        "text": "open",
+        "x": 1288.0,
+        "y": 629.0,
+        "width": 44.0,
+        "height": 14.0
+      },
+      {
+        "text": "source,",
+        "x": 1339.0,
+        "y": 629.0,
+        "width": 65.0,
+        "height": 14.0
+      },
+      {
+        "text": "privacy",
+        "x": 1413.0,
+        "y": 625.0,
+        "width": 64.0,
+        "height": 19.0
+      },
+      {
+        "text": "focused",
+        "x": 1483.0,
+        "y": 625.0,
+        "width": 72.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "and",
+        "x": 1273.0,
+        "y": 648.0,
+        "width": 32.0,
+        "height": 15.0
+      },
+      {
+        "text": "ad-free",
+        "x": 1312.0,
+        "y": 648.0,
+        "width": 67.0,
+        "height": 15.0
+      },
+      {
+        "text": "email",
+        "x": 1385.0,
+        "y": 648.0,
+        "width": 47.0,
+        "height": 15.0
+      },
+      {
+        "text": "app",
+        "x": 1439.0,
+        "y": 652.0,
+        "width": 33.0,
+        "height": 14.0
+      },
+      {
+        "text": "for",
+        "x": 1479.0,
+        "y": 648.0,
+        "width": 24.0,
+        "height": 15.0
+      },
+      {
+        "text": "iOS.",
+        "x": 1510.0,
+        "y": 648.0,
+        "width": 36.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "Get",
+        "x": 1362.0,
+        "y": 743.0,
+        "width": 30.0,
+        "height": 14.0
+      },
+      {
+        "text": "started",
+        "x": 1398.0,
+        "y": 742.0,
+        "width": 59.0,
+        "height": 15.0
+      }
+    ],
+    [
+      {
+        "text": "Desktop",
+        "x": 1341.0,
+        "y": 1100.0,
+        "width": 123.0,
+        "height": 27.0
+      },
+      {
+        "text": "Settings",
+        "x": 1474.0,
+        "y": 1098.0,
+        "width": 123.0,
+        "height": 29.0
+      }
+    ]
+  ]
+}

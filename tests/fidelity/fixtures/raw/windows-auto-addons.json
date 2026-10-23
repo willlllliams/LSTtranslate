@@ -1,0 +1,883 @@
+{
+ "source_sha256": "771a279f889860f1d89d0aa7fca410458bc2bd8eb4c92e4afd3e46a9d7378871",
+ "width": 1827,
+ "height": 924,
+ "seconds": 0.3344556000083685,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    1827,
+    924
+   ],
+   "order": 0,
+   "score": 1.0,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      478,
+      54,
+      821,
+      82
+     ],
+     "text": "Featured Extensions",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      57,
+      213,
+      74
+     ],
+     "text": "EXPLORE",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      57,
+      1647,
+      74
+     ],
+     "text": "MOST POPULAR All»",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      842,
+      67,
+      916,
+      82
+     ],
+     "text": "See all »",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      102,
+      1650,
+      122
+     ],
+     "text": "ImportExportTools NG",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1414,
+      103,
+      1429,
+      117
+     ],
+     "text": "1.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      105,
+      193,
+      120
+     ],
+     "text": "Featured",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      127,
+      1557,
+      142
+     ],
+     "text": "285,442 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      142,
+      1294,
+      164
+     ],
+     "text": "FileLink provider for We...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      143,
+      718,
+      159
+     ],
+     "text": "Extract 'Em!",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      151,
+      236,
+      171
+     ],
+     "text": "Most Popular",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      164,
+      1695,
+      184
+     ],
+     "text": "Provider for Google Calen...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      165,
+      1429,
+      179
+     ],
+     "text": "2.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      170,
+      1138,
+      184
+     ],
+     "text": "Miscellaneous",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      171,
+      711,
+      188
+     ],
+     "text": "Import/Export",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      189,
+      1557,
+      204
+     ],
+     "text": "143,742 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      683,
+      196,
+      735,
+      212
+     ],
+     "text": "Q (21)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1133,
+      196,
+      1162,
+      211
+     ],
+     "text": "(23)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      111,
+      198,
+      204,
+      218
+     ],
+     "text": "Top Rated",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      226,
+      1541,
+      241
+     ],
+     "text": "Send Later",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      227,
+      1429,
+      241
+     ],
+     "text": "3.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      251,
+      1557,
+      266
+     ],
+     "text": "118,827 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      591,
+      252,
+      866,
+      269
+     ],
+     "text": "Thunderbird Conversati...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1018,
+      252,
+      1304,
+      269
+     ],
+     "text": "*cloud - FileLink for Next...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      280,
+      828,
+      298
+     ],
+     "text": "Message and News Reading",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      280,
+      1204,
+      298
+     ],
+     "text": "Message Composition",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      288,
+      1634,
+      306
+     ],
+     "text": "LookOut (fix version)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      289,
+      1429,
+      303
+     ],
+     "text": "4.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      112,
+      291,
+      252,
+      308
+     ],
+     "text": "CATEGORIES",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      707,
+      306,
+      745,
+      321
+     ],
+     "text": "(600)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1134,
+      306,
+      1162,
+      321
+     ],
+     "text": "(60)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      313,
+      1557,
+      328
+     ],
+     "text": "114,834 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      111,
+      339,
+      370,
+      359
+     ],
+     "text": "Appearance and Customiz...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      350,
+      1530,
+      368
+     ],
+     "text": "Quicktext",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      351,
+      1429,
+      365
+     ],
+     "text": "5.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      590,
+      362,
+      822,
+      379
+     ],
+     "text": "AutoarchiveReIoaded",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1018,
+      362,
+      1122,
+      379
+     ],
+     "text": "CardBook",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      375,
+      1547,
+      390
+     ],
+     "text": "97,010 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      112,
+      386,
+      337,
+      401
+     ],
+     "text": "Calendar and Date/Time",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      591,
+      390,
+      692,
+      404
+     ],
+     "text": "Chat and 1M",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1018,
+      391,
+      1091,
+      404
+     ],
+     "text": "Contacts",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      412,
+      1689,
+      432
+     ],
+     "text": "Remove Duplicate Messa...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      413,
+      1429,
+      427
+     ],
+     "text": "6.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      707,
+      416,
+      735,
+      431
+     ],
+     "text": "(32)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1133,
+      416,
+      1171,
+      431
+     ],
+     "text": "(528)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      112,
+      433,
+      222,
+      448
+     ],
+     "text": "Chat and 1M",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      437,
+      1547,
+      452
+     ],
+     "text": "89,200 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1443,
+      474,
+      1544,
+      494
+     ],
+     "text": "Mail Merge",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      475,
+      1429,
+      489
+     ],
+     "text": "7.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      112,
+      480,
+      192,
+      494
+     ],
+     "text": "Contacts",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      499,
+      1547,
+      514
+     ],
+     "text": "77,822 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      526,
+      281,
+      541
+     ],
+     "text": "Folders and Filters",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      477,
+      534,
+      894,
+      570
+     ],
+     "text": "Up & Coming Extensions",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      536,
+      1698,
+      556
+     ],
+     "text": "Grammar and Spell Check...",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      537,
+      1429,
+      551
+     ],
+     "text": "8.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      915,
+      546,
+      989,
+      561
+     ],
+     "text": "See all »",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      561,
+      1547,
+      576
+     ],
+     "text": "76,406 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      574,
+      243,
+      593
+     ],
+     "text": "Import/Export",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      598,
+      1533,
+      613
+     ],
+     "text": "CardBook",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1413,
+      599,
+      1429,
+      613
+     ],
+     "text": "9.",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      620,
+      282,
+      639
+     ],
+     "text": "Language Support",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      591,
+      621,
+      736,
+      638
+     ],
+     "text": "Thunderbook",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1017,
+      621,
+      1253,
+      638
+     ],
+     "text": "Attachment Extractor",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      623,
+      1547,
+      638
+     ],
+     "text": "57,960 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      650,
+      711,
+      667
+     ],
+     "text": "Import/Export",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      650,
+      1138,
+      667
+     ],
+     "text": "Import/Export",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1408,
+      660,
+      1574,
+      675
+     ],
+     "text": "10. Web Translate",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      666,
+      315,
+      686
+     ],
+     "text": "Message Composition",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1133,
+      675,
+      1171,
+      690
+     ],
+     "text": "(100)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1442,
+      685,
+      1547,
+      700
+     ],
+     "text": "57,926 users",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      713,
+      370,
+      733
+     ],
+     "text": "Message and News Reading",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      731,
+      1112,
+      748
+     ],
+     "text": "BiDi Mail",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      732,
+      718,
+      748
+     ],
+     "text": "Extract 'Em!",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      759,
+      242,
+      774
+     ],
+     "text": "Miscellaneous",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      759,
+      1255,
+      777
+     ],
+     "text": "Message and News Reading",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      592,
+      760,
+      711,
+      777
+     ],
+     "text": "Import/Export",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      707,
+      785,
+      735,
+      800
+     ],
+     "text": "(21)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1134,
+      785,
+      1162,
+      800
+     ],
+     "text": "(59)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      113,
+      806,
+      298,
+      826
+     ],
+     "text": "Privacy and Security",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      591,
+      841,
+      735,
+      863
+     ],
+     "text": "changeQuote",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1019,
+      841,
+      1149,
+      858
+     ],
+     "text": "Not All Dark",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      111,
+      854,
+      153,
+      873
+     ],
+     "text": "Tags",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      590,
+      869,
+      857,
+      887
+     ],
+     "text": "Appearance and Customization",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1017,
+      869,
+      1284,
+      887
+     ],
+     "text": "Appearance and Customization",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      682,
+      894,
+      735,
+      910
+     ],
+     "text": "V (29)",
+     "score": 1.0
+    },
+    {
+     "bbox": [
+      1018,
+      894,
+      1128,
+      911
+     ],
+     "text": "Not yet rated",
+     "score": 1.0
+    }
+   ]
+  }
+ ]
+}
