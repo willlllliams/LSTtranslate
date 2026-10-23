@@ -1,0 +1,93 @@
+{
+ "source_sha256": "40de1d46253c8133ca4106fd32d0236bd4ebe2426931f01b559e0ca0c103beea",
+ "width": 218,
+ "height": 95,
+ "seconds": 0.42760099994484335,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    218,
+    95
+   ],
+   "order": 0,
+   "score": 0.8908728571428571,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      12,
+      7,
+      79,
+      15
+     ],
+     "text": "Creats Public README",
+     "score": 0.91638
+    },
+    {
+     "bbox": [
+      11,
+      25,
+      213,
+      35
+     ],
+     "text": "Crwate a public repositary caled -gitiut. Once created, add a /praiila/",
+     "score": 0.88902
+    },
+    {
+     "bbox": [
+      11,
+      34,
+      197,
+      44
+     ],
+     "text": "kswors.ed. The README will appeer on your organization's profile,",
+     "score": 0.91253
+    },
+    {
+     "bbox": [
+      12,
+      44,
+      62,
+      54
+     ],
+     "text": "visible to arryons.",
+     "score": 0.85474
+    },
+    {
+     "bbox": [
+      12,
+      59,
+      72,
+      68
+     ],
+     "text": "lleed documentation",
+     "score": 0.88827
+    },
+    {
+     "bbox": [
+      114,
+      77,
+      176,
+      88
+     ],
+     "text": "β Crute repository",
+     "score": 0.83838
+    },
+    {
+     "bbox": [
+      189,
+      78,
+      210,
+      86
+     ],
+     "text": "Cancel",
+     "score": 0.93679
+    }
+   ]
+  }
+ ]
+}

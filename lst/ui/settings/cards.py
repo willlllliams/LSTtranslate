@@ -60,7 +60,6 @@ FIELD_GLYPHS: Final[dict[str, str]] = {
     "ocr.grayscale": Glyph.PICTURE,
     "ocr.resize_max_side": Glyph.SLIDERS,
     "screenshot.target_lang": Glyph.TRANSLATE_AA,
-    "race.show_source_marker.overlay": Glyph.PIN,
     "bilingual.pair": Glyph.TRANSLATE_AA,
     "bilingual.debounce_ms": Glyph.STOPWATCH,
     "bilingual.layout": Glyph.LAYOUT,

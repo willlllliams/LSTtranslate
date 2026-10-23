@@ -1,0 +1,66 @@
+{
+  "width": 641,
+  "height": 279,
+  "units": [
+    {
+      "id": "title",
+      "bbox": [
+        14,
+        17,
+        209,
+        34
+      ],
+      "text": "Create Public README",
+      "zh": "创建公开 README",
+      "role": "title"
+    },
+    {
+      "id": "body",
+      "bbox": [
+        12,
+        75,
+        617,
+        154
+      ],
+      "text": "Create a public repository called .github. Once created, add a /profile/README.md. The README will appear on your organization's profile, visible to anyone.",
+      "zh": "创建一个名为 .github 的公开仓库。创建后，添加 /profile/README.md 文件。README 会显示在组织主页上，所有人都可以查看。",
+      "role": "body"
+    },
+    {
+      "id": "documentation",
+      "bbox": [
+        12,
+        175,
+        190,
+        193
+      ],
+      "text": "Read documentation",
+      "zh": "阅读文档",
+      "role": "link"
+    },
+    {
+      "id": "create",
+      "bbox": [
+        358,
+        231,
+        509,
+        256
+      ],
+      "text": "Create repository",
+      "zh": "创建仓库",
+      "role": "button"
+    },
+    {
+      "id": "cancel",
+      "bbox": [
+        550,
+        233,
+        608,
+        251
+      ],
+      "text": "Cancel",
+      "zh": "取消",
+      "role": "button"
+    }
+  ]
+}

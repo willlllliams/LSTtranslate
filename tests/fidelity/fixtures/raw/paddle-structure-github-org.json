@@ -1,0 +1,997 @@
+{
+ "source_sha256": "befe3a8812dc357541abb9e2e97cf5d457c38747141a8b779b1f2486ec1894b1",
+ "width": 2288,
+ "height": 1169,
+ "seconds": 6.171335899969563,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "header_footer",
+   "bbox": [
+    25,
+    30,
+    75,
+    75
+   ],
+   "order": 0,
+   "score": 0.5192515850067139,
+   "text": "Q",
+   "lines": [
+    {
+     "bbox": [
+      25,
+      30,
+      76,
+      76
+     ],
+     "text": "Q",
+     "score": 0.5959968566894531
+    }
+   ]
+  },
+  {
+   "id": "1",
+   "category": "header_footer",
+   "bbox": [
+    90,
+    43,
+    265,
+    62
+   ],
+   "order": 1,
+   "score": 0.6728975772857666,
+   "text": "fleetsnowfluffhome",
+   "lines": [
+    {
+     "bbox": [
+      89,
+      41,
+      265,
+      67
+     ],
+     "text": "fleetsnowfluffhome",
+     "score": 0.9786207675933838
+    }
+   ]
+  },
+  {
+   "id": "2",
+   "category": "header_footer",
+   "bbox": [
+    1704,
+    40,
+    1896,
+    67
+   ],
+   "order": 2,
+   "score": 0.6458920240402222,
+   "text": "Q\nTypeto search",
+   "lines": [
+    {
+     "bbox": [
+      1710,
+      43,
+      1737,
+      63
+     ],
+     "text": "Q",
+     "score": 0.9989977478981018
+    },
+    {
+     "bbox": [
+      1728,
+      41,
+      1895,
+      68
+     ],
+     "text": "Typeto search",
+     "score": 0.9933398962020874
+    }
+   ]
+  },
+  {
+   "id": "3",
+   "category": "header_footer",
+   "bbox": [
+    3,
+    99,
+    1096,
+    126
+   ],
+   "order": 3,
+   "score": 0.6209642887115479,
+   "text": "Overview\nRepositories\n田\nProjects\n?\nPackages\n83\nTeams\n8\nPeople1 匹 Insights\n☆\nSettings",
+   "lines": [
+    {
+     "bbox": [
+      10,
+      103,
+      99,
+      126
+     ],
+     "text": "Overview",
+     "score": 0.9972155094146729
+    },
+    {
+     "bbox": [
+      157,
+      102,
+      268,
+      129
+     ],
+     "text": "Repositories",
+     "score": 0.9838590621948242
+    },
+    {
+     "bbox": [
+      299,
+      102,
+      323,
+      124
+     ],
+     "text": "田",
+     "score": 0.9416899681091309
+    },
+    {
+     "bbox": [
+      327,
+      101,
+      405,
+      128
+     ],
+     "text": "Projects",
+     "score": 0.9980748891830444
+    },
+    {
+     "bbox": [
+      434,
+      102,
+      457,
+      124
+     ],
+     "text": "?",
+     "score": 0.20565126836299896
+    },
+    {
+     "bbox": [
+      462,
+      100,
+      548,
+      129
+     ],
+     "text": "Packages",
+     "score": 0.9957758188247681
+    },
+    {
+     "bbox": [
+      576,
+      103,
+      606,
+      122
+     ],
+     "text": "83",
+     "score": 0.9833373427391052
+    },
+    {
+     "bbox": [
+      607,
+      103,
+      668,
+      127
+     ],
+     "text": "Teams",
+     "score": 0.9990296363830566
+    },
+    {
+     "bbox": [
+      696,
+      99,
+      738,
+      126
+     ],
+     "text": "8",
+     "score": 0.9743699431419373
+    },
+    {
+     "bbox": [
+      723,
+      99,
+      961,
+      130
+     ],
+     "text": "People1 匹 Insights",
+     "score": 0.9186794757843018
+    },
+    {
+     "bbox": [
+      991,
+      102,
+      1015,
+      125
+     ],
+     "text": "☆",
+     "score": 0.4761311411857605
+    },
+    {
+     "bbox": [
+      1020,
+      101,
+      1096,
+      129
+     ],
+     "text": "Settings",
+     "score": 0.9982320070266724
+    }
+   ]
+  },
+  {
+   "id": "4",
+   "category": "text",
+   "bbox": [
+    0,
+    176,
+    552,
+    200
+   ],
+   "order": 4,
+   "score": 0.6605269312858582,
+   "text": "'ve invited 1 member. They'll receive their invitation email shortly.",
+   "lines": [
+    {
+     "bbox": [
+      0,
+      177,
+      550,
+      201
+     ],
+     "text": "'ve invited 1 member. They'll receive their invitation email shortly.",
+     "score": 0.9873782992362976
+    }
+   ]
+  },
+  {
+   "id": "5",
+   "category": "image",
+   "bbox": [
+    376,
+    260,
+    514,
+    400
+   ],
+   "order": 5,
+   "score": 0.6980818510055542,
+   "text": "",
+   "lines": []
+  },
+  {
+   "id": "6",
+   "category": "title",
+   "bbox": [
+    368,
+    524,
+    1242,
+    621
+   ],
+   "order": 6,
+   "score": 0.3652908205986023,
+   "text": "We think you're gonna like it here.\nWe've suggested some tasks here in your organization's overview to help you get started.",
+   "lines": [
+    {
+     "bbox": [
+      376,
+      526,
+      1061,
+      577
+     ],
+     "text": "We think you're gonna like it here.",
+     "score": 0.9512431621551514
+    },
+    {
+     "bbox": [
+      375,
+      589,
+      1237,
+      618
+     ],
+     "text": "We've suggested some tasks here in your organization's overview to help you get started.",
+     "score": 0.9838586449623108
+    }
+   ]
+  },
+  {
+   "id": "7",
+   "category": "text",
+   "bbox": [
+    543,
+    265,
+    845,
+    303
+   ],
+   "order": 7,
+   "score": 0.5750969648361206,
+   "text": "fleetsnowfluffhome",
+   "lines": [
+    {
+     "bbox": [
+      544,
+      267,
+      840,
+      303
+     ],
+     "text": "fleetsnowfluffhome",
+     "score": 0.9988728761672974
+    }
+   ]
+  },
+  {
+   "id": "8",
+   "category": "title",
+   "bbox": [
+    383,
+    677,
+    620,
+    712
+   ],
+   "order": 8,
+   "score": 0.6006529331207275,
+   "text": "Invite your people",
+   "lines": [
+    {
+     "bbox": [
+      427,
+      682,
+      617,
+      712
+     ],
+     "text": "Invite your people",
+     "score": 0.9603000283241272
+    }
+   ]
+  },
+  {
+   "id": "9",
+   "category": "text",
+   "bbox": [
+    449,
+    802,
+    757,
+    876
+   ],
+   "order": 9,
+   "score": 0.8225994110107422,
+   "text": "Invite your first member\nFind people by their GitHub username or\nemail address.",
+   "lines": [
+    {
+     "bbox": [
+      457,
+      805,
+      661,
+      825
+     ],
+     "text": "Invite your first member",
+     "score": 0.9945802688598633
+    },
+    {
+     "bbox": [
+      455,
+      831,
+      756,
+      851
+     ],
+     "text": "Find people by their GitHub username or",
+     "score": 0.9902885556221008
+    },
+    {
+     "bbox": [
+      454,
+      858,
+      562,
+      875
+     ],
+     "text": "email address.",
+     "score": 0.9911503791809082
+    }
+   ]
+  },
+  {
+   "id": "10",
+   "category": "text",
+   "bbox": [
+    845,
+    802,
+    1151,
+    875
+   ],
+   "order": 10,
+   "score": 0.7728857398033142,
+   "text": "Customize members'\npermissions\nSet everyone's base permissions for your\ncode.",
+   "lines": [
+    {
+     "bbox": [
+      854,
+      808,
+      1041,
+      824
+     ],
+     "text": "Customize members'",
+     "score": 0.9943211078643799
+    },
+    {
+     "bbox": [
+      1037,
+      808,
+      1144,
+      824
+     ],
+     "text": "permissions",
+     "score": 0.9997619390487671
+    },
+    {
+     "bbox": [
+      849,
+      830,
+      1149,
+      852
+     ],
+     "text": "Set everyone's base permissions for your",
+     "score": 0.9787135124206543
+    },
+    {
+     "bbox": [
+      850,
+      857,
+      895,
+      876
+     ],
+     "text": "code.",
+     "score": 0.9929555654525757
+    }
+   ]
+  },
+  {
+   "id": "11",
+   "category": "title",
+   "bbox": [
+    427,
+    951,
+    645,
+    984
+   ],
+   "order": 11,
+   "score": 0.5163687467575073,
+   "text": "Collaborative coding",
+   "lines": [
+    {
+     "bbox": [
+      432,
+      952,
+      642,
+      983
+     ],
+     "text": "Collaborative coding",
+     "score": 0.9986472129821777
+    }
+   ]
+  },
+  {
+   "id": "12",
+   "category": "text",
+   "bbox": [
+    454,
+    1091,
+    766,
+    1165
+   ],
+   "order": 12,
+   "score": 0.7044613361358643,
+   "text": "Create a pull request\nPropose and collaborate on changes to a\nrepository.",
+   "lines": [
+    {
+     "bbox": [
+      463,
+      1094,
+      644,
+      1111
+     ],
+     "text": "Create a pull request",
+     "score": 0.9749190211296082
+    },
+    {
+     "bbox": [
+      460,
+      1117,
+      762,
+      1138
+     ],
+     "text": "Propose and collaborate on changes to a",
+     "score": 0.9848834276199341
+    },
+    {
+     "bbox": [
+      458,
+      1142,
+      542,
+      1165
+     ],
+     "text": "repository.",
+     "score": 0.9965757131576538
+    }
+   ]
+  },
+  {
+   "id": "13",
+   "category": "text",
+   "bbox": [
+    851,
+    1090,
+    1169,
+    1162
+   ],
+   "order": 13,
+   "score": 0.633625864982605,
+   "text": "Create a branch protection rule\nEnforce certain workflows for one or more\nbranches.",
+   "lines": [
+    {
+     "bbox": [
+      858,
+      1091,
+      1130,
+      1111
+     ],
+     "text": "Create a branch protection rule",
+     "score": 0.9961066842079163
+    },
+    {
+     "bbox": [
+      857,
+      1118,
+      1165,
+      1137
+     ],
+     "text": "Enforce certain workflows for one or more",
+     "score": 0.9875562787055969
+    },
+    {
+     "bbox": [
+      855,
+      1143,
+      929,
+      1163
+     ],
+     "text": "branches.",
+     "score": 0.9972459077835083
+    }
+   ]
+  },
+  {
+   "id": "14",
+   "category": "text",
+   "bbox": [
+    1297,
+    963,
+    1585,
+    987
+   ],
+   "order": 14,
+   "score": 0.48930415511131287,
+   "text": "See more about collaborative coding",
+   "lines": [
+    {
+     "bbox": [
+      1303,
+      965,
+      1575,
+      986
+     ],
+     "text": "See more about collaborative coding",
+     "score": 0.9861682057380676
+    }
+   ]
+  },
+  {
+   "id": "15",
+   "category": "text",
+   "bbox": [
+    1997,
+    297,
+    2064,
+    319
+   ],
+   "order": 15,
+   "score": 0.5339728593826294,
+   "text": "Follow",
+   "lines": [
+    {
+     "bbox": [
+      1999,
+      296,
+      2062,
+      321
+     ],
+     "text": "Follow",
+     "score": 0.9966654777526855
+    }
+   ]
+  },
+  {
+   "id": "16",
+   "category": "title",
+   "bbox": [
+    1677,
+    507,
+    1864,
+    532
+   ],
+   "order": 16,
+   "score": 0.49407798051834106,
+   "text": "0\nView as: Public",
+   "lines": [
+    {
+     "bbox": [
+      1683,
+      511,
+      1706,
+      527
+     ],
+     "text": "0",
+     "score": 0.296163946390152
+    },
+    {
+     "bbox": [
+      1714,
+      510,
+      1846,
+      531
+     ],
+     "text": "View as: Public",
+     "score": 0.9950502514839172
+    }
+   ]
+  },
+  {
+   "id": "17",
+   "category": "text",
+   "bbox": [
+    1659,
+    555,
+    2054,
+    697
+   ],
+   "order": 17,
+   "score": 0.8521708846092224,
+   "text": "You are viewing the README and pinned repositories\nas a public user.\nYou can create a README file visible to anyone.\nYou can hide the tasks we've suggested on this page\nand bring them back later.",
+   "lines": [
+    {
+     "bbox": [
+      1664,
+      557,
+      2052,
+      577
+     ],
+     "text": "You are viewing the README and pinned repositories",
+     "score": 0.9768588542938232
+    },
+    {
+     "bbox": [
+      1663,
+      584,
+      1783,
+      600
+     ],
+     "text": "as a public user.",
+     "score": 0.9862945675849915
+    },
+    {
+     "bbox": [
+      1662,
+      616,
+      2008,
+      637
+     ],
+     "text": "You can create a README file visible to anyone.",
+     "score": 0.9795715808868408
+    },
+    {
+     "bbox": [
+      1662,
+      652,
+      2047,
+      673
+     ],
+     "text": "You can hide the tasks we've suggested on this page",
+     "score": 0.9872074723243713
+    },
+    {
+     "bbox": [
+      1662,
+      676,
+      1857,
+      695
+     ],
+     "text": "and bring them back later.",
+     "score": 0.9783615469932556
+    }
+   ]
+  },
+  {
+   "id": "18",
+   "category": "title",
+   "bbox": [
+    1661,
+    747,
+    1782,
+    773
+   ],
+   "order": 18,
+   "score": 0.42648079991340637,
+   "text": "Discussions",
+   "lines": [
+    {
+     "bbox": [
+      1663,
+      746,
+      1780,
+      773
+     ],
+     "text": "Discussions",
+     "score": 0.9995502233505249
+    }
+   ]
+  },
+  {
+   "id": "19",
+   "category": "text",
+   "bbox": [
+    1658,
+    800,
+    2000,
+    894
+   ],
+   "order": 19,
+   "score": 0.5919013619422913,
+   "text": "Set up discussions to engage with your\ncommunity!\nTurn on discussions",
+   "lines": [
+    {
+     "bbox": [
+      1662,
+      800,
+      1996,
+      824
+     ],
+     "text": "Set up discussions to engage with your",
+     "score": 0.9974223971366882
+    },
+    {
+     "bbox": [
+      1663,
+      831,
+      1769,
+      852
+     ],
+     "text": "community!",
+     "score": 0.9980360865592957
+    },
+    {
+     "bbox": [
+      1664,
+      874,
+      1833,
+      894
+     ],
+     "text": "Turn on discussions",
+     "score": 0.9912699460983276
+    }
+   ]
+  },
+  {
+   "id": "20",
+   "category": "text",
+   "bbox": [
+    1661,
+    967,
+    1789,
+    994
+   ],
+   "order": 20,
+   "score": 0.5564766526222229,
+   "text": "Repositories",
+   "lines": [
+    {
+     "bbox": [
+      1664,
+      970,
+      1787,
+      994
+     ],
+     "text": "Repositories",
+     "score": 0.9997695088386536
+    }
+   ]
+  },
+  {
+   "id": "21",
+   "category": "text",
+   "bbox": [
+    1671,
+    1024,
+    1923,
+    1050
+   ],
+   "order": 21,
+   "score": 0.5268692374229431,
+   "text": "Create new repository\nImport",
+   "lines": [
+    {
+     "bbox": [
+      1675,
+      1027,
+      1839,
+      1050
+     ],
+     "text": "Create new repository",
+     "score": 0.9967871308326721
+    },
+    {
+     "bbox": [
+      1868,
+      1030,
+      1922,
+      1048
+     ],
+     "text": "Import",
+     "score": 0.9971131682395935
+    }
+   ]
+  },
+  {
+   "id": "22",
+   "category": "text",
+   "bbox": [
+    1661,
+    1126,
+    1737,
+    1153
+   ],
+   "order": 22,
+   "score": 0.441165953874588,
+   "text": "People",
+   "lines": [
+    {
+     "bbox": [
+      1663,
+      1128,
+      1735,
+      1153
+     ],
+     "text": "People",
+     "score": 0.9996910095214844
+    }
+   ]
+  },
+  {
+   "id": "23",
+   "category": "text",
+   "bbox": [
+    1968,
+    39,
+    1997,
+    66
+   ],
+   "order": 23,
+   "score": 0.25763508677482605,
+   "text": "8",
+   "lines": [
+    {
+     "bbox": [
+      1968,
+      39,
+      1997,
+      66
+     ],
+     "text": "8",
+     "score": 0.25763508677482605
+    }
+   ]
+  },
+  {
+   "id": "24",
+   "category": "text",
+   "bbox": [
+    2017,
+    51,
+    2023,
+    56
+   ],
+   "order": 24,
+   "score": 0.6573025584220886,
+   "text": "-",
+   "lines": [
+    {
+     "bbox": [
+      2017,
+      51,
+      2023,
+      56
+     ],
+     "text": "-",
+     "score": 0.6573025584220886
+    }
+   ]
+  },
+  {
+   "id": "25",
+   "category": "text",
+   "bbox": [
+    2056,
+    42,
+    2081,
+    63
+   ],
+   "order": 25,
+   "score": 0.2706952691078186,
+   "text": "2",
+   "lines": [
+    {
+     "bbox": [
+      2056,
+      42,
+      2081,
+      63
+     ],
+     "text": "2",
+     "score": 0.2706952691078186
+    }
+   ]
+  },
+  {
+   "id": "26",
+   "category": "text",
+   "bbox": [
+    2087,
+    48,
+    2098,
+    57
+   ],
+   "order": 26,
+   "score": 0.19306324422359467,
+   "text": "1",
+   "lines": [
+    {
+     "bbox": [
+      2087,
+      48,
+      2098,
+      57
+     ],
+     "text": "1",
+     "score": 0.19306324422359467
+    }
+   ]
+  },
+  {
+   "id": "27",
+   "category": "text",
+   "bbox": [
+    385,
+    949,
+    419,
+    979
+   ],
+   "order": 27,
+   "score": 0.31931644678115845,
+   "text": "四",
+   "lines": [
+    {
+     "bbox": [
+      385,
+      949,
+      419,
+      979
+     ],
+     "text": "四",
+     "score": 0.31931644678115845
+    }
+   ]
+  }
+ ]
+}

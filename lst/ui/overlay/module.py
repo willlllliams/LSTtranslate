@@ -6,7 +6,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget
 
 from lst.contracts.config import AppConfig
-from lst.contracts.events import EngineStatuses, SegmentsUpdated, SessionProgress, WorkerStatuses
+from lst.contracts.events import SegmentsUpdated, SessionProgress, WorkerStatuses
 from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed
 from lst.kernel import ModuleContext
 from lst.ui.overlay.presenter import OverlayPresenter
@@ -63,7 +63,6 @@ class OverlayModule:
         self._presenter = presenter
         ctx.subscribe(AppConfig, presenter.on_config)
         ctx.subscribe(WorkerStatuses, presenter.on_worker_statuses)
-        ctx.subscribe(EngineStatuses, presenter.on_engine_statuses)
         ctx.subscribe(CaptureCompleted, presenter.on_capture)
         ctx.subscribe(OcrCompleted, presenter.on_ocr_completed)
         ctx.subscribe(OcrFailed, presenter.on_ocr_failed)

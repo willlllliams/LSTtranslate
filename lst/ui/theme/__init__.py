@@ -193,7 +193,7 @@ def style_primary_button(button: QPushButton, glyph: str | None = None) -> None:
         button.setIcon(fluent_icon(glyph, role="on_accent"))
 
 
-# 引擎实例的标识颜色在配置里没有指定时，按实例号稳定地取下面一种（需求 RACE-06 的来源标记）。
+# 引擎实例的标识颜色在配置里没有指定时，按实例号稳定地取下面一种（引擎设置列表的图标）。
 _ENGINE_PALETTE = ("#0F6CBD", "#C239B3", "#0E7A0D", "#CA5010", "#8764B8", "#038387", "#986F0B", "#D13438")
 
 _PREFERRED_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI")

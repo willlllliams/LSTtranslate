@@ -7,7 +7,6 @@ from lst.services.race.config import (
     LangCode,
     RaceConfig,
     ScreenshotConfig,
-    SourceMarkerConfig,
 )
 from lst.services.race.langid import (
     DEFAULT_CANDIDATES,
@@ -45,7 +44,6 @@ __all__ = [
     "ScreenshotConfig",
     "SegmentRace",
     "SessionRace",
-    "SourceMarkerConfig",
     "SupportsLanguageDetection",
     "bilingual_langs",
     "chinese_variant",

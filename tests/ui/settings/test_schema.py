@@ -1,7 +1,7 @@
 """schema 的测试：从真实的 pydantic 模型读出设置项的类型、取值范围和默认值，以及校验错误的说明。"""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from lst.contracts.worker_protocol import JsonValue
 from lst.ui import i18n
@@ -46,8 +46,14 @@ def test_integer_range_and_default_come_from_the_model() -> None:
 
 
 def test_nested_model_path() -> None:
-    marker = spec("race", "show_source_marker", "overlay")
-    assert (marker.kind, marker.default) == (Kind.BOOL, False)
+    class Options(BaseModel):
+        enabled: bool = False
+
+    class Example(BaseModel):
+        options: Options = Options()
+
+    item = field_spec(Example, ("options", "enabled"))
+    assert (item.kind, item.default) == (Kind.BOOL, False)
 
 
 def test_exclusive_float_minimum() -> None:
@@ -99,7 +105,7 @@ def test_read_value_falls_back_to_the_default() -> None:
     debounce = spec("bilingual", "debounce_ms")
     assert read_value(config, "bilingual", ("debounce_ms",), debounce) == 700
     assert read_value(None, "bilingual", ("debounce_ms",), debounce) == 400
-    assert read_path(config, "race", ("show_source_marker", "overlay")) is False
+    assert read_path(config, "bilingual", ("layout",)) == "vertical"
     assert read_path(config, "bilingual", ("nope", "deeper")) is None
 
 
@@ -110,7 +116,7 @@ def test_optional_fields_read_none_not_the_default() -> None:
 
 def test_nested_patch() -> None:
     value: JsonValue = True
-    assert nested_patch(("show_source_marker", "overlay"), value) == {"show_source_marker": {"overlay": True}}
+    assert nested_patch(("options", "enabled"), value) == {"options": {"enabled": True}}
     assert nested_patch(("layout",), "horizontal") == {"layout": "horizontal"}
 
 

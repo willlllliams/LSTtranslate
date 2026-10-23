@@ -6,13 +6,11 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from lst.services.race import CONFIG_SECTIONS, REMOVED_FIELDS, BilingualConfig, RaceConfig, ScreenshotConfig
-from lst.services.race.config import SourceMarkerConfig
 
 
 def test_defaults_match_architecture_example() -> None:
     """默认值与架构文档第 9 章的配置示例一致。"""
-    race = RaceConfig()
-    assert race.show_source_marker == SourceMarkerConfig(overlay=False)
+    assert RaceConfig().model_dump() == {}
     assert ScreenshotConfig().target_lang == "zh-Hans"
     bilingual = BilingualConfig()
     assert bilingual.pair == ("zh-Hans", "en")
@@ -26,20 +24,19 @@ def test_config_sections_registry() -> None:
 
 def test_parse_toml_like_values() -> None:
     race = RaceConfig.model_validate({"show_source_marker": {"overlay": True}})
-    assert race.show_source_marker.overlay is True
+    assert race.model_dump() == {}
 
 
 def test_removed_fields_are_dropped_from_old_files() -> None:
     """旧配置里的结束方式（mode）、双语窗口的来源标记与 auto_billing 读取时丢掉，同一节的其他字段照常生效。"""
     assert {
-        "race": frozenset({"mode"}),
-        "show_source_marker": frozenset({"bilingual"}),
+        "race": frozenset({"mode", "show_source_marker"}),
         "bilingual": frozenset({"auto_billing"}),
     } == REMOVED_FIELDS
     race = RaceConfig.model_validate(
         {"mode": "full", "show_source_marker": {"overlay": True, "bilingual": False}}
     )
-    assert race == RaceConfig(show_source_marker=SourceMarkerConfig(overlay=True))
+    assert race.model_dump() == {}
     assert "mode" not in race.model_dump()
     bilingual = BilingualConfig.model_validate({"auto_billing": True, "debounce_ms": 800})
     assert bilingual.debounce_ms == 800
@@ -80,8 +77,6 @@ def test_pair_is_normalized() -> None:
         (BilingualConfig, {"pair": ["zh-Hans", "en", "ja"]}, ("pair",)),
         (BilingualConfig, {"debounce_ms": 0}, ("debounce_ms",)),
         (BilingualConfig, {"debounce_ms": 60_000}, ("debounce_ms",)),
-        (RaceConfig, {"show_source_marker": {"tray": True}}, ("show_source_marker", "tray")),
-        (RaceConfig, {"show_source_marker": {"overlay": "sometimes"}}, ("show_source_marker", "overlay")),
         (RaceConfig, {"speed": 1}, ("speed",)),
     ],
 )
@@ -104,7 +99,7 @@ def test_debounce_range_bounds() -> None:
     assert BilingualConfig(debounce_ms=5000).debounce_ms == 5000
 
 
-@pytest.mark.parametrize("model", [RaceConfig, ScreenshotConfig, BilingualConfig, SourceMarkerConfig])
+@pytest.mark.parametrize("model", [ScreenshotConfig, BilingualConfig])
 def test_models_are_frozen(model: type[BaseModel]) -> None:
     instance = model()
     field = next(iter(type(instance).model_fields))

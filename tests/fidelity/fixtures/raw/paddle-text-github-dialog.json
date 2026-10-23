@@ -1,0 +1,113 @@
+{
+ "source_sha256": "1222ab4b5422e6eecaa36da8091cea57185b12cd826b1e583c0fac7592572f5a",
+ "width": 641,
+ "height": 279,
+ "seconds": 0.4994217000203207,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    641,
+    279
+   ],
+   "order": 0,
+   "score": 0.9590757820341322,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      12,
+      15,
+      210,
+      35
+     ],
+     "text": "Create Public README",
+     "score": 0.9750645756721497
+    },
+    {
+     "bbox": [
+      608,
+      17,
+      618,
+      27
+     ],
+     "text": "X",
+     "score": 0.862883985042572
+    },
+    {
+     "bbox": [
+      11,
+      72,
+      617,
+      96
+     ],
+     "text": "Create a public repository called .github. Once created, add a /profile/",
+     "score": 0.97542405128479
+    },
+    {
+     "bbox": [
+      11,
+      103,
+      567,
+      126
+     ],
+     "text": "README. md. The README will appear on your organization's profile,",
+     "score": 0.967780590057373
+    },
+    {
+     "bbox": [
+      10,
+      130,
+      163,
+      155
+     ],
+     "text": "visible to anyone.",
+     "score": 0.9859248399734497
+    },
+    {
+     "bbox": [
+      10,
+      171,
+      191,
+      197
+     ],
+     "text": "Read documentation",
+     "score": 0.9992858171463013
+    },
+    {
+     "bbox": [
+      331,
+      233,
+      349,
+      251
+     ],
+     "text": "日",
+     "score": 0.9136012196540833
+    },
+    {
+     "bbox": [
+      347,
+      226,
+      511,
+      256
+     ],
+     "text": " Create repository",
+     "score": 0.9522162675857544
+    },
+    {
+     "bbox": [
+      549,
+      232,
+      610,
+      253
+     ],
+     "text": "Cancel",
+     "score": 0.9995006918907166
+    }
+   ]
+  }
+ ]
+}

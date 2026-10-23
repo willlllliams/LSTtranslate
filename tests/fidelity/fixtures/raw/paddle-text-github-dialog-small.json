@@ -1,0 +1,73 @@
+{
+ "source_sha256": "40de1d46253c8133ca4106fd32d0236bd4ebe2426931f01b559e0ca0c103beea",
+ "width": 218,
+ "height": 95,
+ "seconds": 0.1744773000245914,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    218,
+    95
+   ],
+   "order": 0,
+   "score": 0.6447849273681641,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      14,
+      7,
+      77,
+      14
+     ],
+     "text": "Creabe Pubiic READMt",
+     "score": 0.8452285528182983
+    },
+    {
+     "bbox": [
+      13,
+      43,
+      56,
+      53
+     ],
+     "text": "vivihl no amgon",
+     "score": 0.6141072511672974
+    },
+    {
+     "bbox": [
+      12,
+      58,
+      72,
+      68
+     ],
+     "text": "Aend docu mentatinn",
+     "score": 0.7965829968452454
+    },
+    {
+     "bbox": [
+      113,
+      75,
+      174,
+      90
+     ],
+     "text": "atpay",
+     "score": 0.3849467635154724
+    },
+    {
+     "bbox": [
+      189,
+      77,
+      208,
+      85
+     ],
+     "text": "Cn",
+     "score": 0.5830590724945068
+    }
+   ]
+  }
+ ]
+}

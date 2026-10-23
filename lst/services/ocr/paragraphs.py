@@ -62,12 +62,13 @@ from __future__ import annotations
 
 import bisect
 import math
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, fields
-from typing import Protocol
+from typing import Literal, Protocol
 
 from lst.contracts.ocr import BBox, TextLine
-from lst.contracts.text import join_lines
+from lst.contracts.text import is_cjk, join_lines
 from lst.services.ocr.appearance import Appearance, compatible, same_color
 
 # ---------------------------------------------------------------- 结果与协议
@@ -129,6 +130,37 @@ class MergeParams:
                 raise ValueError(f"MergeParams.{item.name} 必须是非负有限数")
 
 
+@dataclass(frozen=True, slots=True)
+class ParagraphRules:
+    """语句边界只调整相邻行的合并；字号、颜色、分栏和唯一续行约束继续生效。"""
+
+    mode: Literal["geometric", "smart", "sentence", "continuous"] = "geometric"
+    continuation_gap: float = 1.15
+    sentence_endings: str = ".!?。！？"
+
+
+def ends_sentence(text: str, endings: str) -> bool:
+    """识别行尾句末标点，忽略闭引号、括号和常见西文缩写中的句点。"""
+    tail = text.rstrip(" \t\r\n\"'”’」』）)]}】》〉")
+    if not tail or tail[-1] not in endings:
+        return False
+    if tail.endswith("."):
+        token = tail.rsplit(maxsplit=1)[-1]
+        if re.fullmatch(r"(?:[A-Za-z]\.){2,}", token) or token.casefold() in {
+            "mr.",
+            "mrs.",
+            "ms.",
+            "dr.",
+            "prof.",
+            "sr.",
+            "jr.",
+            "vs.",
+            "etc.",
+        }:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------- 几何工具
 
 
@@ -174,6 +206,7 @@ class _Row:
     bbox: BBox
     height: float
     appearance: Appearance | None = None
+    text: str = ""
 
 
 class _DisjointSet:
@@ -209,11 +242,13 @@ class GeometricMerger:
         appearance: Callable[[TextLine], Appearance | None] | None = None,
         connects: Callable[[TextLine, TextLine], bool] | None = None,
         gutter: Callable[[TextLine, TextLine, float], bool] | None = None,
+        rules: ParagraphRules | None = None,
     ) -> None:
         self._params = params if params is not None else MergeParams()
         self._appearance = appearance
         self._connects = connects
         self._gutter = gutter
+        self.rules = rules or ParagraphRules()
 
     @property
     def params(self) -> MergeParams:
@@ -356,8 +391,12 @@ class GeometricMerger:
                 _Row(
                     tuple(group),
                     _union(boxes[i] for i in group),
-                    _median([boxes[i].height for i in group]),
+                    _median(
+                        [boxes[i].height for i in group if not _accessory(lines[i].text)]
+                        or [boxes[i].height for i in group]
+                    ),
                     appearances[max(group, key=lambda i: boxes[i].width)],
+                    join_lines(lines[i].text for i in group),
                 )
             )
         return rows
@@ -384,6 +423,8 @@ class GeometricMerger:
         p = self._params
         upper, lower = upper_row.bbox, lower_row.bbox
         h = min(upper_row.height, lower_row.height)
+        if self.rules.mode == "sentence" and ends_sentence(upper_row.text, self.rules.sentence_endings):
+            return False
         if not compatible(upper_row.appearance, lower_row.appearance):
             return False
         if abs(upper_row.height - lower_row.height) > p.height_tolerance * h:
@@ -397,10 +438,18 @@ class GeometricMerger:
         return abs(upper.x0 - lower.x0) <= p.left_align_tolerance * h
 
     def _line_gap(self, row: _Row) -> float:
+        base = self._params.line_gap
+        prose = len(row.text.split()) >= 6 or sum(is_cjk(c) and c.isalpha() for c in row.text) >= 12
+        if (
+            self.rules.mode != "geometric"
+            and prose
+            and (self.rules.mode == "continuous" or not ends_sentence(row.text, self.rules.sentence_endings))
+        ):
+            base = max(base, self.rules.continuation_gap)
         if row.appearance is None:
-            return self._params.line_gap
+            return base
         # 紧贴字形的系统 OCR 框会低估大标题行高；小字控件则按更紧的间距合并。
-        return self._params.line_gap * (1.4 if row.height >= 36 else 0.8)
+        return base * (1.4 if row.height >= 36 else 0.8)
 
     def _link_rows(self, rows: Sequence[_Row]) -> list[list[_Row]]:
         """把行连成段落：只接受互为唯一候选的“上行 → 下行”关系，结果是若干条从上到下的链。"""

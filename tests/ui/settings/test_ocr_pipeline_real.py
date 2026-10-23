@@ -38,6 +38,7 @@ from lst.services.ocr.config import (
     PaddleOcrConfig,
     RapidOcrConfig,
 )
+from lst.ui.settings.controls import ChoiceEditor
 from lst.ui.settings.page_ocr_engine import NormalizePage, OcrEnginePage
 from lst.ui.settings.page_ocr_pipeline import ParamsGroup, collect_params, stage_fields
 from lst.ui.settings.strings_ocr import PARAM_TEXTS
@@ -220,6 +221,26 @@ async def test_normalize_steps_from_the_backend_model(shown: Harness) -> None:
         default_config({"ocr": {"engine": "rapid"}, "ocr_normalize": {"aggregate": False}}, revision=2)
     )
     assert not gap.card.isEnabled()
+
+
+async def test_paragraph_mode_is_editable_localized_and_owned_by_aggregate(shown: Harness) -> None:
+    normalize = normalize_page(shown).normalize
+    assert normalize is not None
+    mode = normalize.binding(("paragraph_mode",))
+    assert mode is not None and isinstance(mode.editor, ChoiceEditor)
+    editor = mode.editor
+    assert editor.combo.currentText() == "智能段落"
+    editor.combo.setCurrentIndex(editor.combo.findData("sentence"))
+    await shown.flush()
+    assert shown.recorded.updates[-1].patch == {"ocr_normalize": {"paragraph_mode": "sentence"}}
+    await shown.publish(
+        default_config(
+            {"ui": {"language": "en"}, "ocr_normalize": {"paragraph_mode": "sentence"}}, revision=2
+        )
+    )
+    assert editor.combo.currentText() == "Sentences"
+    await shown.publish(default_config({"ocr_normalize": {"aggregate": False}}, revision=3))
+    assert not mode.card.isEnabled()
 
 
 async def test_backend_params_in_english(shown: Harness) -> None:

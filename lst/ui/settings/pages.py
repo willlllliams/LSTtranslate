@@ -391,7 +391,7 @@ class StatsPanel(QWidget):
 
 
 class RacePage(SettingsPage):
-    """竞速：覆盖窗口的来源标记、双语窗口的设置，以及竞速统计。"""
+    """竞速：双语窗口的设置，以及竞速统计。"""
 
     page_id = "race"
     icon = Glyph.LIGHTNING
@@ -400,8 +400,6 @@ class RacePage(SettingsPage):
         super().__init__(presenter, builder, dialogs)
         self.build(
             [
-                Title("settings.section.race_mode"),
-                FieldDef("race", ("show_source_marker", "overlay")),
                 Title("settings.section.bilingual"),
                 FieldDef("bilingual", ("pair",), widget="pair"),
                 FieldDef("bilingual", ("debounce_ms",), suffix="settings.suffix.ms"),

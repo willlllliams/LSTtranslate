@@ -124,11 +124,10 @@ async def test_capture_page_shows_model_defaults(harness: Harness) -> None:
 
 
 async def test_race_page_reads_the_config(start_settings: StartSettings) -> None:
-    """竞速页：覆盖窗口的来源标记与双语窗口的设置。结束方式与双语窗口的来源标记已经删除，没有卡片。"""
+    """竞速页读取互译语言、停顿时间与排列方向。"""
     harness = await start_settings(
         config=default_config(
             {
-                "race": {"show_source_marker": {"overlay": True}},
                 "bilingual": {"pair": ["ja", "en"], "debounce_ms": 750, "layout": "horizontal"},
             }
         )
@@ -136,7 +135,6 @@ async def test_race_page_reads_the_config(start_settings: StartSettings) -> None
     page = harness.window.page("race")
     values = {b.location: b.editor.json_value() for b in page.bindings}
     assert values == {
-        ("race", "show_source_marker", "overlay"): True,
         ("bilingual", "pair"): ["ja", "en"],
         ("bilingual", "debounce_ms"): 750,
         ("bilingual", "layout"): "horizontal",
@@ -148,12 +146,7 @@ async def test_race_page_reads_the_config(start_settings: StartSettings) -> None
 
 async def test_config_changes_refresh_the_controls(harness: Harness) -> None:
     page = harness.window.page("race")
-    await harness.publish(
-        default_config(
-            {"race": {"show_source_marker": {"overlay": True}}, "bilingual": {"debounce_ms": 900}}, revision=2
-        )
-    )
-    assert binding(page, "race", "show_source_marker", "overlay").editor.json_value() is True
+    await harness.publish(default_config({"bilingual": {"debounce_ms": 900}}, revision=2))
     assert binding(page, "bilingual", "debounce_ms").editor.json_value() == 900
     assert harness.recorded.updates == []  # 显示配置的值不会反过来提交
 
@@ -178,14 +171,6 @@ async def test_switch_commits_immediately(harness: Harness) -> None:
     editor.switch.click()
     await harness.flush()
     assert patches(harness) == [{"ocr": {"formula": True}}]
-
-
-async def test_nested_switch_sends_a_nested_patch(harness: Harness) -> None:
-    editor = binding(harness.window.page("race"), "race", "show_source_marker", "overlay").editor
-    assert isinstance(editor, SwitchEditor)
-    editor.switch.click()
-    await harness.flush()
-    assert patches(harness) == [{"race": {"show_source_marker": {"overlay": True}}}]
 
 
 async def test_language_dropdowns_send_language_codes(harness: Harness) -> None:

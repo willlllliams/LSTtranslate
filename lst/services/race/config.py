@@ -1,11 +1,11 @@
 """竞速模块拥有的三节配置：race、screenshot、bilingual（架构文档第 9 章）。
 
 组合根把 CONFIG_SECTIONS 交给配置服务，配置服务用这些模型校验配置文件并发布 AppConfig；
-竞速模块再用同样的模型解析自己的三节（lst/contracts/config.py 的“配置如何传递”）。
+竞速模块再用同样的模型解析 screenshot、bilingual 两节（lst/contracts/config.py 的“配置如何传递”）。
 语言代码在校验时规范化（架构文档 2.6 节），所以 AppConfig 里的语言代码已经是规范写法。
 
-旧版本写下的配置文件里可能还有已经删除的字段：[race] 的 mode（结束方式：节省或完整模式）、
-show_source_marker.bilingual（双语窗口的来源标记）与 [bilingual] 的 auto_billing（计费引擎自动参赛）。
+旧配置的 [race] 可能含 mode（结束方式）与 show_source_marker（来源标记），
+[bilingual] 可能含 auto_billing（计费引擎自动参赛）。这些字段均已删除。
 读取时丢掉它们（见 REMOVED_FIELDS）；否则 extra="forbid" 会把它们报成“未知字段”。
 """
 
@@ -22,8 +22,7 @@ LangCode = Annotated[Lang, AfterValidator(normalize_lang)]
 
 
 REMOVED_FIELDS: Final[Mapping[str, frozenset[str]]] = {
-    "race": frozenset({"mode"}),
-    "show_source_marker": frozenset({"bilingual"}),
+    "race": frozenset({"mode", "show_source_marker"}),
     "bilingual": frozenset({"auto_billing"}),
 }
 """各模型里已经删除、读取时丢掉的字段，键是模型的配置名。"""
@@ -42,21 +41,8 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class SourceMarkerConfig(_Section):
-    """是否在覆盖窗口的段旁显示当前胜出实例的标识颜色（需求 RACE-06）。"""
-
-    overlay: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_removed(cls, data: object) -> object:
-        return _drop(data, REMOVED_FIELDS["show_source_marker"])
-
-
 class RaceConfig(_Section):
-    """[race] 节：竞速的来源标记。"""
-
-    show_source_marker: SourceMarkerConfig = SourceMarkerConfig()
+    """兼容旧 [race] 节；已删除的字段读取后丢弃，新配置不含功能字段。"""
 
     @model_validator(mode="before")
     @classmethod

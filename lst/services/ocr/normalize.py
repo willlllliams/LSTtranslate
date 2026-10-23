@@ -60,14 +60,20 @@ import math
 import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from lst.contracts.ocr import BBox, BlockCategory, LayoutBlock, RawImage, TextLine
 from lst.contracts.text import join_lines
 from lst.services.ocr.appearance import ImageAppearance
-from lst.services.ocr.paragraphs import GeometricMerger, MergeParams, ParagraphMerger
+from lst.services.ocr.paragraphs import (
+    GeometricMerger,
+    MergeParams,
+    ParagraphMerger,
+    ParagraphRules,
+    ends_sentence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +430,7 @@ class AggregateStep:
                 appearance=appearance.of,
                 connects=appearance.connects,
                 gutter=appearance.gutter,
+                rules=merger.rules,
             )
         if context.text_mode:
             return self._paragraph_blocks(blocks, merger) if self.paragraphs else tuple(blocks)
@@ -519,6 +526,10 @@ class AggregateStep:
     def _adjacent(self, upper: LayoutBlock, lower: LayoutBlock) -> bool:
         if upper.category is not BlockCategory.TEXT or lower.category is not BlockCategory.TEXT:
             return False
+        if isinstance(self.merger, GeometricMerger):
+            rules = self.merger.rules
+            if rules.mode == "sentence" and ends_sentence(upper.text, rules.sentence_endings):
+                return False
         h = min(_line_height(upper), _line_height(lower))
         if h <= 0:
             return False
@@ -630,6 +641,29 @@ class NormalizeConfig(BaseModel):
         "结合截图颜色和间距整理文字单元；文本模式合并段落，版面模式拆开粘连的控件。"
         "关闭时文本模式每行单独翻译。",
     )
+    paragraph_mode: Literal["geometric", "smart", "sentence", "continuous"] = _p(
+        "smart",
+        "段落合并模式",
+        "智能：结合句末标点和间距连接续行，紧密排列的多个句子保留在同段；"
+        "几何：只按位置和样式判断；按句：行尾句号、问号或叹号处断开；"
+        "连续正文：放宽完整句后的行距。所有模式保留字号、颜色和分栏边界。",
+    )
+    continuation_gap: float = _p(
+        1.15,
+        "续行间距上限",
+        "智能与按句模式用于未结束的句子，连续正文模式也用于完整句（× 较小行高）。",
+        advanced=True,
+        ge=0.0,
+        le=3.0,
+    )
+    sentence_endings: str = Field(
+        default=".!?。！？",
+        title="句末标点",
+        description="按这些字符判断一行是否结束了句子；忽略尾随引号和括号。",
+        min_length=1,
+        max_length=32,
+        json_schema_extra={"advanced": True},
+    )
     same_line_tolerance: float = _p(
         _MERGE.same_line_tolerance, "同行中线容差", "同一行碎片的中线高度差上限（× 较小字高）。",
         advanced=True, ge=0.0, le=2.0,
@@ -704,7 +738,14 @@ def build_pipeline(config: NormalizeConfig, merger: ParagraphMerger | None = Non
     if config.aggregate or config.merge_blocks:
         steps.append(
             AggregateStep(
-                merger if merger is not None else GeometricMerger(config.merge_params()),
+                merger
+                if merger is not None
+                else GeometricMerger(
+                    config.merge_params(),
+                    rules=ParagraphRules(
+                        config.paragraph_mode, config.continuation_gap, config.sentence_endings
+                    ),
+                ),
                 paragraphs=config.aggregate,
                 merge_blocks=config.merge_blocks,
                 block_gap=config.merge_block_gap,

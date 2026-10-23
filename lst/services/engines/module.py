@@ -403,14 +403,12 @@ class EnginesModule:
         ranked: list[tuple[int, int, Engine]] = []
         statuses: dict[EngineId, EngineStatus] = {}
         names: dict[EngineId, str] = {}
-        colors: dict[EngineId, str] = {}
         priorities: dict[EngineId, int] = {}
         billing: dict[EngineId, bool] = {}
         for entry in entries:
             settings = entry.settings
             engine_id = EngineId(settings.id)
             names[engine_id] = settings.name
-            colors[engine_id] = settings.color
             priorities[engine_id] = settings.priority
             if not settings.enabled:
                 statuses[engine_id] = _DISABLED
@@ -430,7 +428,7 @@ class EnginesModule:
         ranked.sort(key=lambda item: (item[0], item[1]))
         self._publish(
             tuple(engine for _, _, engine in ranked),
-            EngineStatuses(statuses, names, colors, priorities, billing),
+            EngineStatuses(statuses, names, priorities, billing),
         )
 
     def _key_for(self, entry: _Entry) -> _BuildKey:

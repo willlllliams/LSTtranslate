@@ -2,7 +2,7 @@
 
 模块订阅五类消息：
 
-- AppConfig：解析 screenshot、bilingual 两节（[race] 节只有覆盖窗口的来源标记，由界面读取）；
+- AppConfig：解析 screenshot、bilingual 两节（旧 [race] 节仅用于配置迁移）；
 - EngineRoster：更新调度器的引擎实例集合；
 - TranslateText：双语窗口的翻译请求。按段落切段、检测语言、按互译对确定目标语言后开始会话，
   会话只交给请求里选中的那一个服务（需求 BI-03 至 BI-06，RACE-10）；

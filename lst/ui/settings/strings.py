@@ -4,7 +4,7 @@
 按钮文案带 Qt 助记符 ``&``，按 Alt 加字母即可触发（需求 UI-07）。设置卡片的标题与说明按“设置项的位置”取键：
 
 - 配置节里的设置项：``settings.f.<节>.<字段>.title`` 与 ``.desc``，嵌套字段用点连接，例如
-  ``settings.f.race.show_source_marker.overlay.title``；
+  ``settings.f.bilingual.debounce_ms.title``；
 - 引擎实例的参数：``settings.ef.<字段>.title`` 与 ``.desc``；
 - 取值的显示名：``settings.choice.<节>.<字段>.<取值>``，引擎参数用 ``settings.choice.engine.<字段>.<取值>``。
 
@@ -48,7 +48,6 @@ CATALOG: Final[Catalog] = {
     "settings.section.translation": {"zh-Hans": "翻译", "en": "Translation"},
     "settings.section.bilingual": {"zh-Hans": "双语窗口", "en": "Bilingual window"},
     "settings.section.models_dir": {"zh-Hans": "存放位置", "en": "Location"},
-    "settings.section.race_mode": {"zh-Hans": "来源标记", "en": "Source marker"},
     "settings.section.stats": {"zh-Hans": "竞速统计", "en": "Race statistics"},
     # 通用控件
     "settings.default_value": {"zh-Hans": "默认", "en": "Default"},
@@ -341,11 +340,6 @@ CATALOG: Final[Catalog] = {
     ),
     # 竞速
     **_field(
-        "settings.f.race.show_source_marker.overlay",
-        ("截屏翻译显示来源标记", "在每段译文旁显示当前胜出引擎的标识颜色。"),
-        ("Source marker in the overlay", "Shows the colour of the engine whose translation is displayed."),
-    ),
-    **_field(
         "settings.f.bilingual.pair",
         ("互译语言", "检测到第一种语言就译成第二种，检测到第二种就译成第一种。两种语言必须不同。"),
         (
@@ -512,10 +506,10 @@ CATALOG: Final[Catalog] = {
     ),
     **_field(
         "settings.ef.color",
-        ("标识颜色", "来源标记使用的颜色，写成 #RRGGBB；留空则自动分配。"),
+        ("标识颜色", "引擎设置列表图标使用的颜色，写成 #RRGGBB；留空则自动分配。"),
         (
-            "Marker colour",
-            "Colour used for source markers, written as #RRGGBB. Leave empty to assign one automatically.",
+            "Engine icon colour",
+            "Colour used for icons in the engine settings list, written as #RRGGBB. Leave empty to assign one automatically.",
         ),
     ),
     **_field(

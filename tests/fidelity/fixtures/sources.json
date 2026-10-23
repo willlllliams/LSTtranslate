@@ -22,5 +22,23 @@
     "sha256": "771a279f889860f1d89d0aa7fca410458bc2bd8eb4c92e4afd3e46a9d7378871",
     "width": 1827,
     "height": 924
+  },
+  "github-org": {
+    "file": "github-org-en.png",
+    "sha256": "befe3a8812dc357541abb9e2e97cf5d457c38747141a8b779b1f2486ec1894b1",
+    "width": 2288,
+    "height": 1169
+  },
+  "github-dialog": {
+    "file": "github-dialog-en.png",
+    "sha256": "1222ab4b5422e6eecaa36da8091cea57185b12cd826b1e583c0fac7592572f5a",
+    "width": 641,
+    "height": 279
+  },
+  "github-dialog-small": {
+    "file": "github-dialog-small-en.png",
+    "sha256": "40de1d46253c8133ca4106fd32d0236bd4ebe2426931f01b559e0ca0c103beea",
+    "width": 218,
+    "height": 95
   }
 }

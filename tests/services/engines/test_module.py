@@ -291,7 +291,6 @@ async def test_roster_lists_enabled_instances_in_priority_order(
         "baidu": "百度",
         "google": "Google",
     }
-    assert statuses.colors == {"deepl": "", "argos": "", "deepseek": "#4D6BFE", "baidu": "", "google": ""}
     assert statuses.priorities == {"deepl": 3, "argos": 1, "deepseek": 2, "baidu": 5, "google": 4}
     # 计费标记只来自已经创建的实例，双语窗口的服务列表据此标出计费服务。
     assert statuses.billing == {
@@ -328,9 +327,9 @@ async def test_config_without_engines_publishes_empty_roster(
     bus: EventBus, deps: EngineDeps, published: Published
 ) -> None:
     await start_module(bus, deps)
-    await publish(bus, AppConfig(sections={"race": {"show_source_marker": {"overlay": True}}}, revision=1))
+    await publish(bus, AppConfig(sections={"bilingual": {"layout": "horizontal"}}, revision=1))
     assert published.roster.engines == ()
-    assert published.status == EngineStatuses({}, {}, {}, {}, {})
+    assert published.status == EngineStatuses({}, {}, {}, {})
 
 
 async def test_disabled_instance_is_not_in_roster(
@@ -341,9 +340,8 @@ async def test_disabled_instance_is_not_in_roster(
 
     assert published.ids() == ["argos", "google"]
     assert published.health("deepl") == EngineStatus(EngineHealth.DISABLED)
-    # 未启用的实例也出现在名称与颜色里，设置窗口和双语窗口照常显示它。
+    # 未启用的实例也出现在名称里，设置窗口和双语窗口照常显示它。
     assert published.status.names[EngineId("deepl")] == "DeepL"
-    assert published.status.colors == {"argos": "", "deepl": "#0F2B46", "google": ""}
     # 未启用的实例没有创建，计费标记里没有它。
     assert published.status.billing == {"argos": False, "google": True}
 
@@ -536,7 +534,6 @@ async def test_name_change_republishes_statuses(
     await publish(bus, config(deepl(1, name="DeepL Pro", color="#123456"), revision=2))
     assert len(published.statuses) == 2
     assert published.status.names == {"deepl": "DeepL Pro"}
-    assert published.status.colors == {"deepl": "#123456"}
     # 名称与颜色进入 EngineInfo，实例随之替换。
     assert len(published.rosters) == 2
     assert published.engine("deepl").info.name == "DeepL Pro"

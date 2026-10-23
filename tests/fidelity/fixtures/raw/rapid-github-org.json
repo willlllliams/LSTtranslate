@@ -1,0 +1,493 @@
+{
+ "source_sha256": "befe3a8812dc357541abb9e2e97cf5d457c38747141a8b779b1f2486ec1894b1",
+ "width": 2288,
+ "height": 1169,
+ "seconds": 0.977730399928987,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    0,
+    0,
+    2288,
+    1169
+   ],
+   "order": 0,
+   "score": 0.9825534042553192,
+   "text": "",
+   "lines": [
+    {
+     "bbox": [
+      87,
+      39,
+      269,
+      70
+     ],
+     "text": "fleetsnowfluffhome",
+     "score": 0.9999
+    },
+    {
+     "bbox": [
+      1696,
+      34,
+      1900,
+      74
+     ],
+     "text": "Q Type ⑦ to search",
+     "score": 0.9565
+    },
+    {
+     "bbox": [
+      2159,
+      41,
+      2186,
+      66
+     ],
+     "text": "+",
+     "score": 0.78526
+    },
+    {
+     "bbox": [
+      5,
+      98,
+      102,
+      130
+     ],
+     "text": "Overview",
+     "score": 0.99995
+    },
+    {
+     "bbox": [
+      156,
+      101,
+      273,
+      130
+     ],
+     "text": "Repositories",
+     "score": 0.99994
+    },
+    {
+     "bbox": [
+      290,
+      94,
+      409,
+      131
+     ],
+     "text": "田Projects",
+     "score": 0.95448
+    },
+    {
+     "bbox": [
+      455,
+      100,
+      553,
+      128
+     ],
+     "text": "Packages",
+     "score": 0.99989
+    },
+    {
+     "bbox": [
+      569,
+      97,
+      674,
+      131
+     ],
+     "text": "83 Teams",
+     "score": 0.90552
+    },
+    {
+     "bbox": [
+      691,
+      95,
+      800,
+      131
+     ],
+     "text": "8 People",
+     "score": 0.95432
+    },
+    {
+     "bbox": [
+      851,
+      98,
+      967,
+      131
+     ],
+     "text": "Insights",
+     "score": 0.99982
+    },
+    {
+     "bbox": [
+      981,
+      94,
+      1102,
+      133
+     ],
+     "text": "Settings",
+     "score": 0.99779
+    },
+    {
+     "bbox": [
+      1,
+      175,
+      553,
+      203
+     ],
+     "text": "'ve invited 1 member. They'll receive their invitation email shortly.",
+     "score": 0.99719
+    },
+    {
+     "bbox": [
+      543,
+      264,
+      844,
+      303
+     ],
+     "text": "fleetsnowfluffhome",
+     "score": 0.99987
+    },
+    {
+     "bbox": [
+      1992,
+      291,
+      2067,
+      327
+     ],
+     "text": "Follow",
+     "score": 0.99989
+    },
+    {
+     "bbox": [
+      1675,
+      503,
+      1866,
+      537
+     ],
+     "text": "View as: Public",
+     "score": 0.94832
+    },
+    {
+     "bbox": [
+      372,
+      521,
+      1071,
+      582
+     ],
+     "text": "We think you're gonna like it here.",
+     "score": 0.96558
+    },
+    {
+     "bbox": [
+      1662,
+      554,
+      2056,
+      578
+     ],
+     "text": "You are viewing the README and pinned repositories",
+     "score": 0.99955
+    },
+    {
+     "bbox": [
+      374,
+      587,
+      1243,
+      623
+     ],
+     "text": "We’ve suggested some tasks here in your organization's overview to help you get started.",
+     "score": 0.99347
+    },
+    {
+     "bbox": [
+      1661,
+      581,
+      1788,
+      604
+     ],
+     "text": "as a public user.",
+     "score": 0.96985
+    },
+    {
+     "bbox": [
+      1662,
+      615,
+      2011,
+      639
+     ],
+     "text": "You can create a README file visible to anyone.",
+     "score": 0.99875
+    },
+    {
+     "bbox": [
+      1661,
+      648,
+      2050,
+      676
+     ],
+     "text": "You can hide the tasks we've suggested on this page",
+     "score": 0.98006
+    },
+    {
+     "bbox": [
+      388,
+      678,
+      421,
+      708
+     ],
+     "text": "8",
+     "score": 0.98836
+    },
+    {
+     "bbox": [
+      424,
+      678,
+      622,
+      715
+     ],
+     "text": "Invite your people",
+     "score": 0.97298
+    },
+    {
+     "bbox": [
+      1661,
+      675,
+      1858,
+      696
+     ],
+     "text": "and bring them back later.",
+     "score": 0.99992
+    },
+    {
+     "bbox": [
+      1661,
+      744,
+      1782,
+      776
+     ],
+     "text": "Discussions",
+     "score": 0.99893
+    },
+    {
+     "bbox": [
+      453,
+      801,
+      665,
+      830
+     ],
+     "text": "Invite your first member",
+     "score": 0.988
+    },
+    {
+     "bbox": [
+      851,
+      804,
+      1148,
+      828
+     ],
+     "text": "Customize members' permissions",
+     "score": 0.97111
+    },
+    {
+     "bbox": [
+      1660,
+      797,
+      1999,
+      827
+     ],
+     "text": "Set up discussions to engage with your",
+     "score": 0.99956
+    },
+    {
+     "bbox": [
+      454,
+      828,
+      757,
+      852
+     ],
+     "text": "Find people by their GitHub username or",
+     "score": 0.99989
+    },
+    {
+     "bbox": [
+      849,
+      829,
+      1151,
+      853
+     ],
+     "text": "Set everyone's base permissions for your",
+     "score": 0.98855
+    },
+    {
+     "bbox": [
+      1661,
+      829,
+      1772,
+      854
+     ],
+     "text": "community!",
+     "score": 0.99996
+    },
+    {
+     "bbox": [
+      453,
+      853,
+      564,
+      877
+     ],
+     "text": "email address.",
+     "score": 0.99989
+    },
+    {
+     "bbox": [
+      848,
+      855,
+      898,
+      880
+     ],
+     "text": "code.",
+     "score": 0.99906
+    },
+    {
+     "bbox": [
+      1662,
+      869,
+      1836,
+      897
+     ],
+     "text": "Turn on discussions",
+     "score": 0.99995
+    },
+    {
+     "bbox": [
+      378,
+      941,
+      647,
+      989
+     ],
+     "text": "Collaborative coding",
+     "score": 0.99994
+    },
+    {
+     "bbox": [
+      1301,
+      962,
+      1577,
+      989
+     ],
+     "text": "See more about collaborative coding",
+     "score": 0.99853
+    },
+    {
+     "bbox": [
+      1583,
+      966,
+      1599,
+      982
+     ],
+     "text": "→",
+     "score": 0.8958
+    },
+    {
+     "bbox": [
+      1661,
+      968,
+      1789,
+      996
+     ],
+     "text": "Repositories",
+     "score": 0.99998
+    },
+    {
+     "bbox": [
+      1673,
+      1025,
+      1842,
+      1052
+     ],
+     "text": "Create new repository",
+     "score": 0.99997
+    },
+    {
+     "bbox": [
+      1867,
+      1028,
+      1923,
+      1050
+     ],
+     "text": "Import",
+     "score": 0.99858
+    },
+    {
+     "bbox": [
+      458,
+      1090,
+      646,
+      1117
+     ],
+     "text": "Create a pull request",
+     "score": 0.9996
+    },
+    {
+     "bbox": [
+      854,
+      1089,
+      1134,
+      1116
+     ],
+     "text": "Create a branch protection rule",
+     "score": 0.99977
+    },
+    {
+     "bbox": [
+      458,
+      1142,
+      544,
+      1166
+     ],
+     "text": "repository.",
+     "score": 0.99995
+    },
+    {
+     "bbox": [
+      460,
+      1117,
+      764,
+      1141
+     ],
+     "text": "Propose and collaborate on changes to a",
+     "score": 0.98972
+    },
+    {
+     "bbox": [
+      853,
+      1141,
+      932,
+      1165
+     ],
+     "text": "branches.",
+     "score": 0.99991
+    },
+    {
+     "bbox": [
+      854,
+      1116,
+      1168,
+      1140
+     ],
+     "text": "Enforce certain workflows for one or more",
+     "score": 0.98622
+    },
+    {
+     "bbox": [
+      1660,
+      1124,
+      1738,
+      1158
+     ],
+     "text": "People",
+     "score": 0.99998
+    }
+   ]
+  }
+ ]
+}

@@ -4,9 +4,8 @@ import math
 
 import pytest
 
-from lst.contracts.config import AppConfig
 from lst.contracts.ocr import BBox
-from lst.ui.overlay import char_units, chart_cell_bbox, estimate_font_size, fit_font_size, overlay_markers
+from lst.ui.overlay import char_units, chart_cell_bbox, estimate_font_size, fit_font_size
 from lst.ui.overlay.fitting import MAX_FONT_PX, MIN_FONT_PX
 from lst.ui.overlay.geometry import (
     MAX_ZOOM,
@@ -145,10 +144,3 @@ def test_chart_cell_bbox_splits_evenly() -> None:
     cells = [chart_cell_bbox(block, r, c, 2, 2) for r in range(2) for c in range(2)]
     assert cells[0] == BBox(320, 170, 450, 230)
     assert cells[3] == BBox(450, 230, 580, 290)
-
-
-def test_overlay_markers_reads_config() -> None:
-    assert not overlay_markers(AppConfig({}, 1))
-    assert overlay_markers(AppConfig({"race": {"show_source_marker": {"overlay": True}}}, 1))
-    assert not overlay_markers(AppConfig({"race": {"show_source_marker": {"overlay": "yes"}}}, 1))
-    assert not overlay_markers(AppConfig({"race": []}, 1))

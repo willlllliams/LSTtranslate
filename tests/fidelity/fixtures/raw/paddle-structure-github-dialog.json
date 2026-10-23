@@ -1,0 +1,188 @@
+{
+ "source_sha256": "1222ab4b5422e6eecaa36da8091cea57185b12cd826b1e583c0fac7592572f5a",
+ "width": 641,
+ "height": 279,
+ "seconds": 3.6405881999526173,
+ "blocks": [
+  {
+   "id": "0",
+   "category": "text",
+   "bbox": [
+    10,
+    15,
+    209,
+    33
+   ],
+   "order": 0,
+   "score": 0.5047921538352966,
+   "text": "Create Public README",
+   "lines": [
+    {
+     "bbox": [
+      14,
+      17,
+      209,
+      34
+     ],
+     "text": "Create Public README",
+     "score": 0.9911426305770874
+    }
+   ]
+  },
+  {
+   "id": "1",
+   "category": "text",
+   "bbox": [
+    9,
+    73,
+    617,
+    153
+   ],
+   "order": 1,
+   "score": 0.8581749796867371,
+   "text": "Create a public repository called .github. Once created, add a /profile/\nREADME.md. The README will :\nI appear on your organization's profi le,\nvisible to anyone.",
+   "lines": [
+    {
+     "bbox": [
+      12,
+      75,
+      617,
+      96
+     ],
+     "text": "Create a public repository called .github. Once created, add a /profile/",
+     "score": 0.9846621751785278
+    },
+    {
+     "bbox": [
+      12,
+      105,
+      253,
+      122
+     ],
+     "text": "README.md. The README will :",
+     "score": 0.9375948905944824
+    },
+    {
+     "bbox": [
+      243,
+      103,
+      568,
+      125
+     ],
+     "text": "I appear on your organization's profi le,",
+     "score": 0.9724668264389038
+    },
+    {
+     "bbox": [
+      12,
+      133,
+      161,
+      154
+     ],
+     "text": "visible to anyone.",
+     "score": 0.9972690939903259
+    }
+   ]
+  },
+  {
+   "id": "2",
+   "category": "text",
+   "bbox": [
+    11,
+    174,
+    189,
+    192
+   ],
+   "order": 2,
+   "score": 0.740996778011322,
+   "text": "Read documentation",
+   "lines": [
+    {
+     "bbox": [
+      12,
+      175,
+      190,
+      193
+     ],
+     "text": "Read documentation",
+     "score": 0.9720388054847717
+    }
+   ]
+  },
+  {
+   "id": "3",
+   "category": "text",
+   "bbox": [
+    359,
+    232,
+    508,
+    253
+   ],
+   "order": 3,
+   "score": 0.5976831912994385,
+   "text": "Create repository",
+   "lines": [
+    {
+     "bbox": [
+      359,
+      231,
+      508,
+      256
+     ],
+     "text": "Create repository",
+     "score": 0.9935890436172485
+    }
+   ]
+  },
+  {
+   "id": "4",
+   "category": "header_footer",
+   "bbox": [
+    549,
+    232,
+    607,
+    250
+   ],
+   "order": 4,
+   "score": 0.5498769283294678,
+   "text": "Cancel",
+   "lines": [
+    {
+     "bbox": [
+      550,
+      233,
+      608,
+      251
+     ],
+     "text": "Cancel",
+     "score": 0.999276340007782
+    }
+   ]
+  },
+  {
+   "id": "5",
+   "category": "text",
+   "bbox": [
+    604,
+    14,
+    623,
+    31
+   ],
+   "order": 5,
+   "score": 0.6888521909713745,
+   "text": "X",
+   "lines": [
+    {
+     "bbox": [
+      604,
+      14,
+      623,
+      31
+     ],
+     "text": "X",
+     "score": 0.6888521909713745
+    }
+   ]
+  }
+ ]
+}

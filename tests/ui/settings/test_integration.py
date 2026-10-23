@@ -76,16 +76,12 @@ async def test_changes_are_saved_to_the_file_and_shown_back(start_full: StartFul
     full = await start_full()
     window = await full.open()
     window.show_page("race")
-    toggle = binding(window.page("race"), "race", "show_source_marker", "overlay").editor
-    assert isinstance(toggle, SwitchEditor)
-    toggle.switch.click()
     layout = binding(window.page("race"), "bilingual", "layout").editor
     assert isinstance(layout, ChoiceEditor)
     layout.combo.setCurrentIndex(layout.combo.findData("horizontal"))
     await full.settle()
-    assert config_file(full)["race"] == {"show_source_marker": {"overlay": True}}
     assert config_file(full)["bilingual"]["layout"] == "horizontal"
-    assert toggle.json_value() is True and not toggle.dirty
+    assert layout.json_value() == "horizontal" and not layout.dirty
 
 
 async def test_language_switch_round_trip(start_full: StartFull) -> None:

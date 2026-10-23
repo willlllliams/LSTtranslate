@@ -191,7 +191,7 @@ def _spec_of(name: str, field: FieldInfo) -> FieldSpec:
 
 
 def field_spec(model: type[BaseModel], path: Sequence[str]) -> FieldSpec:
-    """按路径取一个字段的描述；路径可以穿过嵌套的模型，例如 ("show_source_marker", "bilingual")。
+    """按路径取一个字段的描述；路径可以穿过嵌套的模型，例如 ("options", "enabled")。
 
     字段不存在时抛出 KeyError，说明页面的声明与模型不符。
     """

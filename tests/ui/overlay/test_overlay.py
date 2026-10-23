@@ -8,14 +8,13 @@ from PySide6.QtGui import QFont, QFontMetricsF, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from lst.contracts.config import AppConfig
 from lst.contracts.errors import ErrorCode
-from lst.contracts.events import EngineHealth, EngineStatus, EngineStatuses, WorkerStatus, WorkerStatuses
-from lst.contracts.ids import EngineId, SegmentId, SessionId
+from lst.contracts.events import WorkerStatus, WorkerStatuses
+from lst.contracts.ids import SegmentId, SessionId
 from lst.contracts.ocr import BBox, BlockCategory, LayoutBlock, OcrCompleted, OcrFailed
 from lst.contracts.ports import WorkerState
-from lst.contracts.translation import AttemptState, AttemptView, SegmentView, SkipReason
-from lst.ui.overlay import Phase, tooltip_text
+from lst.contracts.translation import SegmentView, SkipReason
+from lst.ui.overlay import Phase
 from lst.ui.overlay.window import OverlayWindow
 from tests.ui.conftest import wait_until
 from tests.ui.overlay.conftest import (
@@ -75,15 +74,18 @@ async def test_text_color_follows_background_brightness(make_rig: MakeRig) -> No
     assert not rig.window.light_background
 
 
-async def test_symbols_and_numbers_keep_original_pixels(make_rig: MakeRig) -> None:
-    rig = await _shown(make_rig, dpr=1.0)
+@pytest.mark.parametrize("dpr", [1.0, 1.5, 2.0])
+async def test_symbols_and_numbers_keep_original_pixels(make_rig: MakeRig, dpr: float) -> None:
+    rig = await _shown(make_rig, dpr=dpr)
     box = BBox(20, 20, 120, 60)
     block = LayoutBlock("0", BlockCategory.TEXT, box, 0, 1.0, text="99")
     await rig.publish(OcrCompleted(SessionId("s1"), (block,), (segment("p1", "99", box),)))
     rig.window.apply_views([SegmentView(P1, "99", "99", None, True, (), SkipReason.NO_TEXT)])
     rig.window.fit_all_now()
     shot = rig.window.grab().toImage()
-    assert shot.pixelColor(25, 25).red() == 30
+    # 截图坐标按窗口当前屏幕的实际缩放转换到 grab() 的设备像素。
+    position = round(25 * rig.window.scale_device())
+    assert shot.pixelColor(position, position).red() == 30
 
 
 async def test_loading_model_status(make_rig: MakeRig) -> None:
@@ -404,61 +406,6 @@ async def test_moving_to_screen_with_other_scale_relayouts(
     # 字号按新的设备像素重新适配：设备像素翻倍，字号约翻倍（整数字号与换行位置会带来少量偏差）。
     assert after >= before * 1.7
     assert window.size() == size
-
-
-# ---------------------------------------------------------------- 悬停提示（OV-06）与来源标记
-
-
-def test_tooltip_lists_source_and_attempts_with_shown_engine_first() -> None:
-    from lst.contracts.ocr import BBox
-    from lst.ui.overlay.window import SegmentItem
-
-    attempts = (
-        AttemptView(EngineId("argos"), AttemptState.DONE, "你好", None, 30.0, started=True),
-        AttemptView(EngineId("deepseek"), AttemptState.DONE, "您好", None, 900.0, started=True),
-        AttemptView(EngineId("deepl"), AttemptState.RUNNING, None, None, None, started=True),
-    )
-    item = SegmentItem(SegmentId("p1"), "0", BBox(0, 0, 1, 1), "Hello <b>", "您好")
-    item.view = SegmentView(SegmentId("p1"), "Hello <b>", "您好", EngineId("deepseek"), False, attempts)
-    text = tooltip_text(item, {EngineId("deepseek"): "DeepSeek", EngineId("argos"): "Argos"})
-    lines = text.removeprefix("<qt>").removesuffix("</qt>").split("<br>")
-    assert "Hello &lt;b&gt;" in lines[0]
-    assert lines[1].startswith("▶ <b>DeepSeek</b>")
-    assert "900 毫秒" in lines[1]
-    assert any("Argos" in line and "30 毫秒" in line for line in lines[2:])
-    assert any("deepl" in line and "翻译中" in line for line in lines[2:])
-
-
-@pytest.mark.parametrize(
-    ("reason", "expected"),
-    [
-        (SkipReason.NO_TEXT, "无需翻译"),
-        (SkipReason.SAME_LANGUAGE, "与目标语言相同，不翻译"),
-        (SkipReason.NO_ENGINE, "没有支持这个语言对的引擎"),
-    ],
-)
-def test_tooltip_explains_skipped_segment(reason: SkipReason, expected: str) -> None:
-    """只有符号或单个字母的段标为“无需翻译”，不再显示成“与目标语言相同”。"""
-    from lst.contracts.ocr import BBox
-    from lst.ui.overlay.window import SegmentItem
-
-    item = SegmentItem(SegmentId("p1"), "0", BBox(0, 0, 1, 1), "☆4", "☆4")
-    item.view = SegmentView(SegmentId("p1"), "☆4", "☆4", None, True, (), skip_reason=reason)
-    lines = tooltip_text(item, {}).removeprefix("<qt>").removesuffix("</qt>").split("<br>")
-    assert lines[1] == expected
-
-
-async def test_source_markers_follow_config(make_rig: MakeRig) -> None:
-    rig = await _with_text(make_rig)
-    window = rig.window
-    assert not window._markers  # pyright: ignore[reportPrivateUsage]
-    await rig.publish(AppConfig({"race": {"show_source_marker": {"overlay": True}}}, 1))
-    assert window._markers  # pyright: ignore[reportPrivateUsage]
-    await rig.publish(
-        EngineStatuses({EngineId("argos"): EngineStatus(EngineHealth.READY)}, {EngineId("argos"): "Argos"})
-    )
-    window.apply_views([view("p1", "Hello world", "你好")])
-    assert not window.grab().toImage().isNull()
 
 
 async def test_no_text_result(make_rig: MakeRig) -> None:

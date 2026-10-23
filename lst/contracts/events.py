@@ -82,18 +82,16 @@ class EngineStatus:
 
 @dataclass(frozen=True, slots=True)
 class EngineStatuses(State):
-    """每个引擎实例（包括未启用的）的状态、名称与标识颜色，供托盘、设置窗口、覆盖窗口和双语窗口显示。
+    """每个引擎实例（包括未启用的）的状态、名称、优先级与计费属性，供托盘、设置窗口和双语窗口显示。
 
-    - colors 是配置里的标识颜色（可能为空串，界面这时按实例号取默认颜色），覆盖窗口的来源标记用它；
     - priorities 是配置里的优先级，数值越小优先级越高，双语窗口的服务列表按它排序；
     - billing 只含已经创建成功的启用实例，值为该实例是否计费（EngineInfo.billing），双语窗口据此标出计费服务。
 
-    三项为 None 表示发布方没有提供。
+    两项为 None 表示发布方没有提供。
     """
 
     statuses: Mapping[EngineId, EngineStatus]
     names: Mapping[EngineId, str]
-    colors: Mapping[EngineId, str] | None = None
     priorities: Mapping[EngineId, int] | None = None
     billing: Mapping[EngineId, bool] | None = None
 

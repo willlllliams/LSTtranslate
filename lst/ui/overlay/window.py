@@ -13,7 +13,7 @@ screenChanged），$k$ 改变，全部段按新屏幕重新适配字号后重绘
 3. 表格块：画单元格的网格线。
 4. 各段：在段的包围盒内先铺一层与底图同色调的不透明度较高的底，再画选中文字的底色，最后画译文（或原文），
    字号自动适配。图表数据表的段只在点开图表后显示，数据表按行列均分图表块的范围。
-5. 来源标记、角落的进度（OV-07）、固定标识，以及“识别中”“识别失败”等状态文字。
+5. 角落的进度（OV-07）、固定标识，以及“识别中”“识别失败”等状态文字。
 
 文字排版（``TextBox``）：每段用 QTextLayout 排版，规则与 ``QPainter.drawText`` 配 ``_TEXT_FLAGS``
 （左对齐、竖直居中、按词换行）相同，见 ``layout_text``。绘制、选中底色与鼠标命中测试共用同一份排版结果，
@@ -58,10 +58,9 @@ screenChanged），$k$ 改变，全部段按新屏幕重新适配字号后重绘
 旧的字符位置对新文字没有意义。
 
 按下后移动超过 4 个逻辑像素算拖动，否则算单击；按键加修饰键没有绑定拖动时，单击在按下时就生效
-（``MouseGestures``）。没有按键按下时移动鼠标，悬停在段上显示原文与各实例的竞速情况（OV-06）。
+（``MouseGestures``）。
 """
 
-import html
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -101,11 +100,11 @@ from PySide6.QtGui import (
     QWheelEvent,
     QWindow,
 )
-from PySide6.QtWidgets import QApplication, QPushButton, QToolTip, QWidget
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from lst.contracts.ids import EngineId, SegmentId
+from lst.contracts.ids import SegmentId
 from lst.contracts.ocr import BBox, BlockCategory, CaptureGeometry, LayoutBlock, OcrSegment, RawImage
-from lst.contracts.translation import AttemptState, SegmentView, SkipReason
+from lst.contracts.translation import SegmentView, SkipReason
 from lst.ui.common.bindings import DRAG_SLOP, Keymap, MouseGestures, Scope
 from lst.ui.i18n import tr
 from lst.ui.overlay.fitting import MIN_FONT_PX, estimate_font_size, fit_font_size
@@ -120,7 +119,7 @@ from lst.ui.overlay.geometry import (
     window_size,
     zoom_about,
 )
-from lst.ui.theme import TOKENS, engine_color, style_primary_button, theme_colors, ui_font
+from lst.ui.theme import TOKENS, style_primary_button, theme_colors, ui_font
 
 FIT_BUDGET_MS: Final = 8.0
 """字号测量每轮最多占用的时间（架构文档 11.2 节）。"""
@@ -135,14 +134,6 @@ _STATUS_PX: Final = 14
 _PROGRESS_PX: Final = 11
 _TEXT_FLAGS: Final = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
 _IMAGE_LIKE: Final = frozenset({BlockCategory.FORMULA, BlockCategory.IMAGE, BlockCategory.CHART})
-_STATE_KEYS: Final[Mapping[AttemptState, str]] = {
-    AttemptState.QUEUED: "overlay.tip.state.queued",
-    AttemptState.RUNNING: "overlay.tip.state.running",
-    AttemptState.DONE: "overlay.tip.state.done",
-    AttemptState.FAILED: "overlay.tip.state.failed",
-    AttemptState.CANCELLED: "overlay.tip.state.cancelled",
-}
-_TIP_TEXT_LIMIT: Final = 200
 PADDING: Final = 3.0
 """段的文字区域在包围盒内留出的内边距（逻辑像素），不超过包围盒较短边的十分之一。"""
 
@@ -309,39 +300,6 @@ def word_span(text: str, position: int) -> tuple[int, int]:
     return (max(0, start), end if end > index else length)
 
 
-def tooltip_text(item: SegmentItem, names: Mapping[EngineId, str]) -> str:
-    """悬停提示（OV-06）：原文，以及每个参赛实例的状态、耗时和译文，当前胜出者排第一行。返回富文本。"""
-    lines = [f"<b>{html.escape(tr('overlay.tip.source'))}</b>: {html.escape(_clip(item.source))}"]
-    view = item.view
-    if view is not None:
-        if view.skip_reason is SkipReason.NO_TEXT:
-            lines.append(html.escape(tr("overlay.tip.skipped.no_text")))
-        elif view.skip_reason is SkipReason.SAME_LANGUAGE:
-            lines.append(html.escape(tr("overlay.tip.skipped.same_language")))
-        elif view.skip_reason is SkipReason.NO_ENGINE:
-            lines.append(html.escape(tr("overlay.tip.skipped.no_engine")))
-        attempts = sorted(view.attempts, key=lambda a: (a.engine_id != view.shown_engine, a.state.value))
-        for attempt in attempts:
-            name = names.get(attempt.engine_id, attempt.engine_id)
-            state = tr(_STATE_KEYS[attempt.state])
-            if attempt.cached:
-                latency = tr("overlay.tip.cached")
-            elif attempt.latency_ms is not None:
-                latency = tr("overlay.tip.latency", ms=round(attempt.latency_ms))
-            else:
-                latency = ""
-            detail = attempt.text if attempt.text is not None else ""
-            parts = [p for p in (state, latency, _clip(detail)) if p]
-            marker = "▶ " if attempt.engine_id == view.shown_engine else ""
-            lines.append(f"{marker}<b>{html.escape(name)}</b>: {html.escape(' · '.join(parts))}")
-    return "<qt>" + "<br>".join(lines) + "</qt>"
-
-
-def _clip(text: str) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= _TIP_TEXT_LIMIT else text[: _TIP_TEXT_LIMIT - 1] + "…"
-
-
 def to_qimage(image: RawImage) -> QImage:
     """RawImage（BGRA）→ 自己持有像素的 QImage。透明度字节恒为 0xFF，按 RGB32 处理。"""
     wrapped = QImage(image.data, image.width, image.height, image.stride, QImage.Format.Format_RGB32)
@@ -417,9 +375,6 @@ class OverlayWindow(QWidget):
         self._items: dict[SegmentId, SegmentItem] = {}
         self._order: list[SegmentId] = []
         self._progress: tuple[int, int] | None = None
-        self._names: Mapping[EngineId, str] = {}
-        self._colors: Mapping[EngineId, QColor] = {}
-        self._markers = False
         self._show_source = False
         self._pinned = False
         self._was_active = False
@@ -666,17 +621,6 @@ class OverlayWindow(QWidget):
     def set_progress(self, finished: int, total: int) -> None:
         self._progress = (finished, total)
         self.update(self._progress_rect().toAlignedRect().adjusted(-2, -2, 2, 2))
-
-    def set_engines(self, names: Mapping[EngineId, str], colors: Mapping[EngineId, QColor]) -> None:
-        self._names = dict(names)
-        self._colors = dict(colors)
-        if self._markers:
-            self.update()
-
-    def set_markers_visible(self, visible: bool) -> None:
-        if visible != self._markers:
-            self._markers = visible
-            self.update()
 
     def selection_ranges(self) -> dict[SegmentId, tuple[int, int]]:
         """各段选中的字符范围 [起, 止)，按阅读顺序；没有选中文字的段不出现。规则见模块说明“文字选择”。"""
@@ -1248,10 +1192,6 @@ class OverlayWindow(QWidget):
             if not preserve:
                 box.layout.draw(painter, origin)
             painter.restore()
-            if self._markers and item.view is not None and item.view.shown_engine is not None:
-                color = self._colors.get(item.view.shown_engine) or engine_color(item.view.shown_engine)
-                bar = max(2.0, 3 * self.device_ratio())
-                painter.fillRect(QRectF(outer.x, outer.y, bar, outer.height), color)
 
     def _progress_rect(self) -> QRectF:
         """进度标签的逻辑坐标范围：右下角。"""
@@ -1371,8 +1311,6 @@ class OverlayWindow(QWidget):
         if step is not None:
             self._drag(step[0], step[1], event)
         else:
-            if not event.buttons():
-                self._show_tip(event)
             self._update_cursor(event.position())
         event.accept()
 
@@ -1462,14 +1400,3 @@ class OverlayWindow(QWidget):
             self._expanded.symmetric_difference_update({block.id})
             self._refit()
             self.update()
-
-    def _show_tip(self, event: QMouseEvent) -> None:
-        if self._phase is not Phase.RESULT:
-            return
-        item = self._item_at(event.position())
-        if item is None:
-            QToolTip.hideText()
-            return
-        QToolTip.showText(
-            event.globalPosition().toPoint(), tooltip_text(item, self._names), self, self._item_rect(item)
-        )

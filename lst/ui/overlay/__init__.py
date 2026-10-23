@@ -11,8 +11,8 @@
 from lst.ui.overlay import strings as strings  # 导入时登记文案
 from lst.ui.overlay.fitting import MIN_FONT_PX, char_units, estimate_font_size, fit_font_size
 from lst.ui.overlay.module import OverlayModule, system_clipboard
-from lst.ui.overlay.presenter import OverlayPresenter, overlay_markers
-from lst.ui.overlay.window import OverlayWindow, Phase, SegmentItem, chart_cell_bbox, tooltip_text
+from lst.ui.overlay.presenter import OverlayPresenter
+from lst.ui.overlay.window import OverlayWindow, Phase, SegmentItem, chart_cell_bbox
 
 __all__ = [
     "MIN_FONT_PX",
@@ -25,7 +25,5 @@ __all__ = [
     "chart_cell_bbox",
     "estimate_font_size",
     "fit_font_size",
-    "overlay_markers",
     "system_clipboard",
-    "tooltip_text",
 ]

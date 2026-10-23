@@ -31,6 +31,10 @@ def _stage(stage: str, zh: tuple[str, str], en: tuple[str, str]) -> Catalog:
 
 
 CATALOG: Final[Catalog] = {
+    "settings.choice.ocr_normalize.paragraph_mode.geometric": _pair("几何", "Geometry"),
+    "settings.choice.ocr_normalize.paragraph_mode.smart": _pair("智能段落", "Smart paragraphs"),
+    "settings.choice.ocr_normalize.paragraph_mode.sentence": _pair("按句", "Sentences"),
+    "settings.choice.ocr_normalize.paragraph_mode.continuous": _pair("连续正文", "Continuous prose"),
     # 运行环境版本（OCRE-07）
     "settings.ocr_variant.cpu": _pair("CPU", "CPU"),
     "settings.ocr_variant.directml": _pair("DirectML", "DirectML"),
@@ -255,6 +259,9 @@ PARAM_TEXTS: Final[dict[str, tuple[str, str]]] = {
     "split_min_gap": ("Column gap width", "Minimum width of the gap between columns (× line height)."),
     "split_window": ("Context range", "How far up and down to look when deciding whether there is a column gap (× line height)."),
     "aggregate": ("Organize text units", "Uses screenshot colors and spacing to join paragraphs in text mode and separate merged controls in layout mode. When off, text mode translates each line separately."),
+    "paragraph_mode": ("Paragraph merging mode", "Smart joins wrapped prose using punctuation and spacing, retaining closely spaced sentences in one paragraph. Geometry uses position and style. Sentences breaks after a line ending a sentence. Continuous prose also allows wider gaps after complete sentences. All modes preserve font, color and column boundaries."),
+    "continuation_gap": ("Maximum continuation spacing", "Largest gap for unfinished sentences, or all prose in continuous mode (× smaller line height)."),
+    "sentence_endings": ("Sentence-ending punctuation", "Characters marking the end of a sentence. Trailing quotes and brackets are ignored."),
     "same_line_tolerance": ("Same-line midline tolerance", "Largest midline height difference between fragments of one line (× smaller text height)."),
     "fragment_gap": ("Same-line fragment gap", "Largest horizontal gap between fragments of one line (× smaller text height)."),
     "gutter_window": ("Column gap range", "How far up and down to look when deciding whether a gap between fragments is a column gap (× larger text height)."),

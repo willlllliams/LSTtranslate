@@ -24,31 +24,21 @@ from collections.abc import Callable
 from typing import Final
 
 from lst.contracts.config import AppConfig
-from lst.contracts.events import EngineStatuses, SegmentsUpdated, SessionProgress, WorkerStatuses
+from lst.contracts.events import SegmentsUpdated, SessionProgress, WorkerStatuses
 from lst.contracts.ids import SessionId
 from lst.contracts.ocr import CaptureCompleted, OcrCompleted, OcrFailed, RetryOcr
 from lst.contracts.ports import WorkerState
 from lst.contracts.translation import SegmentView
-from lst.contracts.worker_protocol import JsonValue
 from lst.kernel import EventBus
 from lst.ui.common.bindings import Keymap, Scope, bindings_from
 from lst.ui.i18n import apply_config_language, error_text
 from lst.ui.overlay.window import OverlayWindow, Phase
-from lst.ui.theme import engine_color
 
 OCR_WORKER: Final = "ocr"
 _LOADING_STATES: Final = frozenset({WorkerState.STARTING, WorkerState.LOADING})
 
 type WindowFactory = Callable[[CaptureCompleted, "OverlayPresenter"], OverlayWindow]
 """创建覆盖窗口的函数。缺省直接构造 OverlayWindow；模块用它在显示前加上测试需要的窗口属性。"""
-
-
-def overlay_markers(config: AppConfig) -> bool:
-    """race.show_source_marker.overlay：覆盖窗口是否显示来源标记（RACE-06），缺失或类型不对时为假。"""
-    race = config.section("race")
-    marker: JsonValue = race.get("show_source_marker") if isinstance(race, dict) else None
-    value = marker.get("overlay") if isinstance(marker, dict) else None
-    return value if isinstance(value, bool) else False
 
 
 class OverlayPresenter:
@@ -73,8 +63,6 @@ class OverlayPresenter:
         self._pending: dict[str, SegmentView] = {}
         self._pending_progress: tuple[int, int] | None = None
         self._ocr_state: WorkerState | None = None
-        self._statuses: EngineStatuses | None = None
-        self._markers = False
         self._keymap = Keymap.defaults(Scope.OVERLAY)
 
     # ---- 查询 ----
@@ -101,8 +89,6 @@ class OverlayPresenter:
         window = self._factory(event, self)
         self._window = window
         window.set_keymap(self._keymap)
-        self._apply_engines(window)
-        window.set_markers_visible(self._markers)
         window.show_recognizing(self._loading())
         window.present()
         self._logger.debug("会话 %s 的覆盖窗口已弹出", event.session_id)
@@ -154,18 +140,11 @@ class OverlayPresenter:
         if window is not None and window.phase is Phase.RECOGNIZING:
             window.show_recognizing(self._loading())
 
-    def on_engine_statuses(self, message: EngineStatuses) -> None:
-        self._statuses = message
-        if self._window is not None:
-            self._apply_engines(self._window)
-
     def on_config(self, config: AppConfig) -> None:
         apply_config_language(config)
-        self._markers = overlay_markers(config)
         # 窗口内的键位（UI-09）：已经打开的窗口立即换用新键位，之后新开的窗口也用它。
         self._keymap = Keymap.for_scope(bindings_from(config.section("bindings")), Scope.OVERLAY)
         if self._window is not None:
-            self._window.set_markers_visible(self._markers)
             self._window.set_keymap(self._keymap)
 
     # ---- OverlayActions ----
@@ -210,11 +189,3 @@ class OverlayPresenter:
         window, self._window = self._window, None
         if window is not None:
             window.close()
-
-    def _apply_engines(self, window: OverlayWindow) -> None:
-        statuses = self._statuses
-        if statuses is None:
-            return
-        configured = statuses.colors or {}
-        colors = {eid: engine_color(eid, configured.get(eid, "")) for eid in statuses.names}
-        window.set_engines(statuses.names, colors)

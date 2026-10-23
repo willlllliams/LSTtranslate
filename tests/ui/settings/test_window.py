@@ -449,9 +449,7 @@ async def test_every_page_has_texts_in_both_languages(harness: Harness) -> None:
 async def test_unclaimed_rejections_appear_in_the_notice_bar(harness: Harness) -> None:
     window = await harness.open()
     assert window.notice_label.isHidden()
-    await harness.publish(
-        ConfigRejected(("race", "show_source_marker", "overlay"), "不是可选值")
-    )  # 有卡片负责：不进提示条
+    await harness.publish(ConfigRejected(("bilingual", "layout"), "不是可选值"))  # 有卡片负责：不进提示条
     assert window.notice_label.isHidden()
     await harness.publish(ConfigRejected(("nope",), "未知的配置节"))
     assert not window.notice_label.isHidden()
@@ -519,7 +517,7 @@ async def test_missing_sections_hide_their_cards_instead_of_failing(start_settin
         (("screenshot", "target_lang"), "capture.options"),
         (("nmt", "device"), "models.gpu"),
         (("nmt", "model_dir"), "models.nmt"),
-        (("race", "show_source_marker", "overlay"), "race"),
+        (("bilingual", "layout"), "race"),
         (("hotkeys", "capture"), "hotkeys.global"),
         (("bindings", "overlay_zoom"), "hotkeys.overlay"),
         (("bindings", "capture_cancel"), "hotkeys.capture"),
