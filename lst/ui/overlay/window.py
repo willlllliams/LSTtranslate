@@ -15,19 +15,18 @@ screenChanged），$k$ 改变，全部段按新屏幕重新适配字号后重绘
    字号自动适配。图表数据表的段只在点开图表后显示，数据表按行列均分图表块的范围。
 5. 角落的进度（OV-07）、固定标识，以及“识别中”“识别失败”等状态文字。
 
-文字排版（``TextBox``）：每段用 QTextLayout 排版，规则与 ``QPainter.drawText`` 配 ``_TEXT_FLAGS``
-（左对齐、竖直居中、按词换行）相同，见 ``layout_text``。绘制、选中底色与鼠标命中测试共用同一份排版结果，
+文字排版（``TextBox``）：每段用 QTextLayout 按词换行，并按配置对齐实际字形，见 ``layout_text``。
+绘制、选中底色与鼠标命中测试共用同一份排版结果，
 选中的字符范围与画出来的字形一一对应。排版结果按段缓存，键是（显示的文字、字号、是否标题、文字区域的
 设备像素宽高）；分帧适配测完字号、缩放或换屏改变文字区域时键随之改变，下次用到时重新排版。
 
 字号适配分帧进行（架构文档 11.2 节）：新出现的段先用估算字号，计时器每轮最多测 8 毫秒，
-测完的段只重绘自己的范围。测量结果按（显示的文字、原文、设备像素宽高、是否标题）缓存，同样的段不重复测。
+测完的段只重绘自己的范围。测量结果按文字、框尺寸、标题样式和目标字号缓存，同样的段不重复测。
 
-译文的字号不超过原文在同一包围盒里能用的最大字号。原文恰好排满包围盒时，这个字号就接近截图里原来的字号；
-不加这个上限时，比原文短的译文会被放大到远超原文的字号（例如一行英文长句译成十来个汉字，字号翻倍），
-同一屏里各段大小悬殊，读起来不像原来的版面。文字区域在包围盒内留出内边距（PADDING），
-文字不贴在表格线或段底的边缘上。上限按整个包围盒测：原文在截图里本来就排满包围盒，
-在缩进了内边距的区域里测会比原来的字号小一两号。
+原始识别框与绘制框分别保留。字号从原文的行框估算，乘以用户设置的目标字号倍数；默认目标为原文字号的 1.1 倍。
+绘制框先按宽高倍数与外边距调整，再按配置保留横向范围扩高，或同时扩宽和扩高。
+扩展使用截图像素，受截图边界、相邻内容和扩框上限约束；空间不足时适配较小字号。
+文字内边距与横纵对齐可配置，绘制、过渡和选字共用排版几何。表格网格与无需翻译的符号保持原框。
 
 译文替换的过渡（RACE-06、OV-04）：显示的文字变化时，这一段播放 150 毫秒的过渡，旧文字的不透明度从 1 降到 0，
 新文字从 0 升到 1。每段从自己的译文到达时刻起独立计时（SegmentItem.fade_started），后到的译文不影响
@@ -119,6 +118,7 @@ from lst.ui.overlay.geometry import (
     window_size,
     zoom_about,
 )
+from lst.ui.overlay.layout import OverlayLayoutConfig, confine_box, overlaps, sized_box
 from lst.ui.theme import TOKENS, style_primary_button, theme_colors, ui_font
 
 FIT_BUDGET_MS: Final = 8.0
@@ -134,15 +134,13 @@ _STATUS_PX: Final = 14
 _PROGRESS_PX: Final = 11
 _TEXT_FLAGS: Final = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
 _IMAGE_LIKE: Final = frozenset({BlockCategory.FORMULA, BlockCategory.IMAGE, BlockCategory.CHART})
-PADDING: Final = 3.0
-"""段的文字区域在包围盒内留出的内边距（逻辑像素），不超过包围盒较短边的十分之一。"""
 
 
 _LINE_SEPARATOR: Final = "\u2028"
 """Unicode 行分隔符：drawText 把换行符换成它，段内换行不拆成新段落。"""
 
-type _FitKey = tuple[str, str, int, int, int, int, bool]
-"""字号缓存的键：显示的文字、原文、文字区域的设备像素宽高、包围盒的设备像素宽高、是否标题。"""
+type _FitKey = tuple[str, str, int, int, int, int, bool, int]
+"""字号缓存的键：显示文字、原文、文字区宽高、包围盒宽高、标题样式、目标字号，尺寸单位为设备像素。"""
 
 type _BoxKey = tuple[str, int, bool, float, float]
 """排版缓存的键：文字、字号（设备像素）、是否标题、文字区域的设备像素宽高。"""
@@ -190,28 +188,44 @@ class SegmentItem:
     fade_from: str | None = None
     fade_px: int | None = None
     fade_started: float | None = None
+    source_bbox: BBox | None = None
+    source_px: int = MIN_FONT_PX
+    fixed_box: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class TextBox:
     """一段文字的排版结果。layout 里各行的坐标以文字区域左上角为原点，单位是设备像素；
-    top 是竖直居中后第一行顶边的纵坐标，画的时候整个排版向下平移 top。"""
+    top 是按实际字形高度对齐后的纵向偏移，绘制和命中测试都使用这项偏移。"""
 
     key: _BoxKey
     layout: QTextLayout
     top: float
 
 
-def layout_text(text: str, font: QFont, width: float, height: float) -> tuple[QTextLayout, float]:
-    """按 ``QPainter.drawText(rect, _TEXT_FLAGS, text)`` 的规则排版，返回排版结果与第一行顶边的纵坐标。
+def layout_text(
+    text: str,
+    font: QFont,
+    width: float,
+    height: float,
+    horizontal: str = "left",
+    vertical: str = "center",
+) -> tuple[QTextLayout, float]:
+    """按词换行并按配置对齐，返回排版结果与实际字形的纵向对齐偏移。
 
     规则：行宽为 width、按词换行；行与行之间隔字体的 leading，每行的纵坐标向上取整到整像素；
-    行的底边达到 height 后不再排后面的行（drawText 同样不画）；整体在高度 height 里竖直居中。
+    行的底边达到 height 后不再排后面的行；用字形实际边界计算顶部、居中或底部对齐的偏移。
     换行符换成 Unicode 行分隔符、回车换成空格，与 drawText 的预处理相同，字符位置与原文字一一对应。
     """
     shaped = text.replace("\r", " ").replace("\n", _LINE_SEPARATOR)
     layout = QTextLayout(shaped, font)
-    option = QTextOption(Qt.AlignmentFlag.AlignLeft)
+    option = QTextOption(
+        {
+            "left": Qt.AlignmentFlag.AlignLeft,
+            "center": Qt.AlignmentFlag.AlignHCenter,
+            "right": Qt.AlignmentFlag.AlignRight,
+        }[horizontal]
+    )
     option.setWrapMode(QTextOption.WrapMode.WordWrap)
     layout.setTextOption(option)
     layout.setCacheEnabled(True)
@@ -232,7 +246,30 @@ def layout_text(text: str, font: QFont, width: float, height: float) -> tuple[QT
     layout.endLayout()
     if not text:
         used = metrics.height()
-    return layout, (height - used) / 2
+    ink = layout_ink_bounds(layout)
+    spare = height - ink.height()
+    top = {"top": 0.0, "center": spare / 2, "bottom": spare}[vertical] - ink.top()
+    return layout, top
+
+
+def layout_ink_bounds(layout: QTextLayout, metrics: QFontMetricsF | None = None) -> QRectF:
+    """实际字形范围；用各视觉行的字形高度消除字体行框上下留白，兼容中英文字体回退。"""
+    metrics = metrics if metrics is not None else QFontMetricsF(layout.font())
+    encoded = layout.text().encode("utf-16-le")
+    bounds = QRectF()
+    for index in range(layout.lineCount()):
+        line = layout.lineAt(index)
+        text = (
+            encoded[2 * line.textStart() : 2 * (line.textStart() + line.textLength())]
+            .decode("utf-16-le")
+            .rstrip()
+        )
+        if not text.strip():
+            continue
+        ink = metrics.tightBoundingRect(text)
+        ink.translate(0, line.y() + line.ascent())
+        bounds = ink if bounds.isNull() else bounds.united(ink)
+    return bounds
 
 
 def cursor_at(layout: QTextLayout, x: float, y: float, length: int, *, on_character: bool) -> int:
@@ -367,6 +404,7 @@ class OverlayWindow(QWidget):
         self._panel = QColor(250, 250, 250, 215) if self._light else QColor(20, 20, 20, 205)
         self._base_font = ui_font(12)
         self._metrics: dict[tuple[int, bool], QFontMetricsF] = {}
+        self._layout_config = OverlayLayoutConfig()
 
         self._phase = Phase.RECOGNIZING
         self._status = tr("overlay.recognizing")
@@ -578,9 +616,31 @@ class OverlayWindow(QWidget):
                 text,
                 title=block is not None and block.category is BlockCategory.TITLE,
                 chart=chart,
+                source_bbox=bbox,
+                fixed_box=block is not None
+                and block.category not in (BlockCategory.TEXT, BlockCategory.TITLE),
             )
             self._order.append(segment.segment.id)
         self._expand_line_boxes(by_id)
+        for item in self._items.values():
+            block = by_id.get(item.block_id)
+            source = item.source_bbox or item.bbox
+            samples = [
+                px
+                for line in (() if block is None else block.lines)
+                if overlaps(line.bbox, source) and any(c.isalpha() for c in line.text)
+                if (px := self._source_line_px(line.text, line.bbox)) is not None
+            ]
+            single = self._source_line_px(item.source, source)
+            if samples:
+                item.source_px = sorted(samples)[len(samples) // 2]
+            elif single is not None and source.height <= 1.8 * single:
+                item.source_px = single
+            else:
+                item.source_px = self._measure(
+                    item.source, source.width, source.height, item.title, max(MIN_FONT_PX, source.height)
+                )
+        self._reflow_boxes()
         self._status = "" if self._items else tr("overlay.no_text")
         self._refit()
         self.update()
@@ -610,8 +670,9 @@ class OverlayWindow(QWidget):
             dirty = dirty.united(self._item_rect(item))
         if changed and not self._show_source and self._selection_touches(changed):
             self.clear_selection()
-        if changed:
-            self._refit(changed)
+        if views:
+            self._reflow_boxes()
+            self._refit()
             if self._fading and not self._fade_timer.isActive():
                 self._fade_timer.start()
         if not dirty.isNull():
@@ -698,6 +759,7 @@ class OverlayWindow(QWidget):
         self._show_source = not self._show_source
         self.clear_selection()
         self._end_fades()
+        self._reflow_boxes()
         self._refit()
         self.update()
 
@@ -723,6 +785,18 @@ class OverlayWindow(QWidget):
         """换用新的键位表（配置变化时由展示器调用）。正在进行的拖动按按下时的键位做完。"""
         self._keymap = keymap
         self._gestures.keymap = keymap
+
+    def set_layout(self, config: OverlayLayoutConfig) -> None:
+        """布局参数热更新；始终从原识别框重算，缩放与内外边距不会累计。"""
+        if config == self._layout_config:
+            return
+        self._layout_config = config
+        self._fit_cache.clear()
+        self.clear_selection()
+        self._end_fades()
+        self._reflow_boxes()
+        self._refit()
+        self.update()
 
     def zoom_step(self, steps: int) -> None:
         """以窗口中心为锚点放大（steps > 0）或缩小，每一步与滚轮转过一格相同。"""
@@ -817,6 +891,11 @@ class OverlayWindow(QWidget):
         box = self._text_box(item)
         inner = self._inner_device(item)
         ratio = self.device_ratio()
+        outer = bbox_to_view(item.bbox, self.scale_device())
+        if position.y() * ratio < outer.y:
+            return item.segment_id, 0
+        if position.y() * ratio >= outer.bottom:
+            return item.segment_id, max(0, len(self.shown_text(item)) - int(on_character))
         x = position.x() * ratio - inner.x
         y = position.y() * ratio - inner.y - box.top
         length = len(self.shown_text(item))
@@ -830,7 +909,13 @@ class OverlayWindow(QWidget):
             return []
         box = self._text_box(item)
         inner = self._inner_device(item)
-        return [rect.translated(inner.x, inner.y + box.top) for rect in range_rects(box.layout, *span)]
+        outer = bbox_to_view(item.bbox, self.scale_device())
+        clip = QRectF(outer.x, outer.y, outer.width, outer.height)
+        visible = [
+            rect.translated(inner.x, inner.y + box.top).intersected(clip)
+            for rect in range_rects(box.layout, *span)
+        ]
+        return [rect for rect in visible if not rect.isEmpty()]
 
     def _text_box(self, item: SegmentItem) -> TextBox:
         """段当前显示文字的排版结果，按 _BoxKey 缓存；键变了（字号测完、缩放、换屏、换文字）就重新排版。"""
@@ -854,7 +939,10 @@ class OverlayWindow(QWidget):
 
     def _make_box(self, key: _BoxKey) -> TextBox:
         text, px, title, width, height = key
-        layout, top = layout_text(text, self._font(px, title), width, height)
+        config = self._layout_config
+        layout, top = layout_text(
+            text, self._font(px, title), width, height, config.horizontal, config.vertical
+        )
         return TextBox(key, layout, top)
 
     def _span_at(self, position: Position, unit: Unit) -> tuple[int, int]:
@@ -899,7 +987,7 @@ class OverlayWindow(QWidget):
         """单行原文在截图里的字号（截图像素）：字形的实际高度不超过包围盒高、整行宽度不超过包围盒宽的最大字号。
 
         OCR 的行框紧贴字形，没有下伸字母（p、g、y）的行比有的矮四分之一左右；按字形高度而不是行高反推，
-        同一字号的两行得到相同的结果。原文在包围盒宽度内放不下一行（多行段落）时返回 None。
+        宽度约束也参与估算；空文字、显式多行或最小字号仍放不下时返回 None。段落判定由调用方处理。
         """
         stripped = text.strip()
         if not stripped or "\n" in stripped or box.width <= 0 or box.height <= 0:
@@ -954,25 +1042,133 @@ class OverlayWindow(QWidget):
             font.setWeight(QFont.Weight.DemiBold)
         return font
 
+    def _target_font(self, item: SegmentItem, scale: float | None = None) -> int:
+        ratio = self.scale_device() if scale is None else scale
+        return max(MIN_FONT_PX, round(item.source_px * self._layout_config.font_scale * ratio))
+
+    def _reflow_boxes(self) -> None:
+        """原始框 → 行高补偿 → 手动扩框 → 按目标字号自动扩框；几何保持截图像素。"""
+        config = self._layout_config
+        items = list(self._items.values())
+        for item in items:
+            item.bbox = item.source_bbox or item.bbox
+        self._expand_line_boxes({block.id: block for block in self._blocks})
+        bases = {item.segment_id: item.bbox for item in items}
+        originals = {item.segment_id: item.source_bbox or item.bbox for item in items}
+        protected = [
+            block.bbox
+            for block in self._blocks
+            if block.category not in (BlockCategory.TEXT, BlockCategory.TITLE)
+        ]
+        placed: list[BBox] = []
+        for item in items:
+            source = originals[item.segment_id]
+            preserve = item.view is not None and item.view.skip_reason is SkipReason.NO_TEXT
+            if item.fixed_box or preserve:
+                item.bbox = source
+                placed.append(source)
+                continue
+            base = bases[item.segment_id]
+            # 外边距独立于缩放锚点，向四周各添加指定像素。
+            manual = sized_box(base, base.width * config.scale_x, base.height * config.scale_y, config)
+            manual = BBox(
+                math.floor(manual.x0 - config.box_padding_x),
+                math.floor(manual.y0 - config.box_padding_y),
+                math.ceil(manual.x1 + config.box_padding_x),
+                math.ceil(manual.y1 + config.box_padding_y),
+            )
+            obstacles = (
+                [box for sid, box in originals.items() if sid != item.segment_id] + protected + placed
+                if config.avoid_overlap
+                else []
+            )
+            target = self._target_font(item, 1.0)
+            minimum_height = max(
+                manual.height,
+                math.ceil(
+                    self._text_extent(self.shown_text(item), 1e7, target, item.title).height()
+                    + 2 * config.text_padding_y
+                ),
+            )
+            factors = (
+                [1.0] if config.growth != "both" else [1 + (config.max_growth - 1) * i / 8 for i in range(9)]
+            )
+            candidates: list[tuple[int, int, BBox]] = []
+            for factor in factors:
+                width = max(1, round(manual.width * factor))
+                horizontal_box = confine_box(
+                    source, sized_box(manual, width, manual.height, config), self._pixel_size, obstacles
+                )
+                width = horizontal_box.width
+                padding_x = min(config.text_padding_x, max(0, (width - 1) / 2))
+                bounds = self._text_extent(self.shown_text(item), width - 2 * padding_x, target, item.title)
+                height = manual.height
+                if config.growth != "fixed":
+                    height = min(
+                        math.ceil(manual.height * config.max_growth),
+                        max(height, math.ceil(bounds.height() + 2 * config.text_padding_y)),
+                    )
+                anchor = BBox(horizontal_box.x0, manual.y0, horizontal_box.x1, manual.y1)
+                candidate = confine_box(
+                    source, sized_box(anchor, width, height, config), self._pixel_size, obstacles
+                )
+                if candidate.width < width and config.growth != "fixed":
+                    inner_width = max(1.0, candidate.width - 2 * config.text_padding_x)
+                    bounds = self._text_extent(self.shown_text(item), inner_width, target, item.title)
+                    height = min(
+                        math.ceil(manual.height * config.max_growth),
+                        max(height, math.ceil(bounds.height() + 2 * config.text_padding_y)),
+                    )
+                    anchor = BBox(candidate.x0, manual.y0, candidate.x1, manual.y1)
+                    candidate = confine_box(
+                        source,
+                        sized_box(anchor, candidate.width, height, config),
+                        self._pixel_size,
+                        obstacles,
+                    )
+                px = min(config.text_padding_x, max(0, (candidate.width - 1) / 2))
+                py = min(config.text_padding_y, max(0, (candidate.height - 1) / 2))
+                fitted = self._measure(
+                    self.shown_text(item),
+                    max(1, math.floor(candidate.width - 2 * px)),
+                    max(1, math.floor(candidate.height - 2 * py)),
+                    item.title,
+                    target,
+                )
+                candidates.append((fitted, -candidate.width * candidate.height, candidate))
+                if fitted >= target and height <= minimum_height:
+                    break
+            item.bbox = max(candidates, key=lambda value: value[:2])[2]
+            placed.append(item.bbox)
+        self._boxes.clear()
+        self._fade_boxes.clear()
+        self.update()
+
+    def _text_extent(self, text: str, width: float, px: int, title: bool) -> QRectF:
+        layout, _ = layout_text(text, self._font(px, title), width, 1e7)
+        key = (px, title)
+        metrics = self._metrics.get(key)
+        if metrics is None:
+            metrics = self._metrics[key] = QFontMetricsF(self._font(px, title))
+        ink = layout_ink_bounds(layout, metrics)
+        # 同时覆盖字形外伸和不可拆单词的实际宽度。
+        advance = max((layout.lineAt(i).naturalTextWidth() for i in range(layout.lineCount())), default=0.0)
+        return QRectF(ink.x(), ink.y(), max(ink.width(), advance), ink.height())
+
     def _fits(self, text: str, width: float, height: float, title: bool) -> Callable[[int], bool]:
         def fits(px: int) -> bool:
-            key = (px, title)
-            metrics = self._metrics.get(key)
-            if metrics is None:
-                metrics = QFontMetricsF(self._font(px, title))
-                self._metrics[key] = metrics
-            bounds = metrics.boundingRect(QRectF(0, 0, width, 1e7), int(_TEXT_FLAGS), text)
+            bounds = self._text_extent(text, width, px, title)
             return bounds.height() <= height and bounds.width() <= width + 0.5
 
         return fits
 
     def _inner_device(self, item: SegmentItem) -> RectF:
-        """段的文字区域（设备像素）：包围盒向内留 PADDING 个逻辑像素，至少 1 个设备像素。"""
+        """按截图像素配置内边距，换算到当前设备；文字区域至少保留 1×1 设备像素。"""
         rect = bbox_to_view(item.bbox, self.scale_device())
-        pad = max(1.0, min(PADDING * self.device_ratio(), min(rect.width, rect.height) / 10))
-        return RectF(
-            rect.x + pad, rect.y + pad, max(1.0, rect.width - 2 * pad), max(1.0, rect.height - 2 * pad)
-        )
+        config = self._layout_config
+        px = min(config.text_padding_x * self.scale_device(), max(0, (rect.width - 1) / 2))
+        py = min(config.text_padding_y * self.scale_device(), max(0, (rect.height - 1) / 2))
+        return RectF(rect.x + px, rect.y + py, max(1.0, rect.width - 2 * px), max(1.0, rect.height - 2 * py))
 
     def _fit_key(self, item: SegmentItem) -> _FitKey:
         inner = self._inner_device(item)
@@ -980,11 +1176,12 @@ class OverlayWindow(QWidget):
         return (
             self.shown_text(item),
             item.source,
-            round(inner.width),
-            round(inner.height),
+            math.floor(inner.width),
+            math.floor(inner.height),
             round(outer.width),
             round(outer.height),
             item.title,
+            self._target_font(item),
         )
 
     def _refit(self, only: Sequence[SegmentId] | None = None) -> None:
@@ -1031,10 +1228,8 @@ class OverlayWindow(QWidget):
         key = self._fit_key(item)
         size = self._fit_cache.get(key)
         if size is None:
-            shown, source, width, height, outer_width, outer_height, title = key
-            # 先在整个包围盒里测原文的最大字号作为上限（见模块说明），再在文字区域里测显示的文字。
-            cap = self._measure(source, outer_width, outer_height, title, max(MIN_FONT_PX, outer_height))
-            size = self._measure(shown, width, height, title, max(MIN_FONT_PX, min(cap, height)))
+            shown, _source, width, height, _outer_width, _outer_height, title, cap = key
+            size = self._measure(shown, width, height, title, cap)
             self._fit_cache[key] = size
         item.font_px = size
         return item
@@ -1049,13 +1244,12 @@ class OverlayWindow(QWidget):
         return size
 
     def font_px(self, item: SegmentItem) -> int:
-        """段当前使用的字号（设备像素）：测量过的用测量值，否则用估算值（同样不超过原文的估算值）。"""
+        """当前设备像素字号；测量前用估算值，最终以原文估算值乘目标倍数适配。"""
         if item.font_px is not None:
             return item.font_px
         inner = self._inner_device(item)
-        outer = bbox_to_view(item.bbox, self.scale_device())
         shown = estimate_font_size(self.shown_text(item), inner.width, inner.height)
-        return min(shown, estimate_font_size(item.source, outer.width, outer.height))
+        return min(shown, self._target_font(item))
 
     # ---- 过渡 ----
 

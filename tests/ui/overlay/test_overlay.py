@@ -151,17 +151,16 @@ async def test_font_size_fits_bbox_and_is_measured_in_frames(make_rig: MakeRig) 
     assert p1.font_px >= 10
 
 
-async def test_translation_font_does_not_exceed_source_font(make_rig: MakeRig) -> None:
-    """长原文译成短译文时，译文字号不超过原文在同一包围盒里的字号，版面上各段大小与原来一致。"""
+async def test_translation_font_uses_original_font_target(make_rig: MakeRig) -> None:
+    """短译文使用原文字号目标；扩大绘制框不会再次放大原文字号估算。"""
     rig = await _with_text(make_rig)
     window = rig.window
     p2 = window.items[P2]
     source_px = window.font_px(p2)
     window.apply_views([view("p2", p2.source, "狐狸")])
     window.fit_all_now()
-    _shown_text, _source, width, height, outer_w, outer_h, _title = window._fit_key(p2)  # pyright: ignore[reportPrivateUsage]
+    _shown_text, _source, width, height, _outer_w, _outer_h, _title, cap = window._fit_key(p2)  # pyright: ignore[reportPrivateUsage]
     measure = window._measure  # pyright: ignore[reportPrivateUsage]
-    cap = measure(p2.source, outer_w, outer_h, False, outer_h)
     free = measure("狐狸", width, height, False, height)
     # 两个字单独放进包围盒能用的字号远大于原文的字号；上限生效后取原文在整个包围盒里的字号。
     assert free > cap
@@ -180,9 +179,9 @@ async def test_text_area_keeps_padding_inside_bbox(make_rig: MakeRig) -> None:
     item = window.items[P1]
     k = window.scale_device()
     inner = window._inner_device(item)  # pyright: ignore[reportPrivateUsage]
-    assert inner.x - item.bbox.x0 * k >= 1.0
-    assert item.bbox.x1 * k - inner.right >= 1.0
-    assert inner.y - item.bbox.y0 * k >= 1.0
+    assert inner.x - item.bbox.x0 * k == pytest.approx(2 * k)
+    assert item.bbox.x1 * k - inner.right == pytest.approx(2 * k)
+    assert inner.y - item.bbox.y0 * k == pytest.approx(k)
 
 
 async def test_results_before_ocr_completed_are_applied_later(make_rig: MakeRig) -> None:

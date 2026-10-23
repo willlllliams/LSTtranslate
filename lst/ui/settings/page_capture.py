@@ -31,7 +31,10 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QProgressBar, QPushButton,
 from lst.contracts.ocr_engines import OcrEngineInfo, OcrEngineKind, OcrRuntimeVariant
 from lst.ui.common.text import PROGRESS_STEPS, language_name, progress_steps
 from lst.ui.i18n import tr
-from lst.ui.settings import strings_ocr  # noqa: F401  # pyright: ignore[reportUnusedImport]  登记文案
+from lst.ui.settings import (
+    strings_layout,  # noqa: F401  # pyright: ignore[reportUnusedImport]  登记文案
+    strings_ocr,  # noqa: F401  # pyright: ignore[reportUnusedImport]  登记文案
+)
 from lst.ui.settings.cards import Binding, CardBuilder, FieldDef, language_options
 from lst.ui.settings.controls import ChoiceEditor, SettingCard, ThemedLabel
 from lst.ui.settings.dialogs import Dialogs
@@ -44,7 +47,7 @@ from lst.ui.settings.ocr_engine_rows import (
     engine_title,
     variant_name,
 )
-from lst.ui.settings.page_ocr_pipeline import OcrActions
+from lst.ui.settings.page_ocr_pipeline import OcrActions, ParamsGroup, section_model
 from lst.ui.settings.pages import SettingsPage
 from lst.ui.settings.presenter import Location, SettingsPresenter, Topic
 from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, style_primary_button, theme_colors
@@ -461,6 +464,22 @@ class CaptureOptionsPage(SettingsPage):
         )
         self.add_title("settings.section.translation")
         self.build([FieldDef("screenshot", ("target_lang",), widget="language")])
+        self.box_layout: ParamsGroup | None = None
+        model = section_model(presenter, "overlay_layout")
+        if model is not None:
+            self.box_layout = ParamsGroup(
+                presenter,
+                builder,
+                dialogs,
+                "overlay_layout",
+                model,
+                title_key="settings.overlay_layout.title",
+                intro_key="settings.overlay_layout.intro",
+                owner=lambda: tr("settings.overlay_layout.title"),
+                top_margin=TOKENS.spacing_l,
+                text_key_prefix="settings.f.overlay_layout",
+            )
+            self.add_card(self.box_layout)
 
     # ------------------------------------------------------------------ 查询
 
@@ -483,17 +502,34 @@ class CaptureOptionsPage(SettingsPage):
 
     def retranslate(self) -> None:
         super().retranslate()
+        if self.box_layout is not None:
+            self.box_layout.retranslate()
+            for binding in self.box_layout.bindings:
+                binding.retranslate()
         self._language_options = None  # 语言切换后，基类已经把语言下拉框换回完整列表
         self._sync_engine_dependent()
 
     def refresh_all(self) -> None:
         super().refresh_all()
+        if self.box_layout is not None:
+            for binding in self.box_layout.bindings:
+                binding.refresh(self.presenter)
+                binding.refresh_error(self.presenter)
         self._sync_engine_dependent()
 
     def refresh(self, topic: Topic) -> None:
         super().refresh(topic)
+        if self.box_layout is not None:
+            for binding in self.box_layout.bindings:
+                if topic is Topic.CONFIG:
+                    binding.refresh(self.presenter)
+                elif topic is Topic.REJECTIONS:
+                    binding.refresh_error(self.presenter)
         if topic in (Topic.CONFIG, Topic.OCR_ENGINES):
             self._sync_engine_dependent()
+
+    def all_bindings(self) -> list[Binding]:
+        return [*self.bindings, *(self.box_layout.bindings if self.box_layout is not None else [])]
 
     def _sync_engine_dependent(self) -> None:
         """当前引擎只有文本模式时，PaddleOCR 专属的卡片不可用；识别语言只列出当前引擎支持的语言。"""

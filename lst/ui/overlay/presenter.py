@@ -32,6 +32,7 @@ from lst.contracts.translation import SegmentView
 from lst.kernel import EventBus
 from lst.ui.common.bindings import Keymap, Scope, bindings_from
 from lst.ui.i18n import apply_config_language, error_text
+from lst.ui.overlay.layout import OverlayLayoutConfig
 from lst.ui.overlay.window import OverlayWindow, Phase
 
 OCR_WORKER: Final = "ocr"
@@ -64,6 +65,7 @@ class OverlayPresenter:
         self._pending_progress: tuple[int, int] | None = None
         self._ocr_state: WorkerState | None = None
         self._keymap = Keymap.defaults(Scope.OVERLAY)
+        self._layout = OverlayLayoutConfig()
 
     # ---- 查询 ----
 
@@ -89,6 +91,7 @@ class OverlayPresenter:
         window = self._factory(event, self)
         self._window = window
         window.set_keymap(self._keymap)
+        window.set_layout(self._layout)
         window.show_recognizing(self._loading())
         window.present()
         self._logger.debug("会话 %s 的覆盖窗口已弹出", event.session_id)
@@ -144,8 +147,10 @@ class OverlayPresenter:
         apply_config_language(config)
         # 窗口内的键位（UI-09）：已经打开的窗口立即换用新键位，之后新开的窗口也用它。
         self._keymap = Keymap.for_scope(bindings_from(config.section("bindings")), Scope.OVERLAY)
+        self._layout = OverlayLayoutConfig.model_validate(config.section("overlay_layout") or {})
         if self._window is not None:
             self._window.set_keymap(self._keymap)
+            self._window.set_layout(self._layout)
 
     # ---- OverlayActions ----
 

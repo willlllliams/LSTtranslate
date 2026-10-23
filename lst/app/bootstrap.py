@@ -114,6 +114,7 @@ from lst.ui.common.bindings import CONFIG_SECTIONS as BINDING_SECTIONS
 from lst.ui.hotkeys import CONFIG_SECTIONS as HOTKEY_SECTIONS
 from lst.ui.hotkeys import HotkeysModule
 from lst.ui.onboarding import OnboardingModule
+from lst.ui.overlay import CONFIG_SECTIONS as OVERLAY_SECTIONS
 from lst.ui.overlay import OverlayModule
 from lst.ui.settings import SettingsModule
 from lst.ui.theme import CONFIG_SECTIONS as UI_SECTIONS
@@ -207,6 +208,7 @@ def all_config_sections() -> dict[str, type[BaseModel]]:
     for group in (
         APP_SECTIONS,
         UI_SECTIONS,
+        OVERLAY_SECTIONS,
         HOTKEY_SECTIONS,
         BINDING_SECTIONS,
         RACE_SECTIONS,

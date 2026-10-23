@@ -296,6 +296,7 @@ class ParamsGroup(QWidget):
         include: Callable[[Param], bool] | None = None,
         title: Callable[[], str] | None = None,
         button_keys: str = "settings.ocr_params",
+        text_key_prefix: str = PARAM_KEY_PREFIX,
     ) -> None:
         super().__init__()
         self.section = section
@@ -304,6 +305,7 @@ class ParamsGroup(QWidget):
         self._title_key = title_key
         self._title = title
         self._button_keys = button_keys
+        self._text_key_prefix = text_key_prefix
         self._intro_key = intro_key
         self._owner = owner
         params = collect_params(model, steps=steps)
@@ -358,7 +360,7 @@ class ParamsGroup(QWidget):
         definition = FieldDef(
             self.section,
             param.path,
-            text_key=".".join((PARAM_KEY_PREFIX, *param.path)),
+            text_key=".".join((self._text_key_prefix, *param.path)),
             schema_texts=True,
             details=True,
             resettable=True,
