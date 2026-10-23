@@ -90,9 +90,8 @@ def evaluate(result: Recognized, target: Expected) -> Metrics:
     positions: list[float] = []
     for i, unit in enumerate(target.units):
         reference = canonical(unit.text)
-        candidates = sorted(
-            reverse[i], key=lambda j: (result.segments[j].bbox.y0, result.segments[j].bbox.x0)
-        )
+        # segments 已是生产管线的阅读顺序；词框顶边的像素抖动不能再次改变顺序。
+        candidates = reverse[i]
         text = canonical(" ".join(result.segments[j].segment.text for j in candidates))
         distance = substring_distance(reference, text)
         errors[unit.id] = distance

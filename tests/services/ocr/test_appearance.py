@@ -103,3 +103,11 @@ def test_geometric_gutters_require_continuous_pixel_whitespace(ink_in_gutter: bo
         assert result == ["left0 right0 left1 right1 left2 right2"]
     else:
         assert result == ["left0 left1 left2", "right0 right1 right2"]
+
+
+@pytest.mark.parametrize("text", ["HTTPServer", "XMLReader", "MOSTPOPULARAll"])
+def test_acronym_boundary_without_control_spacing_keeps_one_label(text: str) -> None:
+    pixels = canvas()
+    line = recognized(BBox(10, 20, 300, 48), text)
+    letters(pixels, line.bbox)
+    assert [part.text for part in appearance(pixels).split(line)] == [text]

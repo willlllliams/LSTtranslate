@@ -43,7 +43,8 @@ Windows 的 OCR 引擎一次只识别一种语言，可用的语言取决于系�
 1. 处理器给出 BGR 图像；先按 resize_max_side 与 OcrEngine.max_image_dimension 中较小的一个等比缩小
    （面积平均，与 OpenCV 的 INTER_AREA 同一原理），再按 grayscale 灰度化，补上不透明的 alpha 通道，
    复制成 Bgra8 格式的 SoftwareBitmap，交给 OcrEngine.recognize_async。
-2. 结果按行输出：行的包围盒是该行各词矩形的并集，经 geometry.CoordinateMap 换算回原始截图，
+2. 系统返回的词框位于纠偏图像中；按 TextAngle 绕图像中心顺时针还原四角，取轴对齐包围盒。
+   结果按行输出：行的包围盒是还原后各词矩形的并集，经 geometry.CoordinateMap 换算回原始截图，
    左上角向下取整、右下角向上取整并裁剪到截图内；行的文字由词拼成（见 assemble_line）。
 3. 输出遵守文本模式的约定：一个覆盖整张截图的 text 块，order 为 0，text 为空串，lines 为全部非空行；
    没有识别到文字时返回空数组。
@@ -59,6 +60,7 @@ recognize_async 返回 WinRT 的异步操作。推理线程在测试里可能是
 import asyncio
 import importlib.metadata
 import logging
+import math
 import platform
 import re
 import unicodedata
@@ -429,6 +431,23 @@ class RecognizerHandle(Protocol):
         ...
 
 
+def restore_word(word: Word, angle: float | None, width: int, height: int) -> Word:
+    """将系统纠偏后的词框绕图像中心顺时针转回截图坐标，取四角的轴对齐包围盒。"""
+    if angle is None or angle == 0:
+        return word
+    radians = math.radians(angle)
+    cosine, sine = math.cos(radians), math.sin(radians)
+    cx, cy = width / 2, height / 2
+    corners = [
+        (cx + cosine * (x - cx) - sine * (y - cy), cy + sine * (x - cx) + cosine * (y - cy))
+        for x in (word.x, word.x + word.width)
+        for y in (word.y, word.y + word.height)
+    ]
+    x0, y0 = min(x for x, _ in corners), min(y for _, y in corners)
+    x1, y1 = max(x for x, _ in corners), max(y for _, y in corners)
+    return Word(word.text, x0, y0, x1 - x0, y1 - y0)
+
+
 class _WinRtRecognizer:
     def __init__(self, engine: "OcrEngine") -> None:
         self._engine = engine
@@ -451,7 +470,14 @@ class _WinRtRecognizer:
                     words: list[Word] = []
                     for word in line.words:
                         rect = word.bounding_rect
-                        words.append(Word(word.text, rect.x, rect.y, rect.width, rect.height))
+                        words.append(
+                            restore_word(
+                                Word(word.text, rect.x, rect.y, rect.width, rect.height),
+                                result.text_angle,
+                                width,
+                                height,
+                            )
+                        )
                     lines.append(words)
                 return lines
 

@@ -28,6 +28,7 @@ from lst.workers.ocr_worker.winocr_backend import (
     canonical_language,
     match_language,
     resize_area,
+    restore_word,
     target_size,
     to_bgra,
 )
@@ -387,3 +388,20 @@ def test_empty_result_is_an_empty_array() -> None:
     backend = WinOcrBackend(FakeApi(["en-US"], profile="en-US"))
     backend.load({}, no_progress)
     assert backend.recognize(np.full((20, 30, 3), 255, np.uint8), {}) == []
+
+
+@pytest.mark.parametrize("angle", [None, 0.0])
+def test_unrotated_word_is_unchanged(angle: float | None) -> None:
+    word = Word("text", 40, 35, 28, 27)
+    assert restore_word(word, angle, 1600, 300) is word
+
+
+@pytest.mark.parametrize(
+    "angle,expected", [(90.0, (100.0, 0.0, 10.0, 20.0)), (-90.0, (90.0, 80.0, 10.0, 20.0))]
+)
+def test_word_rotation_uses_image_center_and_all_four_corners(
+    angle: float, expected: tuple[float, float, float, float]
+) -> None:
+    word = restore_word(Word("text", 50, 40, 20, 10), angle, 200, 100)
+    assert (word.x, word.y, word.width, word.height) == pytest.approx(expected)
+    assert word.text == "text"

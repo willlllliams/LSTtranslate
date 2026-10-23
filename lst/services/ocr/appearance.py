@@ -96,7 +96,10 @@ class ImageAppearance:
         return bool(np.count_nonzero(ink.any(axis=0)) < max(2, 0.5 * (x1 - x0)))
 
     def _split(self, line: TextLine) -> tuple[TextLine, ...]:
-        words = re.sub(r"(?<=\w)([»》])", r" \1", line.text).split()
+        text = re.sub(r"(?<=\w)([»》])", r" \1", line.text)
+        # OCR 会吞掉大写标签与首字母大写链接之间的空格；仍需投影间隙及外观证据确认边界。
+        expanded = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+        words = expanded.split()
         box = line.bbox
         appearance = self.of(line)
         if (
@@ -125,7 +128,12 @@ class ImageAppearance:
             if columns[i] - columns[i - 1] > 1
         ]
         selected = sorted(gaps, reverse=True)[: len(words) - 1]
-        if len(selected) != len(words) - 1 or min(gap[0] for gap in selected) < 0.12 * appearance.ink_height:
+        # 推测的词边界必须有明显空白，避免把单个字形的小缝当成两个词的位置。
+        minimum_gap = 0.35 if expanded != text else 0.12
+        if (
+            len(selected) != len(words) - 1
+            or min(gap[0] for gap in selected) < minimum_gap * appearance.ink_height
+        ):
             return (line,)
         cuts = sorted(selected, key=lambda gap: gap[1])
         spans = list(

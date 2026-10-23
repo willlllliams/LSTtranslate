@@ -568,6 +568,7 @@ $$
 ```python
 class Module(Protocol):
     name: str
+
     async def start(self, ctx: ModuleContext) -> None: ...
     async def stop(self) -> None: ...
 ```
@@ -617,7 +618,9 @@ class Module(Protocol):
 
 ```python
 class EventBus:
-    def subscribe[M: Message](self, kind: type[M], handler: Callable[[M], Awaitable[None] | None]) -> Subscription: ...
+    def subscribe[M: Message](
+        self, kind: type[M], handler: Callable[[M], Awaitable[None] | None]
+    ) -> Subscription: ...
     def publish(self, message: Event | State) -> None: ...
     def send(self, command: Command) -> None: ...
     def latest[S: State](self, kind: type[S]) -> S | None: ...
@@ -700,11 +703,11 @@ class EventBus:
 
 ```python
 class AttemptState(Enum):
-    QUEUED = 1      # 已派发，等待引擎的并发名额
-    RUNNING = 2     # 引擎正在处理
-    DONE = 3        # 成功返回译文
-    FAILED = 4      # 失败（超时、网络、解析、实例被移除等）
-    CANCELLED = 5   # 在排队时被剪枝，从未开始执行
+    QUEUED = 1  # 已派发，等待引擎的并发名额
+    RUNNING = 2  # 引擎正在处理
+    DONE = 3  # 成功返回译文
+    FAILED = 4  # 失败（超时、网络、解析、实例被移除等）
+    CANCELLED = 5  # 在排队时被剪枝，从未开始执行
 ```
 
 前两种称为“未结束”，后三种称为“已结束”。已结束的尝试不会回到未结束状态。
@@ -715,13 +718,13 @@ class Attempt:
     engine_id: EngineId
     priority: int
     state: AttemptState
-    dispatched_at: float          # 段派发时刻，单调时钟
+    dispatched_at: float  # 段派发时刻，单调时钟
     finished_at: float | None
     text: str | None
     error: str | None
-    arrival_seq: int | None       # 成功结果在本段内的到达次序，供界面和统计使用
-    cached: bool                  # 结果来自缓存；竞速统计排除这类样本
-    started: bool                 # 进入过 RUNNING 状态；竞速统计只计入执行过的尝试（RACE-07）
+    arrival_seq: int | None  # 成功结果在本段内的到达次序，供界面和统计使用
+    cached: bool  # 结果来自缓存；竞速统计排除这类样本
+    started: bool  # 进入过 RUNNING 状态；竞速统计只计入执行过的尝试（RACE-07）
     error_code: ErrorCode | None  # 失败原因的分类，界面据此显示原因与建议（10.3 节）
 ```
 
@@ -1426,6 +1429,7 @@ decode_blocks → 清洗 → 拆分 → 聚合 → blocks_to_segments
 ```python
 class NormalizeStep(Protocol):
     name: str
+
     def apply(self, blocks: Sequence[LayoutBlock], context: NormalizeContext) -> tuple[LayoutBlock, ...]: ...
 ```
 

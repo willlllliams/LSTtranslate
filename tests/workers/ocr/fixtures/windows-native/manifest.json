@@ -1,0 +1,102 @@
+{
+  "platform": "windows",
+  "font": "Microsoft YaHei",
+  "pixel_size": 28,
+  "items": [
+    {
+      "file": "rows-0.png",
+      "sha256": "4a7ad33a8d663715c3858c42947554e8eb4b9945d9577c988fc7f0c48f8026fe",
+      "rows": [
+        "Hello Windows OCR",
+        "Screen translation 2026"
+      ],
+      "boxes": [
+        [
+          43,
+          38,
+          311,
+          61
+        ],
+        [
+          42,
+          98,
+          354,
+          121
+        ]
+      ]
+    },
+    {
+      "file": "rows-1.png",
+      "sha256": "0038881702541605a978766763ad0831f1ea8219cfdc715208a72e7f6747e012",
+      "rows": [
+        "屏幕翻译测试文字",
+        "今天天气很好"
+      ],
+      "boxes": [
+        [
+          40,
+          36,
+          264,
+          64
+        ],
+        [
+          40,
+          97,
+          208,
+          125
+        ]
+      ]
+    },
+    {
+      "file": "rows-2.png",
+      "sha256": "8431f400446885f603129994349a9753f8fbe6370420fd2ae0080e41c03c02e0",
+      "rows": [
+        "屏幕翻译 Screen translation",
+        "Settings 屏幕翻译 Microsoft"
+      ],
+      "boxes": [
+        [
+          40,
+          37,
+          397,
+          65
+        ],
+        [
+          42,
+          97,
+          403,
+          127
+        ]
+      ]
+    },
+    {
+      "file": "rows-3.png",
+      "sha256": "3de3706fb0060f85fee0ec4208e5934a09c3446f65674a8216e58189f2ffb8e1",
+      "rows": [
+        "屏幕翻译",
+        "The team has been working hard behind the scenes.",
+        "A fast reliable and modern experience for all users."
+      ],
+      "boxes": [
+        [
+          40,
+          37,
+          152,
+          65
+        ],
+        [
+          41,
+          98,
+          737,
+          128
+        ],
+        [
+          40,
+          157,
+          717,
+          187
+        ]
+      ]
+    }
+  ]
+}

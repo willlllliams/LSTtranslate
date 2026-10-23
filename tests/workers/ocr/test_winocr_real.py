@@ -9,13 +9,17 @@
 测试不读写用户目录，也不访问网络。
 """
 
+import hashlib
 import logging
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 from lst.contracts.worker_protocol import OcrRequest, OcrResult, Shutdown
@@ -62,6 +66,20 @@ def app(qapp: QApplication) -> QApplication:
 # ---------------------------------------------------------------- 直接调用后端
 
 
+class NativePage(BaseModel):
+    file: str
+    sha256: str
+    rows: list[str]
+    boxes: list[tuple[int, int, int, int]]
+
+
+class NativePages(BaseModel):
+    items: list[NativePage]
+
+
+NATIVE = Path(__file__).with_name("fixtures") / "windows-native"
+
+
 @needs_ocr
 @pytest.mark.skipif(match_language("zh-Hans", AVAILABLE) is None, reason="系统没有简体中文 OCR")
 def test_chinese_lines_are_recognised_in_place(app: QApplication) -> None:
@@ -98,25 +116,34 @@ def test_english_lines_with_padding_and_downscaling(app: QApplication) -> None:
     reason="系统没有同时安装中文与英文 OCR",
 )
 @pytest.mark.parametrize(
-    "rows",
-    [
-        ["Hello Windows OCR", "Screen translation 2026"],
-        ["屏幕翻译测试文字", "今天天气很好"],
-        ["屏幕翻译 Screen translation", "Settings 屏幕翻译 Microsoft"],
-        [
-            "屏幕翻译",
-            "The team has been working hard behind the scenes.",
-            "A fast reliable and modern experience for all users.",
-        ],
-    ],
+    "index",
+    range(4),
 )
-def test_auto_keeps_english_chinese_and_mixed_text(app: QApplication, rows: list[str]) -> None:
+def test_auto_keeps_english_chinese_and_mixed_text(app: QApplication, index: int) -> None:
+    """固定原生 Windows 字体截图，跨 Qt 平台检查相同输入的实际识别。"""
     del app
-    shot = render([(text, 40, 60 + i * 60) for i, text in enumerate(rows)], 1600, 300, 28)
+    page = NativePages.model_validate_json((NATIVE / "manifest.json").read_text("utf-8")).items[index]
+    path = NATIVE / page.file
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == page.sha256
+    image = QImage(str(path)).convertToFormat(QImage.Format.Format_ARGB32)
+    assert not image.isNull()
+    data = bytes(image.constBits())  # pyright: ignore[reportArgumentType]
     backend = load("auto")
-    blocks = backend.recognize(bgra_to_bgr(shot.data, shot.width, shot.height, shot.stride), {})
+    blocks = backend.recognize(bgra_to_bgr(data, image.width(), image.height(), image.bytesPerLine()), {})
+    (decoded,) = decode_blocks(blocks, width=image.width(), height=image.height())
+    assert [line.text for line in decoded.lines] == page.rows
+    for line, box in zip(decoded.lines, page.boxes, strict=True):
+        assert_near((line.bbox.x0, line.bbox.y0, line.bbox.x1, line.bbox.y1), box, 10)
+
+
+@needs_ocr
+@pytest.mark.skipif(match_language("zh-Hans", AVAILABLE) is None, reason="系统没有简体中文 OCR")
+def test_chinese_wide_canvas_maps_system_deskew_back_to_pixels(app: QApplication) -> None:
+    del app
+    shot = render([("屏幕翻译测试文字", 40, 60), ("今天天气很好", 40, 120)], 1600, 300, 28)
+    blocks = load("zh-Hans").recognize(bgra_to_bgr(shot.data, shot.width, shot.height, shot.stride), {})
     (decoded,) = decode_blocks(blocks, width=shot.width, height=shot.height)
-    assert [line.text for line in decoded.lines] == rows
+    assert [line.text for line in decoded.lines] == [drawn.text for drawn in shot.lines]
     for line, drawn in zip(decoded.lines, shot.lines, strict=True):
         assert_near((line.bbox.x0, line.bbox.y0, line.bbox.x1, line.bbox.y1), drawn.box, 10)
 

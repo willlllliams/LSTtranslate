@@ -55,7 +55,7 @@ with AutomationClient.connect(timeout=10) as client:
     try:
         client.call("overlay.copy")
     except AutomationError as error:
-        print(error.code, error.message, error.data)   # unavailable 没有打开的覆盖窗口 None
+        print(error.code, error.message, error.data)  # unavailable 没有打开的覆盖窗口 None
 ```
 
 - `AutomationClient.connect(pipe=None, timeout=5.0)`：连接，timeout 秒内管道一直不存在时抛 `FileNotFoundError`。连接时检查管道的所有者是当前用户；

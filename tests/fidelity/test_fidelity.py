@@ -8,8 +8,11 @@ from typing import cast
 
 import pytest
 
-from tests.fidelity.evaluate import canonical, evaluate, expected, substring_distance
-from tests.fidelity.pipeline import ENGINES, FIXTURES, IMAGES, load_raw
+from lst.contracts.ids import SegmentId
+from lst.contracts.ocr import BBox, OcrSegment
+from lst.contracts.translation import Segment
+from tests.fidelity.evaluate import Expected, Unit, canonical, evaluate, expected, substring_distance
+from tests.fidelity.pipeline import ENGINES, FIXTURES, IMAGES, Recognized, load_raw
 
 
 def test_original_attachments_are_preserved_byte_for_byte() -> None:
@@ -63,19 +66,43 @@ def test_cached_outputs_reject_a_different_source_image(tmp_path: Path) -> None:
         load_raw(ENGINES["rapid"], "blog", tmp_path)
 
 
-def test_server_scaled_blog_preserves_text_and_control_boundaries() -> None:
+@pytest.mark.parametrize("image", IMAGES)
+def test_server_scaled_pages_preserve_text_and_control_boundaries(image: str) -> None:
     engine = replace(ENGINES["paddle-text"], name="paddle-server-max960")
-    metrics = evaluate(load_raw(engine, "blog", FIXTURES / "server"), expected("blog"))
+    metrics = evaluate(load_raw(engine, image, FIXTURES / "server"), expected(image))
     assert metrics.content_accuracy == metrics.unit_recall == metrics.separate_units == 1.0
     assert metrics.merged_segments == metrics.split_units == 0
 
 
 @pytest.mark.parametrize(
     "preset,body_loss",
-    [("paddle-det-server", 19), ("paddle-server", 18), ("paddle-server-max1280", 0)],
+    [
+        ("paddle-det-server", 19),
+        ("paddle-server", 18),
+        ("paddle-server-tight", 18),
+        ("paddle-server-max1280", 0),
+    ],
 )
 def test_server_word_boxes_preserve_body_reading_order(preset: str, body_loss: int) -> None:
     engine = replace(ENGINES["paddle-text"], name=preset)
     metrics = evaluate(load_raw(engine, "blog", FIXTURES / "server"), expected("blog"))
     # 18/19 是原始检测、识别输出的漏字；正文顺序不能再增加损失。
     assert metrics.errors["body"] == body_loss
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_content_scoring_uses_production_order_and_detects_reversed_words(reverse: bool) -> None:
+    target = Expected(
+        width=200,
+        height=100,
+        units=(Unit(id="body", bbox=(0, 0, 200, 100), text="first second", zh="第一第二", role="body"),),
+    )
+    # 右侧词框上边缘高两像素；生产顺序仍从左向右。反转生产顺序必须扣分。
+    segments = (
+        OcrSegment(Segment(SegmentId("a"), "first"), "body", BBox(10, 22, 80, 42)),
+        OcrSegment(Segment(SegmentId("b"), "second"), "body", BBox(85, 20, 170, 42)),
+    )
+    result = Recognized("test", "test", 200, 100, [], (), segments[::-1] if reverse else segments, 0)
+    metrics = evaluate(result, target)
+    assert (metrics.errors["body"] > 0) is reverse
+    assert metrics.split_units == 1
