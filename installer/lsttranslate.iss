@@ -67,8 +67,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Windows 11 22H2（build 22621）起才有 Mica 背景（需求 6.6 节）。
-MinVersion=10.0.22621
+; Windows 10 22H2 x64；Mica 在 Windows 11 22H2 起启用，旧系统使用不透明主题背景。
+MinVersion=10.0.19045
 AppMutex=LSTtranslate.Running
 CloseApplications=yes
 RestartApplications=no

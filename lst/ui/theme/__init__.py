@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QPainter,
     QPalette,
     QPixmap,
+    QRawFont,
 )
 from PySide6.QtWidgets import QApplication, QPushButton, QStyleFactory, QWidget
 
@@ -201,9 +202,12 @@ _PREFERRED_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI")
 
 def apply_app_style(app: QApplication, scheme: ColorSchemeSetting = "system") -> None:
     """设置应用样式、字体与深浅色（需求 UI-02）。可以重复调用，主题配置变化时立即生效。"""
-    styles = QStyleFactory.keys()  # 返回字符串列表
-    if "windows11" in (style.lower() for style in styles):
-        app.setStyle("windows11")
+    available_styles = QStyleFactory.keys()
+    styles = {style.lower(): style for style in available_styles}
+    for candidate in ("windows11", "fusion", "windowsvista", "windows"):
+        if candidate in styles:
+            app.setStyle(styles[candidate])
+            break
     families = set(QFontDatabase.families())
     for family in _PREFERRED_FONTS:
         if family in families:
@@ -265,6 +269,7 @@ def enable_mica(widget: QWidget, *, dark: bool) -> bool:
     窗口句柄之后再被重建时需要重新调用。
     """
     if not mica_supported():
+        widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         return False
     widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
     if _apply_dwm_backdrop(int(widget.winId()), dark=dark):
@@ -301,6 +306,12 @@ FLUENT_ICONS_FAMILY: Final = "Segoe Fluent Icons"
 
 _FLUENT_ICONS_FILE: Final = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "SegoeIcons.ttf"
 """字体文件。Qt 的平台插件没有把系统字体全部登记时（例如 offscreen 平台），直接从这个文件加载。"""
+
+MDL2_ICONS_FAMILY: Final = "Segoe MDL2 Assets"
+_ICON_FONT_CANDIDATES = (
+    (FLUENT_ICONS_FAMILY, _FLUENT_ICONS_FILE),
+    (MDL2_ICONS_FAMILY, _FLUENT_ICONS_FILE.with_name("segmdl2.ttf")),
+)
 
 
 class Glyph:
@@ -372,33 +383,57 @@ class Glyph:
 
 
 _icon_font_ready: bool | None = None
+_icon_family = FLUENT_ICONS_FAMILY
+_icon_raw_font: QRawFont | None = None
+_icon_glyph_cache: dict[str, str] = {}
+_ICON_ALIASES = {Glyph.LAYOUT: Glyph.GRID, Glyph.BLOCKED: Glyph.ERROR}
 
 
 def fluent_icons_available() -> bool:
     """图标字体是否可用。第一次调用时尝试从系统字体目录加载，之后沿用结果。需要先创建 QGuiApplication。"""
-    global _icon_font_ready
+    global _icon_font_ready, _icon_family, _icon_raw_font
     if _icon_font_ready is None:
-        if FLUENT_ICONS_FAMILY in QFontDatabase.families():
-            _icon_font_ready = True
-        elif _FLUENT_ICONS_FILE.is_file():
-            font_id = QFontDatabase.addApplicationFont(str(_FLUENT_ICONS_FILE))
-            _icon_font_ready = font_id >= 0 and FLUENT_ICONS_FAMILY in QFontDatabase.applicationFontFamilies(
-                font_id
-            )
-        else:
-            _icon_font_ready = False
+        _icon_font_ready = False
+        _icon_raw_font = None
+        _icon_glyph_cache.clear()
+        for family, path in _ICON_FONT_CANDIDATES:
+            available = family in QFontDatabase.families()
+            if not available and path.is_file():
+                font_id = QFontDatabase.addApplicationFont(str(path))
+                available = font_id >= 0 and family in QFontDatabase.applicationFontFamilies(font_id)
+            if available:
+                _icon_family = family
+                _icon_raw_font = QRawFont.fromFont(QFont(family, 16))
+                _icon_font_ready = True
+                break
         if not _icon_font_ready:
-            logger.warning("找不到图标字体 %s，界面图标不显示", FLUENT_ICONS_FAMILY)
+            logger.warning("找不到 Segoe Fluent Icons 或 Segoe MDL2 Assets，界面图标不显示")
     return _icon_font_ready
 
 
 def fluent_icon_font(pixel_size: int) -> QFont:
-    """图标字体，像素大小为 pixel_size。字体不可用时返回普通字体，绘制出的是方框。"""
+    """按 Fluent、MDL2 顺序选择系统图标字体；文字由 fluent_icon_text 解析缺失码位。"""
     fluent_icons_available()
-    font = QFont(FLUENT_ICONS_FAMILY)
+    font = QFont(_icon_family)
     font.setPixelSize(pixel_size)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
     return font
+
+
+def fluent_icon_text(glyph: str) -> str:
+    """把缺失的私用区码位映射到同一字体中的替代图标，供按钮、标签与自绘区域共用。"""
+    fluent_icons_available()
+    if glyph not in _icon_glyph_cache:
+        raw = _icon_raw_font
+        result = ""
+        for character in glyph:
+            if raw is None or raw.supportsCharacter(ord(character)):
+                result += character
+                continue
+            alias = _ICON_ALIASES.get(character, Glyph.WARNING)
+            result += alias if raw.supportsCharacter(ord(alias)) else ""
+        _icon_glyph_cache[glyph] = result
+    return _icon_glyph_cache[glyph]
 
 
 type IconRole = Literal["text", "on_accent"]
@@ -430,7 +465,7 @@ class _GlyphIconEngine(QIconEngine):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setFont(fluent_icon_font(max(1, rect.height())))
         painter.setPen(self._pen_color(mode))
-        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), self._glyph)
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), fluent_icon_text(self._glyph))
         painter.restore()
 
     def pixmap(self, size: QSize, mode: QIcon.Mode, state: QIcon.State) -> QPixmap:

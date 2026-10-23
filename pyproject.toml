@@ -1,6 +1,6 @@
 [project]
 name = "lsttranslate"
-version = "1.0.0"
+version = "1.1.0"
 description = "Windows 屏幕翻译工具，多引擎竞速翻译"
 requires-python = ">=3.13,<3.14"
 license = "GPL-3.0-only"
@@ -15,6 +15,7 @@ dependencies = [
     "tomlkit>=0.15",
     "keyring>=25.7",
     "PySide6-Essentials>=6.12,<6.13",
+    "msvc-runtime==14.51.36231",
     "qasync>=0.28",
     "winrt-runtime>=3.2,<4",
     "winrt-windows-media-ocr>=3.2,<4",

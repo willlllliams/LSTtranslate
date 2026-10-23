@@ -82,6 +82,7 @@ from lst.services.ocr_engines.layout import ENGINE_VARIANTS, requirements_name  
 from lst.services.ocr_engines.runtime import RESOLVE_MARKER  # noqa: E402
 from lst.services.updates.releases import DEV_SUFFIX, installer_name  # noqa: E402
 from lst.services.updates.version import parse_version  # noqa: E402
+from scripts.windows_manifest import enable_utf8_code_page  # noqa: E402
 
 BUILD = ROOT / "build"
 STAGE = BUILD / "stage"
@@ -236,17 +237,60 @@ def stage_runtime() -> Path:
         elif path.is_file():
             path.unlink()
     (target / "Lib" / "site-packages").mkdir()
+    for name in ("python.exe", "pythonw.exe"):
+        enable_utf8_code_page(target / name)
+    run(
+        [
+            str(target / "python.exe"),
+            "-I",
+            "-c",
+            "import ctypes; assert ctypes.windll.kernel32.GetACP() == 65001",
+        ]
+    )
     return target / "python.exe"
 
 
-def stage_site(python: Path, name: str, requirements: Path) -> None:
+def stage_site(python: Path, name: str, requirements: Path, *, keep_scripts: bool = False) -> None:
     target = STAGE / "site" / name
     target.mkdir(parents=True)
     run(["uv", "pip", "install", "--python", str(python), "--target", str(target), "--no-deps",
          "--link-mode", "copy", "-r", str(requirements)])  # fmt: skip
     # 可执行脚本（*.exe 包装器）指向构建机上的解释器路径，安装后无用。
     shutil.rmtree(target / "bin", ignore_errors=True)
-    shutil.rmtree(target / "Scripts", ignore_errors=True)
+    if not keep_scripts:
+        shutil.rmtree(target / "Scripts", ignore_errors=True)
+
+
+MSVC_RUNTIME_FILES = (
+    "concrt140.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+    "msvcp140_codecvt_ids.dll",
+    "vcamp140.dll",
+    "vccorlib140.dll",
+    "vcomp140.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "vcruntime140_threads.dll",
+)
+
+
+def stage_msvc_runtime(python: Path) -> None:
+    """把锁定版本的 MSVC 运行库放入解释器目录，供独立 OCR、NMT 进程加载。"""
+    source = STAGE / "site" / "main"
+    sources = {
+        name: next((p for p in (source / name, source / "Scripts" / name) if p.is_file()), None)
+        for name in MSVC_RUNTIME_FILES
+    }
+    missing = [name for name, path in sources.items() if path is None]
+    if missing:
+        sys.exit(f"msvc-runtime 缺少共享运行库：{', '.join(missing)}")
+    for name, path in sources.items():
+        assert path is not None
+        shutil.copy2(path, python.parent / name)
+    log(f"复制 {len(MSVC_RUNTIME_FILES)} 个应用内 MSVC 运行库到解释器目录")
 
 
 def export_main_requirements() -> Path:
@@ -808,10 +852,14 @@ def main() -> None:
     STAGE.mkdir(parents=True)
 
     python = stage_runtime()
-    stage_site(python, "main", export_main_requirements())
+    stage_site(python, "main", export_main_requirements(), keep_scripts=True)
+    stage_msvc_runtime(python)
+    shutil.rmtree(STAGE / "site" / "main" / "Scripts", ignore_errors=True)
     manifests = export_variant_requirements(args.allow_unhashed)
     uv = stage_tools(find_uv())
     stage_app(python, version, manifests)
+    # 单独的进程先导入推理库，避免 Qt 预加载 MSVC DLL 掩盖工作进程的运行库缺失。
+    smoke_test(python, "main", ("ctranslate2",))
     smoke_test(python, "main", SMOKE_IMPORTS)
     smoke_test_launcher(python)
     for name, hashed in manifests.items():

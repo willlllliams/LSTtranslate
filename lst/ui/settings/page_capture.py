@@ -50,7 +50,15 @@ from lst.ui.settings.ocr_engine_rows import (
 from lst.ui.settings.page_ocr_pipeline import OcrActions, ParamsGroup, section_model
 from lst.ui.settings.pages import SettingsPage
 from lst.ui.settings.presenter import Location, SettingsPresenter, Topic
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, style_primary_button, theme_colors
+from lst.ui.theme import (
+    TOKENS,
+    Glyph,
+    fluent_icon,
+    fluent_icon_font,
+    fluent_icon_text,
+    style_primary_button,
+    theme_colors,
+)
 
 PADDLE_ONLY: Final = frozenset({"mode", "device"})
 """选项页上只对 PaddleOCR 生效的 [ocr] 节字段。表格、公式、方向校正等环节开关在 PaddleOCR 子页。"""
@@ -113,7 +121,7 @@ class OcrEngineCard(SettingCard):
         self.current_badge = QWidget()
         self.badge_icon = ThemedLabel("accent")
         self.badge_icon.setFont(fluent_icon_font(TOKENS.caption_px + 2))
-        self.badge_icon.setText(Glyph.CHECK)
+        self.badge_icon.setText(fluent_icon_text(Glyph.CHECK))
         self.badge_label = ThemedLabel("accent", TOKENS.title_px, semibold=True)
         badge = QHBoxLayout(self.current_badge)
         badge.setContentsMargins(0, 0, 0, 0)
@@ -241,7 +249,7 @@ class OcrEngineCard(SettingCard):
         self.title_label.setAccessibleName(
             tr("settings.ocr_engine.current.name", name=title) if view.current else title
         )
-        self.status_icon.setText(view.glyph)
+        self.status_icon.setText(fluent_icon_text(view.glyph))
         self.status_icon.set_role(view.tone.value)
         self.status_label.setText(view.status)
         self.status_label.set_role("critical" if view.tone is Tone.ERROR else "primary")

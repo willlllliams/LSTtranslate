@@ -202,7 +202,9 @@ def test_slightly_overlapping_ocr_lines_get_separate_drawing_boxes() -> None:
 
 
 def test_manual_width_growth_at_canvas_edge_remeasures_wrapping(window: OverlayWindow) -> None:
-    window.set_layout(OverlayLayoutConfig(scale_x=3, growth="both", font_scale=1.1, vertical="top"))
+    window.set_layout(
+        OverlayLayoutConfig(scale_x=3, growth="both", font_scale=1.1, vertical="top", max_growth=8)
+    )
     block = LayoutBlock("0", BlockCategory.TEXT, BBox(0, 0, 600, 300), 0, 1)
     window.show_result((block,), (segment("a", "Hello", BBox(480, 40, 590, 62)),))
     item = window.items[SegmentId("a")]

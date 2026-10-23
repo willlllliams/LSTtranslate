@@ -16,7 +16,7 @@ from lst.ui.settings.dialogs import Dialogs
 from lst.ui.settings.nmt_runtime_rows import RuntimeView, build_view, size_text
 from lst.ui.settings.ocr_engine_rows import Tone
 from lst.ui.settings.presenter import SettingsPresenter
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, style_primary_button
+from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, fluent_icon_text, style_primary_button
 
 
 class _IconRow(QWidget):
@@ -37,7 +37,7 @@ class _IconRow(QWidget):
         row.addWidget(self.label, 1)
 
     def set_content(self, glyph: str, text: str, *, icon_role: str, text_role: str) -> None:
-        self.icon.setText(glyph)
+        self.icon.setText(fluent_icon_text(glyph))
         self.icon.set_role(icon_role)
         self.label.setText(text)
         self.label.set_role(text_role)

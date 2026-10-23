@@ -11,6 +11,12 @@ from pathlib import Path
 ISS = Path(__file__).resolve().parents[2] / "installer" / "lsttranslate.iss"
 
 
+def test_windows10_22h2_is_the_installation_baseline() -> None:
+    text = ISS.read_text(encoding="utf-8")
+    assert "MinVersion=10.0.19045" in text
+    assert "ArchitecturesAllowed=x64compatible" in text
+
+
 def _procedure(text: str, name: str) -> str:
     match = re.search(rf"procedure {name}\(.*?\n(.*?)\nend;\n", text, re.DOTALL)
     assert match is not None, name

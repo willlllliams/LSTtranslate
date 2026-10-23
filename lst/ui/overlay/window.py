@@ -778,6 +778,7 @@ class OverlayWindow(QWidget):
         x, y = zoom_about((self.x(), self.y()), cursor, old, zoom)
         self.setGeometry(QRect(round(x), round(y), width, height))
         self._layout_retry()
+        self._reflow_boxes()
         self._refit()
         self.update()
 
@@ -813,6 +814,7 @@ class OverlayWindow(QWidget):
         """屏幕或设备像素比变化后，全部段按新的设备像素重新适配字号（CAP-07、UI-04）。"""
         self._metrics.clear()
         self._layout_retry()
+        self._reflow_boxes()
         self._refit()
         self.update()
 
@@ -1049,6 +1051,7 @@ class OverlayWindow(QWidget):
     def _reflow_boxes(self) -> None:
         """原始框 → 行高补偿 → 手动扩框 → 按目标字号自动扩框；几何保持截图像素。"""
         config = self._layout_config
+        device_scale = self.scale_device()
         items = list(self._items.values())
         for item in items:
             item.bbox = item.source_bbox or item.bbox
@@ -1082,11 +1085,11 @@ class OverlayWindow(QWidget):
                 if config.avoid_overlap
                 else []
             )
-            target = self._target_font(item, 1.0)
+            target = self._target_font(item)
             minimum_height = max(
                 manual.height,
                 math.ceil(
-                    self._text_extent(self.shown_text(item), 1e7, target, item.title).height()
+                    self._text_extent(self.shown_text(item), 1e7, target, item.title).height() / device_scale
                     + 2 * config.text_padding_y
                 ),
             )
@@ -1101,12 +1104,17 @@ class OverlayWindow(QWidget):
                 )
                 width = horizontal_box.width
                 padding_x = min(config.text_padding_x, max(0, (width - 1) / 2))
-                bounds = self._text_extent(self.shown_text(item), width - 2 * padding_x, target, item.title)
+                bounds = self._text_extent(
+                    self.shown_text(item),
+                    max(1, math.floor((width - 2 * padding_x) * device_scale)),
+                    target,
+                    item.title,
+                )
                 height = manual.height
                 if config.growth != "fixed":
                     height = min(
                         math.ceil(manual.height * config.max_growth),
-                        max(height, math.ceil(bounds.height() + 2 * config.text_padding_y)),
+                        max(height, math.ceil(bounds.height() / device_scale + 2 * config.text_padding_y)),
                     )
                 anchor = BBox(horizontal_box.x0, manual.y0, horizontal_box.x1, manual.y1)
                 candidate = confine_box(
@@ -1114,10 +1122,15 @@ class OverlayWindow(QWidget):
                 )
                 if candidate.width < width and config.growth != "fixed":
                     inner_width = max(1.0, candidate.width - 2 * config.text_padding_x)
-                    bounds = self._text_extent(self.shown_text(item), inner_width, target, item.title)
+                    bounds = self._text_extent(
+                        self.shown_text(item),
+                        max(1, math.floor(inner_width * device_scale)),
+                        target,
+                        item.title,
+                    )
                     height = min(
                         math.ceil(manual.height * config.max_growth),
-                        max(height, math.ceil(bounds.height() + 2 * config.text_padding_y)),
+                        max(height, math.ceil(bounds.height() / device_scale + 2 * config.text_padding_y)),
                     )
                     anchor = BBox(candidate.x0, manual.y0, candidate.x1, manual.y1)
                     candidate = confine_box(
@@ -1130,8 +1143,8 @@ class OverlayWindow(QWidget):
                 py = min(config.text_padding_y, max(0, (candidate.height - 1) / 2))
                 fitted = self._measure(
                     self.shown_text(item),
-                    max(1, math.floor(candidate.width - 2 * px)),
-                    max(1, math.floor(candidate.height - 2 * py)),
+                    max(1, math.floor((candidate.width - 2 * px) * device_scale)),
+                    max(1, math.floor((candidate.height - 2 * py) * device_scale)),
                     item.title,
                     target,
                 )

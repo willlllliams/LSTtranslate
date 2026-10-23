@@ -55,7 +55,7 @@ from PySide6.QtWidgets import QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from lst.ui.i18n import tr
 from lst.ui.settings.controls import SettingCard
-from lst.ui.theme import TOKENS, fluent_icon_font, theme_colors, ui_font
+from lst.ui.theme import TOKENS, fluent_icon_font, fluent_icon_text, theme_colors, ui_font
 
 # ---------------------------------------------------------------- 结构
 
@@ -547,7 +547,7 @@ class FlowNode(QWidget):
         icon_rect = QRectF(card.left() + _PAD, card.top(), _ICON_PX, card.height())
         painter.setFont(fluent_icon_font(_ICON_PX))
         painter.setPen(colors.accent_strong if self.selected else colors.text)
-        painter.drawText(icon_rect, int(Qt.AlignmentFlag.AlignCenter), state.glyph)
+        painter.drawText(icon_rect, int(Qt.AlignmentFlag.AlignCenter), fluent_icon_text(state.glyph))
         text_left = icon_rect.right() + _PAD
         switch = self.switch_rect
         title_right = (switch.left() - 6) if switch is not None else card.right() - _PAD

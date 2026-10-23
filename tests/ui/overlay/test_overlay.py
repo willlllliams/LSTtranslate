@@ -174,8 +174,11 @@ async def test_translation_font_uses_original_font_target(make_rig: MakeRig) -> 
 
 async def test_text_area_keeps_padding_inside_bbox(make_rig: MakeRig) -> None:
     """文字区域在包围盒内留出内边距，文字不贴在边线上。"""
+    from lst.ui.overlay.layout import OverlayLayoutConfig
+
     rig = await _with_text(make_rig)
     window = rig.window
+    window.set_layout(OverlayLayoutConfig(text_padding_x=2, text_padding_y=1))
     item = window.items[P1]
     k = window.scale_device()
     inner = window._inner_device(item)  # pyright: ignore[reportPrivateUsage]

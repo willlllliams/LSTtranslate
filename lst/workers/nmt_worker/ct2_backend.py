@@ -223,7 +223,7 @@ class _SpProcessor(Protocol):
 class _SpModule(Protocol):
     __version__: str
 
-    def SentencePieceProcessor(self, *, model_file: str) -> _SpProcessor: ...
+    def SentencePieceProcessor(self, *, model_proto: bytes) -> _SpProcessor: ...
 
 
 def cublas_dirs(configured: Path | None) -> list[Path]:
@@ -467,7 +467,8 @@ class Ct2Backend:
                 inter_threads=1,
                 intra_threads=settings.intra_threads,
             )
-            tokenizer = spm.SentencePieceProcessor(model_file=str(root / "sentencepiece.model"))
+            # Python 以宽字符路径读取，避开 SentencePiece 在 Windows 非 UTF-8 代码页下的窄字符文件 API。
+            tokenizer = spm.SentencePieceProcessor(model_proto=(root / "sentencepiece.model").read_bytes())
             vocabulary = _read_target_vocabulary(root / "model")
         except Exception as exc:
             raise ModelUnavailable(f"{package.path.name} 无法加载：{type(exc).__name__}: {exc}") from exc

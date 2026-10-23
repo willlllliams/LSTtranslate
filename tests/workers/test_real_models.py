@@ -13,6 +13,7 @@ import re
 import statistics
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -110,6 +111,20 @@ def test_english_to_chinese(cpu_worker: WorkerProcess) -> None:
         assert _HAN.search(result.text), f"译文没有汉字：{result.text!r}"
         assert not _BAD.search(result.text), f"译文含特殊标记或乱码：{result.text!r}"
         assert result.text.count("\n") == source.count("\n")
+
+
+def test_real_model_loads_from_unicode_and_space_paths(tmp_path: Path) -> None:
+    worker = WorkerProcess(REAL_BACKEND)
+    try:
+        worker.start()
+        worker.handshake(
+            settings("cpu", extract_dir=str(tmp_path / "中文模型 目录"), intra_threads=2), timeout=60
+        )
+        (result,) = run(worker, request("unicode-model", "en", "zh-Hans", "Hello, world."))
+        assert result.error is None and result.text, result
+        assert _HAN.search(result.text), result
+    finally:
+        worker.close()
 
 
 def test_chinese_to_english(cpu_worker: WorkerProcess) -> None:

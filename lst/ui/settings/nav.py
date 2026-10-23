@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from lst.ui.i18n import tr
 from lst.ui.settings import strings_nav  # noqa: F401  # pyright: ignore[reportUnusedImport]  登记文案
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, theme_colors, ui_font
+from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, fluent_icon_text, theme_colors, ui_font
 
 CHEVRON_RIGHT: Final = "\ue76c"
 """Fluent 图标里向右的箭头：分支收起。"""
@@ -176,7 +176,7 @@ class NavDelegate(QStyledItemDelegate):
             painter.drawText(
                 arrow,
                 int(Qt.AlignmentFlag.AlignCenter),
-                CHEVRON_DOWN if expanded else CHEVRON_RIGHT,
+                fluent_icon_text(CHEVRON_DOWN if expanded else CHEVRON_RIGHT),
             )
         painter.restore()
 

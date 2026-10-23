@@ -2,14 +2,16 @@
 
 import pytest
 from PySide6.QtCore import QSize
-from PySide6.QtGui import QColor, QIcon, QImage, QPalette
+from PySide6.QtGui import QColor, QIcon, QImage, QPalette, QRawFont
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from lst.ui.theme import (
     FLUENT_ICONS_FAMILY,
+    MDL2_ICONS_FAMILY,
     Glyph,
     fluent_icon,
     fluent_icon_font,
+    fluent_icon_text,
     fluent_icons_available,
     style_primary_button,
 )
@@ -35,8 +37,35 @@ def ink(image: QImage) -> list[QColor]:
 
 
 def test_font_family_is_registered() -> None:
-    assert fluent_icon_font(16).family() == FLUENT_ICONS_FAMILY
+    assert fluent_icon_font(16).family() in (FLUENT_ICONS_FAMILY, MDL2_ICONS_FAMILY)
     assert fluent_icon_font(16).pixelSize() == 16
+
+
+def test_mdl2_fallback_covers_icons_labels_and_navigation(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lst.ui import theme
+    from lst.ui.settings.controls import SettingCard
+
+    with monkeypatch.context() as patch:
+        patch.setattr(theme, "_ICON_FONT_CANDIDATES", (theme._ICON_FONT_CANDIDATES[1],))
+        patch.setattr(theme, "_icon_font_ready", None)
+        patch.setattr(theme, "_icon_family", FLUENT_ICONS_FAMILY)
+        patch.setattr(theme, "_icon_raw_font", None)
+        patch.setattr(theme, "_icon_glyph_cache", {})
+        assert fluent_icons_available()
+        assert fluent_icon_font(20).family() == MDL2_ICONS_FAMILY
+        raw = QRawFont.fromFont(fluent_icon_font(20))
+        for glyph in [*ALL_GLYPHS, "\ue76c", "\ue70d"]:
+            resolved = fluent_icon_text(glyph)
+            assert resolved and all(raw.supportsCharacter(ord(c)) for c in resolved), repr(glyph)
+            assert ink(fluent_icon(glyph).pixmap(QSize(24, 24)).toImage()), repr(glyph)
+        assert fluent_icon_text(Glyph.LAYOUT) == Glyph.GRID
+        assert fluent_icon_text(Glyph.BLOCKED) == Glyph.ERROR
+        card = SettingCard(None, icon=Glyph.LAYOUT)
+        assert card.icon_label.text() == Glyph.GRID
+        assert card.icon_label.font().family() == MDL2_ICONS_FAMILY
+        card.close()
 
 
 def test_every_glyph_draws_something() -> None:

@@ -3,10 +3,9 @@
 模型管理模块把词典包装到词典目录（模型目录下的 dict），文件名 ``dict-<src>-<tgt>.tsv.gz``。
 字典引擎不订阅总线消息，自己发现目录的变化：
 
-- 已安装的语言对按文件名得出。``installed_pairs`` 每次先取词典目录的修改时间，变了才重新列目录。
-  在目录里新建、改名（模型管理模块用 ``os.replace`` 原子安装）或删除文件都会更新目录的修改时间，
-  所以装好或删掉一个包之后，下一次 ``supports`` 就能看到。取一次目录属性只要几十微秒，调度器每个
-  会话对每个语言对问一次，可以在事件循环里直接调用；
+- 已安装的语言对按文件名得出。``installed_pairs`` 每次枚举目录，装好或删掉一个包后立即生效。
+  目录修改时间会发生碰撞，不能作为文件列表缓存的唯一依据。枚举只读取名称和文件类型，
+  包内容的解压与解析仍使用下面的独立缓存；
 - 读入内存的包按（修改时间，大小）记下文件的状态。``load`` 每次核对文件状态，包被更新后重新读取，
   被删除后从缓存里去掉。解压与解析放在线程里执行（调用方用 ``asyncio.to_thread`` 调用 ``load``）。
 
@@ -61,21 +60,10 @@ class PackLibrary:
         self._max_loaded = max(1, max_loaded)
         self._lock = threading.Lock()
         self._load_lock = threading.Lock()
-        self._dir_stamp: int | None = None
-        self._pairs: frozenset[Pair] = frozenset()
         self._loaded: OrderedDict[Pair, _Loaded] = OrderedDict()
 
     def installed_pairs(self) -> frozenset[Pair]:
         """词典目录里有包文件的语言对。目录不存在或无法读取时为空集。"""
-        try:
-            stamp = self.directory.stat().st_mtime_ns
-        except OSError:
-            with self._lock:
-                self._dir_stamp, self._pairs = None, frozenset()
-            return frozenset()
-        with self._lock:
-            if stamp == self._dir_stamp:
-                return self._pairs
         pairs: set[Pair] = set()
         try:
             with os.scandir(self.directory) as entries:
@@ -83,13 +71,12 @@ class PackLibrary:
                     pair = parse_dict_pack_file_name(entry.name)
                     if pair is not None and entry.is_file():
                         pairs.add(pair)
+        except FileNotFoundError:
+            return frozenset()
         except OSError:
             logger.warning("无法读取词典目录 %s", self.directory, exc_info=True)
             return frozenset()
-        result = frozenset(pairs)
-        with self._lock:
-            self._dir_stamp, self._pairs = stamp, result
-        return result
+        return frozenset(pairs)
 
     def has(self, source: str, target: str) -> bool:
         return (Lang(source), Lang(target)) in self.installed_pairs()

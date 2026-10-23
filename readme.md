@@ -2,7 +2,7 @@
 
 LSTtranslate 是常驻 Windows 托盘的翻译工具。同一段文字同时交给多个翻译引擎，谁先返回就先显示谁的译文，优先级更高的引擎返回后再替换，这就是“竞速翻译”。引擎分四类：本地离线 NMT（CTranslate2 加载 Argos 模型）、在线大模型 API（DeepSeek、OpenAI 等兼容接口）、本地大模型（Ollama、llama.cpp）和传统在线翻译 API（DeepL、Google、百度）。
 
-当前代码版本为 1.0.0，各功能的状态如下：
+当前代码版本为 1.1.0，各功能的状态如下：
 
 | 功能 | 状态 |
 |---|---|
@@ -15,11 +15,11 @@ LSTtranslate 是常驻 Windows 托盘的翻译工具。同一段文字同时交�
 
 ## 系统要求
 
-Windows 11 22H2（build 22621）或更高版本，64 位。设置窗口和双语窗口的 Mica 背景依赖这个版本。
+Windows 10 22H2（build 19045）或更高版本的 x64 系统，包括 Windows 11。Windows 10 使用不透明主题背景与 Segoe MDL2 Assets 图标；Windows 11 22H2 起启用 Mica 背景。系统要求和兼容验证见 [Windows 10 兼容说明](docs/windows10-support.md)。
 
 ## 安装
 
-在 [1.0.0 发布页](https://github.com/willlllliams/LSTtranslate/releases/tag/v1.0.0) 下载普通版或开发版及对应的校验文件。
+在 [1.1.0 发布页](https://github.com/willlllliams/LSTtranslate/releases/tag/v1.1.0) 下载普通版或开发版及对应的校验文件。
 
 运行 `LSTtranslate-<版本>-setup.exe`。程序装到 `%LOCALAPPDATA%\Programs\LSTtranslate`，用户数据（配置、缓存、日志、模型）放在 `%LOCALAPPDATA%\LSTtranslate`。安装时可以选择创建桌面快捷方式、登录时自动启动。
 

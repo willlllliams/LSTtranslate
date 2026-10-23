@@ -332,7 +332,7 @@ class FakeRuntime:
         self.translators.append(translator)
         return translator
 
-    def SentencePieceProcessor(self, *, model_file: str) -> FakeTokenizer:
+    def SentencePieceProcessor(self, *, model_proto: bytes) -> FakeTokenizer:
         return FakeTokenizer()
 
 

@@ -47,12 +47,6 @@ async def run(engine: DictionaryEngine, request: Job) -> list[SegmentOutcome]:
     return [outcome async for outcome in engine.translate(request)]
 
 
-def touch_directory(directory: Path) -> None:
-    """把目录的修改时间推后一秒，确保文件系统的时间精度不影响“目录变了”的判断。"""
-    stamp = directory.stat().st_mtime_ns + 1_000_000_000
-    os.utime(directory, ns=(stamp, stamp))
-
-
 # ---------------------------------------------------------------- 配置
 
 
@@ -82,13 +76,24 @@ def test_supports_follows_the_installed_packs(tmp_path: Path) -> None:
     assert not engine.supports(EN, ZH)
 
     write_pack(directory, "en", "zh-Hans", EN_ZH_ENTRIES)
-    touch_directory(directory)
     assert engine.supports(EN, ZH)
     assert not engine.supports(ZH, EN)  # 方向不对
     assert not engine.supports(EN, EN)
 
     (directory / dict_pack_file_name("en", "zh-Hans")).unlink()
-    touch_directory(directory)
+    assert not engine.supports(EN, ZH)
+
+
+def test_supports_sees_additions_and_removals_with_the_same_directory_time(tmp_path: Path) -> None:
+    write_pack(tmp_path, "en", "zh-Hans", EN_ZH_ENTRIES)
+    engine = engine_for(tmp_path)
+    stamp = tmp_path.stat().st_mtime_ns
+    assert engine.supports(EN, ZH)
+    write_pack(tmp_path, "zh-Hans", "en", ZH_EN_ENTRIES)
+    os.utime(tmp_path, ns=(stamp, stamp))
+    assert engine.supports(ZH, EN)
+    (tmp_path / dict_pack_file_name("en", "zh-Hans")).unlink()
+    os.utime(tmp_path, ns=(stamp, stamp))
     assert not engine.supports(EN, ZH)
 
 

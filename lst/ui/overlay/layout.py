@@ -61,7 +61,7 @@ class OverlayLayoutConfig(BaseModel):
         json_schema_extra={"advanced": True},
     )
     text_padding_y: float = Field(
-        default=1,
+        default=0,
         ge=0,
         le=50,
         title="垂直内边距",

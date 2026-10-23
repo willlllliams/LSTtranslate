@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QStyle, QStyleOptionViewItem
 
 from lst.contracts.config import ConfigRejected
 from lst.contracts.ocr_engines import OcrStage
+from lst.ui.i18n import tr
 from lst.ui.settings.controls import SettingCard, SwitchEditor, ThemedLabel
 from lst.ui.settings.page_ocr_engine import OcrEnginePage
 from lst.ui.settings.window import NavDelegate, SettingsWindow
@@ -199,9 +200,9 @@ async def test_switch_shows_on_off_text_and_is_a_toggle_not_a_checkbox(harness: 
     assert isinstance(page, OcrEnginePage)
     editor = page.pipeline.toggles[OcrStage.REGION].editor  # 环节标题行里的开关（版面区域检测默认开）
     assert isinstance(editor, SwitchEditor)
-    assert editor.state_label.text() == "开"
+    assert editor.state_label.text() == tr("settings.switch.on")
     editor.switch.click()
-    assert editor.state_label.text() == "关"
+    assert editor.state_label.text() == tr("settings.switch.off")
     assert (
         editor.switch.sizeHint().width() > editor.switch.sizeHint().height() * 1.5
     )  # 拨动开关，不是方形复选框
@@ -265,3 +266,42 @@ async def test_themed_label_roles(qapp: QApplication) -> None:
     assert secondary.palette().windowText().color() == colors.critical
     assert isinstance(secondary, QLabel) and QStyle  # 仍是普通标签
     assert SettingCard
+
+
+async def test_existing_labels_follow_theme_switches(
+    qapp: QApplication, harness: Harness, restore_scheme: None
+) -> None:
+    require_dark(qapp)
+    window = await harness.open()
+    labels = window.findChildren(ThemedLabel)
+    assert labels
+    for scheme in ("light", "dark", "light"):
+        apply_app_style(qapp, scheme)
+        colors = theme_colors()
+        expected = {
+            "primary": colors.text,
+            "secondary": colors.text_secondary,
+            "critical": colors.critical,
+            "accent": colors.accent_strong,
+        }
+        wrong = [
+            (
+                label.text(),
+                label._role,
+                label.isEnabled(),
+                label.palette().windowText().color().name(),
+                expected[label._role].name(),
+            )
+            for label in labels
+            if label.isEnabled()
+            and label._role != "accent"
+            and label.palette().windowText().color() != expected[label._role]
+        ]
+        assert not wrong, wrong
+        qapp.processEvents()
+        colors = theme_colors()
+        assert all(
+            label.palette().windowText().color() == colors.accent_strong
+            for label in labels
+            if label.isEnabled() and label._role == "accent"
+        )

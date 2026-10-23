@@ -21,12 +21,12 @@
 |---|---|---|
 | 语言与包管理 | Python 3.13，uv | 3.13.15，uv 0.12 |
 | 界面框架 | PySide6，全部使用 Qt Widgets | 6.12.0（Qt 6.12 LTS） |
-| Fluent 外观 | 自行实现（`lst/ui/theme`）：Qt `windows11` 样式、DWM Mica、Segoe Fluent Icons 字体 | 随 Qt 与 Windows 11 |
+| Fluent 外观 | 自行实现（`lst/ui/theme`）：Qt 样式、DWM Mica、Segoe Fluent Icons / MDL2 Assets 字体回退 | 随 Qt 与 Windows 10 / 11 |
 | Qt 与 asyncio 整合 | qasync | 0.28.0 |
 | HTTP 客户端 | httpx；流式响应按服务器发送事件（Server-Sent Events，SSE）格式自行解析 | 0.28.1 |
 | 流式 JSON 解析 | 自写的增量结构扫描，单项用 jiter 严格解析 | 0.17.0 |
 | 推理进程通信 | subprocess 启动，`multiprocessing.connection` 命名管道加 authkey | 标准库 |
-| OCR 引擎（默认） | Windows 自带 OCR（Windows.Media.Ocr），经 pywinrt 调用，装在主环境 | 随 Windows 11 |
+| OCR 引擎（默认） | Windows 自带 OCR（Windows.Media.Ocr），经 pywinrt 调用，装在主环境 | 随 Windows 10 / 11 的 OCR 语言功能 |
 | OCR 引擎（轻量） | RapidOCR，onnxruntime 运行 PP-OCR 模型，按需安装的独立运行环境 | rapidocr 3.10.0；onnxruntime 1.31.0、onnxruntime-directml 1.24.4、onnxruntime-gpu 1.31.0 |
 | OCR 与版面分析 | PaddleOCR PP-StructureV3，按需安装的独立运行环境 | PaddleOCR 3.7.0，PaddlePaddle 3.3.1（CPU 版与 cu129 的 GPU 版） |
 | OCR 文本模式（PaddleOCR） | PaddleOCR 检测加识别产线（PP-OCRv5 mobile） | PaddleOCR 3.7.0 |
@@ -54,15 +54,15 @@ Qt 自 6.7 起提供 `windows11` 样式，它只覆盖基础控件。左侧导�
 
 现成的组件库是 QFluentWidgets，它提供导航栏、设置卡片等控件，但许可证是 GPLv3（另有付费商业授权）。界面直接调用它的控件，本程序向他人分发时就必须以 GPLv3 公开全部源码。本程序不引入它，Fluent 外观由 `ui.theme` 自己实现，分发方式因此不受约束：
 
-- 基础控件用 Qt 的 `windows11` 样式；
+- 基础控件优先用 Qt 的 `windows11` 样式，缺失时依次选择 `Fusion`、`windowsvista`、`windows`；
 - 颜色、圆角、间距、字体集中定义在 `ui.theme.TOKENS`，强调色跟随系统；
 - Mica 背景由 `enable_mica` 调用 DWM 设置，失败时回到不透明背景；
-- 图标用 Windows 11 自带的 Segoe Fluent Icons 字体（`C:\Windows\Fonts\SegoeIcons.ttf`），按码位绘制，不随程序分发图标文件；
+- 图标优先用 Segoe Fluent Icons，缺失时使用 Windows 10 自带的 Segoe MDL2 Assets。`fluent_icon_text` 按实际字体检查码位，布局图标与禁止状态缺字时分别使用网格和错误图标；按钮、标签、导航箭头与流程图共用解析规则。字体来自系统目录，不随程序分发；
 - 设置窗口的左侧导航和设置卡片由 `ui.settings` 用普通 Widgets 组合实现（11.7 节）。
 
 代价是导航栏、设置卡片这类控件要自己写；双语窗口和首次运行引导已经按这套做法实现。
 
-Mica 背景通过 `DwmSetWindowAttribute` 设置 `DWMWA_SYSTEMBACKDROP_TYPE`（属性值 38），要求 Windows 11 build 22621 及以上，这就是需求 6.6 节最低系统版本的来源。Widgets 窗口还要同时设置 `WA_TranslucentBackground` 和 `DwmExtendFrameIntoClientArea(-1)`，缺少任何一项窗口都会渲染成黑色。
+Mica 背景通过 `DwmSetWindowAttribute` 设置 `DWMWA_SYSTEMBACKDROP_TYPE`（属性值 38），要求 Windows 11 build 22621 及以上。整个程序的系统下限为 Windows 10 build 19045，背景材质按系统能力启用。Mica 不可用或设置失败时撤销透明属性，使用不透明主题底色。启用 Mica 的 Widgets 窗口还要同时设置 `WA_TranslucentBackground` 和 `DwmExtendFrameIntoClientArea(-1)`。
 
 深浅色跟随系统用 `QStyleHints.colorScheme` 及其变化信号，强调色从 `QPalette.Accent` 读取。
 
@@ -327,7 +327,7 @@ key 的归一化与构建脚本相同：Unicode NFC，去掉首尾空白并合�
 
 词典目录是模型目录下的 `dict`，由模型管理模块安装（8.5.2 节），字典引擎自己发现目录的变化，不订阅总线消息：
 
-- `installed_pairs` 每次先取词典目录的修改时间，变了才重新列目录。新建、改名（模型管理模块用 `os.replace` 原子安装）或删除文件都会更新目录的修改时间，装好或删掉一个包之后，下一次 `supports` 就能看到。取一次目录属性只要几十微秒，可以在事件循环里直接调用；
+- `installed_pairs` 每次枚举词典目录的文件名和类型，装好或删掉包后，下一次 `supports` 即反映当前内容。快速增删文件时目录修改时间可以相同，文件列表因此直接读取，包内容的解压与解析仍单独缓存；
 - 读入内存的包按文件的（修改时间，大小）记下状态，每次使用前核对，包被更新后重新读取，被删除后从缓存里去掉；
 - 内存里最多保留 4 个包，超出时丢掉最久没用的。一个全量的包读入后占几十 MB 内存；
 - 一个词典目录只对应一个共享的包缓存，配置变化导致引擎实例重建时不必重新读包。
@@ -1228,7 +1228,7 @@ OCR 进程严格串行处理请求。新截图到达时，services.ocr 先取消
 - 首次运行引导里每个词典包的行下；
 - 仓库根目录的 `THIRD-PARTY-NOTICES`，写明数据来源、改编方式与许可证，`licenses/` 下是 ECDICT 的许可证全文。构建脚本把两者复制到安装目录的 `app\` 下（15.1 节），界面上的总署名指向这个文件。
 
-组合根收到只涉及词典包的 `ModelsInstalled` 时不重载 NMT 进程，字典引擎按词典目录的修改时间自己发现变化（2.7.4 节）。
+组合根收到只涉及词典包的 `ModelsInstalled` 时不重载 NMT 进程，字典引擎通过枚举词典目录自己发现变化（2.7.4 节）。
 
 #### 8.5.3 运行中更换模型目录
 
@@ -1894,13 +1894,13 @@ $$
 - `vertical`：保留水平范围，只增加高度，适合需要与原图左右边界对齐的正文。
 - `both`：同时尝试扩宽和扩高，优先让文字达到目标字号；字号相同时选择面积较小的候选。
 
-默认使用 `both`，自动扩框上限 $g=4$。双轴模式检查九个宽度倍率 $1+(g-1)i/8$，其中 $i=0,\ldots,8$；纵向模式只检查倍率 1。每个候选先受截图及邻居约束，再用实际可用宽度排版。设该宽度下目标字号的字形总高为 $H$，垂直内边距为 $i_y$，所需高度为：
+默认使用 `both`，自动扩框上限 $g=4$。双轴模式检查九个宽度倍率 $1+(g-1)i/8$，其中 $i=0,\ldots,8$；纵向模式只检查倍率 1。每个候选先受截图及邻居约束，再用实际可用宽度排版。测量使用当前设备字号 $p_t$，宽度先乘以 $k$ 并向下取整，与最终绘制使用同一尺度。设该宽度下的字形总高为 $H_d$ 个设备像素，垂直内边距为 $i_y$ 个截图像素，所需截图高度为：
 
 $$
-h_c=\min\bigl(\lceil g h_m\rceil,\ \max(h_m,\lceil H+2i_y\rceil)\bigr).
+h_c=\min\bigl(\lceil g h_m\rceil,\ \max(h_m,\lceil H_d/k+2i_y\rceil)\bigr).
 $$
 
-扩高后如果宽度再次被相邻内容限制，重新计算换行和高度。候选按最终能容纳的字号降序、面积升序选择。已经达到目标字号且高度达到未换行字形的高度下界时，继续增加宽度只增加面积，可以停止检查。
+扩高后如果宽度再次被相邻内容限制，重新计算换行和高度。候选按最终能容纳的设备字号降序、面积升序选择。已经达到目标字号且高度达到未换行字形的高度下界时，继续增加宽度只增加面积，可以停止检查。缩放或屏幕设备像素比变化后重新扩框，避免字体像素取整和字形微调使先前的高度估计失效。默认水平内边距为 2 个截图像素，垂直内边距为 0，以保留紧密文字行的可用高度。
 
 避让开启时，原本独立的相邻框按间隙中线分配空白；OCR 外扩造成的小幅行框重叠在重叠带中线分界。先完成的绘制框也作为后续框的约束。已识别的图片、表格、公式和图表参与避让。表格单元格、图表单元格及无需翻译的数字符号保持原框。截图之外及没有识别出的内容不提供额外排版空间。
 
@@ -2611,8 +2611,8 @@ unins000.exe    卸载程序（Inno Setup 生成）
 
 在仓库根目录运行 `uv run python scripts/build_installer.py`。`--flavor normal|dev` 选构建类型，缺省 `normal`；`--all` 用同一份暂存目录依次编译两种（16.6 节）。步骤：
 
-1. 复制 uv 管理的独立版 CPython 3.13 到暂存目录，去掉用不到的部分；
-2. `uv export` 按 `uv.lock` 导出主进程依赖，`uv pip install --target` 安装到 `site\main`；
+1. 复制 uv 管理的独立版 CPython 3.13 到暂存目录，去掉用不到的部分；为 `python.exe`、`pythonw.exe` 的原有清单设置 `activeCodePage=UTF-8`，并验证进程代码页为 65001；
+2. `uv export` 按 `uv.lock` 导出主进程依赖，`uv pip install --target` 安装到 `site\main`；从锁定的 `msvc-runtime` 将 12 个共享运行库复制到解释器目录，包含 OpenMP 的 `vcomp140.dll`，供 OCR、NMT 冷进程直接加载；
 3. 按 `.venv-ocr` 当前的精确版本生成各 OCR 引擎各运行环境版本的清单 `app\ocr-<引擎>-<版本>-requirements.txt`（8.6.2 节）：
    - PaddleOCR CPU 版：`uv pip freeze` 冻结 `.venv-ocr` 的全部包，校验为纯“名==版”并排序（冻结结果里有不止一个 OpenCV 发行包时中止，见下文）；
    - RapidOCR CPU 版：只含 rapidocr、onnxruntime 及其依赖的闭包。闭包按 `.venv-ocr` 里各包元数据的 Requires-Dist 求出，环境标记按构建机求值，可选依赖不计入；rapidocr 声明的 opencv-python-headless 换成 `.venv-ocr` 实际装的 OpenCV 发行包；

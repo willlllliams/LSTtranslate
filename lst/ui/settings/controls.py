@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QDoubleValidator,
     QEnterEvent,
     QFocusEvent,
+    QGuiApplication,
     QHideEvent,
     QKeyEvent,
     QPainter,
@@ -52,7 +53,7 @@ from lst.contracts.worker_protocol import JsonValue
 from lst.ui.common.text import LANGUAGES, language_name
 from lst.ui.i18n import tr
 from lst.ui.settings.dialogs import Dialogs
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, theme_colors, ui_font
+from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, fluent_icon_text, theme_colors, ui_font
 
 DEFAULT_DEBOUNCE_MS: Final = 500
 """文本框停止输入后提交的等待时间（需求 UI-06）。"""
@@ -102,6 +103,8 @@ class ThemedLabel(QLabel):
         if pixel_size is not None:
             self.setFont(ui_font(pixel_size, semibold=semibold, display=display))
         self._apply_color()
+        # 显式设置过调色板的子标签不会总是收到应用调色板变化事件。
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
 
     def set_role(self, role: str) -> None:
         """换成另一种文字色（例如提示变成错误）。"""
@@ -109,8 +112,12 @@ class ThemedLabel(QLabel):
             self._role = role
             self._apply_color()
 
-    def _apply_color(self) -> None:
-        colors = theme_colors()
+    def _scheme_changed(self, scheme: Qt.ColorScheme) -> None:
+        # 信号发出时系统调色板还在切换，按信号的新值立即更新已有标签。
+        self._apply_color(dark=scheme == Qt.ColorScheme.Dark)
+
+    def _apply_color(self, *, dark: bool | None = None) -> None:
+        colors = theme_colors(dark=dark)
         color = {
             "secondary": colors.text_secondary,
             "critical": colors.critical,
@@ -379,7 +386,7 @@ class PairEditor(ValueEditor):
         self.second = QComboBox()
         self.arrow = QLabel()
         self.arrow.setFont(fluent_icon_font(14))
-        self.arrow.setText("")  # 左右箭头
+        self.arrow.setText(fluent_icon_text(Glyph.SWITCH))
         for combo in (self.first, self.second):
             combo.setMinimumWidth(EDITOR_WIDTH // 2 - 20)
         layout = QHBoxLayout(self)
@@ -894,7 +901,7 @@ class SettingCard(QFrame):
         self.error_label.hide()
         self._error_icon = ThemedLabel("critical")
         self._error_icon.setFont(fluent_icon_font(TOKENS.caption_px))
-        self._error_icon.setText(Glyph.WARNING)
+        self._error_icon.setText(fluent_icon_text(Glyph.WARNING))
         self._error_icon.hide()
 
         text_column = QVBoxLayout()
@@ -938,7 +945,7 @@ class SettingCard(QFrame):
 
     def set_icon(self, glyph: str) -> None:
         """卡片左侧的 Fluent 图标；glyph 为空串时不显示图标，文字靠左。"""
-        self.icon_label.setText(glyph)
+        self.icon_label.setText(fluent_icon_text(glyph))
         self.icon_label.setVisible(bool(glyph))
         indent = self.icon_label.width() + TOKENS.spacing_l if glyph else 0
         self._error_row.setContentsMargins(indent, 0, 0, 0)

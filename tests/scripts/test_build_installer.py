@@ -21,6 +21,32 @@ opencv-contrib-python==4.10.0.84
 aiohttp==3.12.0
 """
 
+
+def test_shared_msvc_runtime_is_available_to_standalone_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    source = stage / "site" / "main"
+    source.mkdir(parents=True)
+    runtime = stage / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(build, "STAGE", stage)
+    for name in build.MSVC_RUNTIME_FILES:
+        directory = source / "Scripts" if name.startswith("vcruntime") else source
+        directory.mkdir(exist_ok=True)
+        (directory / name).write_bytes(name.encode())
+    (runtime / "vcruntime140.dll").write_bytes(b"older-interpreter-runtime")
+    build.stage_msvc_runtime(runtime / "python.exe")
+    for name in build.MSVC_RUNTIME_FILES:
+        assert (runtime / name).read_bytes() == name.encode()
+
+
+def test_missing_shared_runtime_stops_packaging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(build, "STAGE", tmp_path)
+    with pytest.raises(SystemExit, match=r"msvcp140\.dll"):
+        build.stage_msvc_runtime(tmp_path / "python.exe")
+
+
 # lst/services/updates/releases.py 解析校验文件用的正则。
 _SHA256_LINE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(\S.*?)\s*$")
 

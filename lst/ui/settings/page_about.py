@@ -43,7 +43,7 @@ from lst.ui.settings.dialogs import Dialogs
 from lst.ui.settings.pages import SettingsPage
 from lst.ui.settings.presenter import CheckFeedback, SettingsPresenter, Topic
 from lst.ui.settings.strings import format_timestamp
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, style_primary_button
+from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, fluent_icon_text, style_primary_button
 
 _WORKER_HEALTH: Final = {
     WorkerState.STOPPED: EngineHealth.DISABLED,
@@ -279,7 +279,7 @@ class UpdateCard(SettingCard):
         self.view = view
         self.set_texts(view.title, view.details)
         glyph, role = _status_glyph(status.state if status is not None else None, view.error)
-        self.status_icon.setText(glyph)
+        self.status_icon.setText(fluent_icon_text(glyph))
         self.status_icon.set_role(role)
         self.status_label.setText(view.status)
         self.status_label.set_role("critical" if view.error else "primary")

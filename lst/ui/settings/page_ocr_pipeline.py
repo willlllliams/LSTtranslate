@@ -73,7 +73,7 @@ from lst.ui.settings.ocr_pipeline_rows import (
 )
 from lst.ui.settings.presenter import Location, SettingsPresenter
 from lst.ui.settings.schema import FieldSpec, Kind, model_field_specs, nested_model
-from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, theme_colors
+from lst.ui.theme import TOKENS, Glyph, fluent_icon, fluent_icon_font, fluent_icon_text, theme_colors
 
 CHEVRON_RIGHT: Final = "\ue76c"
 """Fluent 图标里向右的箭头：折叠区收起。"""
@@ -520,7 +520,7 @@ class ModelRow(QWidget):
         self.radio.setEnabled(view.selectable)
         self.radio.setToolTip("" if view.selectable else tr("settings.ocr_model.needs_download"))
         separator = tr("settings.ocr_model.separator")
-        self.status_icon.setText(view.glyph)
+        self.status_icon.setText(fluent_icon_text(view.glyph))
         self.status_icon.set_role(view.tone.value)
         self.status_label.setText(f"{view.status}{separator}{view.meta}" if view.meta else view.status)
         self.status_label.set_role("critical" if view.tone is Tone.ERROR else "secondary")

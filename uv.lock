@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "lsttranslate"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ctranslate2" },
@@ -396,6 +396,7 @@ dependencies = [
     { name = "jiter" },
     { name = "keyring" },
     { name = "lingua-language-detector" },
+    { name = "msvc-runtime" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "pyside6-essentials" },
@@ -430,6 +431,7 @@ requires-dist = [
     { name = "jiter", specifier = ">=0.17" },
     { name = "keyring", specifier = ">=25.7" },
     { name = "lingua-language-detector", specifier = ">=2.2" },
+    { name = "msvc-runtime", specifier = "==14.51.36231" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "pydantic", specifier = ">=2.14,<3" },
     { name = "pyside6-essentials", specifier = ">=6.12,<6.13" },
@@ -485,6 +487,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/52/b8/c63995bebbb9ac9c059350e0fb8c82c2420c85aeca7d34e40aecf3df9281/more_itertools-11.2.1.tar.gz", hash = "sha256:cbf08fd0af284dc69718b9b76a8e6203df624d70209ea511e4219d350c856f63", size = 154133, upload-time = "2026-10-14T18:50:30.407Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/57/3c4b1c6f2e0cc29ba023802458ea3d2a996f87085559e4a5f2192d549532/more_itertools-11.2.1-py3-none-any.whl", hash = "sha256:35a7377edd1dd6608dcb2cdf534ded55ea32d49448875ad042cd3f879fb1ded0", size = 74405, upload-time = "2026-10-14T18:50:29.116Z" },
+]
+
+[[package]]
+name = "msvc-runtime"
+version = "14.51.36231"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/a8/3a19828d82cc7f546423f87cd52c9bb8c01ed7573edd6e30d02666fad5ad/msvc_runtime-14.51.36231-cp313-cp313-win32.whl", hash = "sha256:aea91ef9d94cba15f7b2b3e8b736ec27bf649677017769141555c1226c70691a", size = 2051643, upload-time = "2026-10-22T14:39:33.373Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/6e/7ba5696e9d8c1bcb01352f06e441497c308e84f75aba598400646ab31ca7/msvc_runtime-14.51.36231-cp313-cp313-win_amd64.whl", hash = "sha256:f3c3ac4f733a774f6ae209567e533bfde6f72dc1c10977733bfe09ce01e5b624", size = 2052033, upload-time = "2026-10-22T14:39:34.835Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/ab/c21892fbc87d39ebd9763759d1ee499f9938ab4ce4e49e089ea020e6aaab/msvc_runtime-14.51.36231-cp313-cp313-win_arm64.whl", hash = "sha256:52f9fd6e089eac9d72607d3ac4ffebcd5f0d6f940fca83db8a9c12ca11b1c26c", size = 3467851, upload-time = "2026-10-22T14:49:01.561Z" },
 ]
 
 [[package]]
